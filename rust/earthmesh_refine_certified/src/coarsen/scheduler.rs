@@ -1018,11 +1018,17 @@ fn visit_source_descendant_faces(
     address: TriangleAddress,
     visit: &mut impl FnMut(usize) -> Result<(), String>,
 ) -> Result<(), String> {
+    // A region may have built this face at a coarser level (design B1g).
+    if let Some(face) = source
+        .region
+        .as_ref()
+        .and_then(|region| region.face_slot(address))
+    {
+        return visit(face);
+    }
     if address.n == source.subdivision {
         let face = match &source.region {
-            Some(region) => region
-                .face_slot(address)
-                .ok_or_else(|| format!("source face {address:?} is outside the region"))?,
+            Some(_) => return Err(format!("source face {address:?} is outside the region")),
             None => address
                 .dense_index(source.subdivision)?
                 .checked_add(2)

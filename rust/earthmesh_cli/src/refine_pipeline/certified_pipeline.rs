@@ -542,11 +542,33 @@ pub(super) fn build_certified_construction(
 /// Base faces that a regional run delivers cells of: a corner, the centroid
 /// or an edge midpoint inside the domain, or a point of the domain itself
 /// (bbox corners and centre, circle centre, polygon vertices) within the
-/// face's cap -- so a domain smaller than a face is found too.
+/// face's cap -- so a domain smaller than a face is found too. On the whole
+/// base: the oracle `delivery_base_faces_by_address` is tested against.
+#[cfg(test)]
 fn delivery_base_faces(
     domain: &GridRegion,
     base: &earthmesh_refine_certified::MotherGrid,
 ) -> BTreeSet<earthmesh_refine_certified::TriangleAddress> {
+    let prepared = domain.prepared();
+    let own = domain_points(domain);
+    let mut faces = BTreeSet::new();
+    for face in base.mesh.active_triangle_slots() {
+        let corners = base.mesh.triangles()[face].map(|site| {
+            let point = base.mesh.vertices()[site];
+            [point.x, point.y, point.z]
+        });
+        if face_meets_domain(corners, &prepared, &own) {
+            if let Some(address) = base.triangle_addresses[face] {
+                faces.insert(address);
+            }
+        }
+    }
+    faces
+}
+
+/// The domain's own points -- bbox corners and centre, circle centre,
+/// polygon vertices -- as unit vectors.
+fn domain_points(domain: &GridRegion) -> Vec<[f64; 3]> {
     fn points(domain: &GridRegion, out: &mut Vec<(f64, f64)>) {
         match domain {
             GridRegion::Bbox {
@@ -575,10 +597,33 @@ fn delivery_base_faces(
             }
         }
     }
-    let unit = |lon: f64, lat: f64| {
-        let (lon, lat) = (lon.to_radians(), lat.to_radians());
-        [lat.cos() * lon.cos(), lat.cos() * lon.sin(), lat.sin()]
-    };
+    let mut own = Vec::new();
+    points(domain, &mut own);
+    own.into_iter()
+        .map(|(lon, lat)| unit_lon_lat(lon, lat))
+        .collect()
+}
+
+fn unit_lon_lat(lon: f64, lat: f64) -> [f64; 3] {
+    let (lon, lat) = (lon.to_radians(), lat.to_radians());
+    [lat.cos() * lon.cos(), lat.cos() * lon.sin(), lat.sin()]
+}
+
+fn arc_between(a: [f64; 3], b: [f64; 3]) -> f64 {
+    let length = |p: [f64; 3]| (p[0] * p[0] + p[1] * p[1] + p[2] * p[2]).sqrt();
+    ((a[0] * b[0] + a[1] * b[1] + a[2] * b[2]) / (length(a) * length(b)))
+        .clamp(-1.0, 1.0)
+        .acos()
+}
+
+/// Whether a base face with these corners delivers cells: a corner, the
+/// centroid or an edge midpoint inside the domain, or a point of the domain
+/// within the face's cap.
+fn face_meets_domain(
+    corners: [[f64; 3]; 3],
+    prepared: &crate::PreparedGridRegion<'_>,
+    own: &[[f64; 3]],
+) -> bool {
     let lon_lat = |point: [f64; 3]| {
         let length = (point[0] * point[0] + point[1] * point[1] + point[2] * point[2]).sqrt();
         (
@@ -586,51 +631,127 @@ fn delivery_base_faces(
             (point[2] / length).clamp(-1.0, 1.0).asin().to_degrees(),
         )
     };
-    let angle = |a: [f64; 3], b: [f64; 3]| {
-        let length = |p: [f64; 3]| (p[0] * p[0] + p[1] * p[1] + p[2] * p[2]).sqrt();
-        ((a[0] * b[0] + a[1] * b[1] + a[2] * b[2]) / (length(a) * length(b)))
-            .clamp(-1.0, 1.0)
-            .acos()
+    let sum = |points: &[[f64; 3]]| {
+        points.iter().fold([0.0; 3], |sum, point| {
+            [sum[0] + point[0], sum[1] + point[1], sum[2] + point[2]]
+        })
     };
-    let mut own = Vec::new();
-    points(domain, &mut own);
-    let own = own
+    let centroid = sum(&corners);
+    let mut samples = corners.to_vec();
+    samples.push(centroid);
+    for side in 0..3 {
+        samples.push(sum(&[corners[side], corners[(side + 1) % 3]]));
+    }
+    let radius = corners
+        .iter()
+        .map(|&corner| arc_between(centroid, corner))
+        .fold(0.0, f64::max);
+    samples.iter().any(|&sample| {
+        let (lon, lat) = lon_lat(sample);
+        prepared.contains(lon, lat)
+    }) || own
+        .iter()
+        .any(|&point| arc_between(point, centroid) <= radius)
+}
+
+/// A cap -- centre and angular radius -- holding every point of `domain`
+/// and its own points, one per part of a union; the whole sphere for a part
+/// with no known bounds.
+fn domain_caps(domain: &GridRegion) -> Vec<([f64; 3], f64)> {
+    if let GridRegion::Any(regions) = domain {
+        return regions.iter().flat_map(domain_caps).collect();
+    }
+    let Some(bounds) = domain.lonlat_bounds() else {
+        return vec![([0.0, 0.0, 1.0], std::f64::consts::PI)];
+    };
+    let (south, north) = (bounds.south.max(-90.0), bounds.north.min(90.0));
+    // Caps about either pole hold any band; a box clear of the poles and
+    // narrower than the globe is held by the cap about its centre through
+    // its farthest corner (distance from the centre grows along both its
+    // parallels and its meridians towards the corners).
+    let mut caps = vec![
+        ([0.0, 0.0, 1.0], (90.0 - south).to_radians()),
+        ([0.0, 0.0, -1.0], (90.0 + north).to_radians()),
+    ];
+    if bounds.width < 360.0 && south > -90.0 && north < 90.0 {
+        let centre = unit_lon_lat(bounds.west + bounds.width / 2.0, (south + north) / 2.0);
+        let east = bounds.west + bounds.width;
+        let radius = [
+            (bounds.west, south),
+            (bounds.west, north),
+            (east, south),
+            (east, north),
+        ]
         .into_iter()
-        .map(|(lon, lat)| unit(lon, lat))
-        .collect::<Vec<_>>();
-    let prepared = domain.prepared();
-    let mut faces = BTreeSet::new();
-    for face in base.mesh.active_triangle_slots() {
-        let corners = base.mesh.triangles()[face].map(|site| {
-            let point = base.mesh.vertices()[site];
-            [point.x, point.y, point.z]
-        });
-        let sum = |points: &[[f64; 3]]| {
-            points.iter().fold([0.0; 3], |sum, point| {
-                [sum[0] + point[0], sum[1] + point[1], sum[2] + point[2]]
-            })
-        };
-        let centroid = sum(&corners);
-        let mut samples = corners.to_vec();
-        samples.push(centroid);
-        for side in 0..3 {
-            samples.push(sum(&[corners[side], corners[(side + 1) % 3]]));
-        }
-        let radius = corners
-            .iter()
-            .map(|&corner| angle(centroid, corner))
-            .fold(0.0, f64::max);
-        let inside = samples.iter().any(|&sample| {
-            let (lon, lat) = lon_lat(sample);
-            prepared.contains(lon, lat)
-        }) || own.iter().any(|&point| angle(point, centroid) <= radius);
-        if inside {
-            if let Some(address) = base.triangle_addresses[face] {
-                faces.insert(address);
+        .map(|(lon, lat)| arc_between(centre, unit_lon_lat(lon, lat)))
+        .fold(0.0, f64::max);
+        caps.push((centre, radius));
+    }
+    let (centre, radius) = caps
+        .into_iter()
+        .min_by(|left, right| left.1.total_cmp(&right.1))
+        .expect("two pole caps");
+    vec![(centre, radius + 1.0e-9)]
+}
+
+/// Lattice faces a delivery domain may be walked over before the base is
+/// too fine for it: a regional domain on a fine base is thousands.
+const DELIVERY_WALK_LIMIT: usize = 1 << 24;
+
+/// `delivery_base_faces` by lattice address, for bases too fine to build
+/// whole: the faces whose cap meets one of the domain's caps (`domain_caps`)
+/// are walked from the face holding its centre -- through faces within the
+/// longest edge more, which no face between them and the centre is beyond --
+/// and tested as `delivery_base_faces` tests every face.
+fn delivery_base_faces_by_address(
+    domain: &GridRegion,
+    base_n: usize,
+) -> io::Result<BTreeSet<earthmesh_refine_certified::TriangleAddress>> {
+    use earthmesh_refine_certified::mother_grid::lattice;
+    let invalid_data = |error: String| io::Error::new(io::ErrorKind::InvalidData, error);
+    let longest = lattice::longest_edge(base_n).map_err(invalid_data)?;
+    let mut candidates = BTreeSet::new();
+    for (centre, radius) in domain_caps(domain) {
+        let start = lattice::locate(base_n, centre)
+            .ok_or_else(|| invalid_data("a delivery domain centre lies on no base face".into()))?;
+        let mut visited = BTreeSet::from([start]);
+        let mut queue = std::collections::VecDeque::from([start]);
+        while let Some(face) = queue.pop_front() {
+            let (face_centre, face_radius) = lattice::face_cap(face).map_err(invalid_data)?;
+            let apart = arc_between(centre, face_centre);
+            if apart > radius + face_radius + longest {
+                continue;
+            }
+            if apart <= radius + face_radius {
+                candidates.insert(face);
+            }
+            for next in lattice::faces_around(face).map_err(invalid_data)? {
+                if visited.insert(next) {
+                    if visited.len() > DELIVERY_WALK_LIMIT {
+                        return Err(io::Error::new(
+                            io::ErrorKind::InvalidInput,
+                            format!(
+                                "the delivery domain spans more than {DELIVERY_WALK_LIMIT} faces \
+                                 of the level-{base_n} base; on-demand materialization needs a \
+                                 regional domain"
+                            ),
+                        ));
+                    }
+                    queue.push_back(next);
+                }
             }
         }
     }
-    faces
+    let prepared = domain.prepared();
+    let own = domain_points(domain);
+    let mut faces = BTreeSet::new();
+    for face in candidates {
+        let corners = lattice::face_corner_points(face).map_err(invalid_data)?;
+        if face_meets_domain(corners, &prepared, &own) {
+            faces.insert(face);
+        }
+    }
+    Ok(faces)
 }
 
 /// Parent rings at every level that a transaction may touch beyond a parent
@@ -664,11 +785,12 @@ fn build_region_certified_construction(
         )
     })?;
     let whole_vertices = whole_faces / 2 + 2;
-    let base = MotherGrid::generate(base_nxp).map_err(io::Error::other)?;
-    let delivered = delivery_base_faces(delivery_domain, &base);
-    let extent = on_demand::materialization_extent(
+    // Everything up to the assembly is computed by lattice address: the
+    // base is never built whole before it (guide 11.108).
+    let delivered = delivery_base_faces_by_address(delivery_domain, base_nxp)?;
+    let extent = on_demand::materialization_extent_by_address(
         raster_requirements,
-        &base,
+        base_nxp,
         chosen_level,
         on_demand::ExtentMargins {
             gradation_rings_per_level: options.gradation_rings_per_level,
@@ -766,7 +888,7 @@ fn build_region_certified_construction(
         graded_by_site[site] = level;
     }
     log_cmrc_phase(timing_enabled, "graded_envelope", &mut phase_started);
-    let settled = coarsen::SettledRegion::new(&base, &built).map_err(invalid_data)?;
+    let settled = coarsen::SettledRegion::by_address(base_nxp, &built).map_err(invalid_data)?;
     let scope = coarsen::RegionScope::new(&fine, &extent.region, base_nxp).map_err(invalid_data)?;
     let epoch = coarsen::run_region_component_epochs(
         fine.clone(),
@@ -813,7 +935,11 @@ fn build_region_certified_construction(
             return Err(io::Error::new(io::ErrorKind::InvalidInput, reason));
         }
     };
-    let sphere = coarsen::assemble_region_sphere(&fine, &result.state, &settled, base_nxp, 0)
+    // The sphere's assembly lists every settled face, on the whole base.
+    let base = MotherGrid::generate(base_nxp).map_err(io::Error::other)?;
+    let listed = coarsen::SettledRegion::new(&base, &extent.built_faces().collect())
+        .map_err(invalid_data)?;
+    let sphere = coarsen::assemble_region_sphere(&fine, &result.state, &listed, base_nxp, 0)
         .map_err(invalid_data)?;
     log_cmrc_phase(timing_enabled, "region_assembly", &mut phase_started);
     let mut pentagons = sphere
@@ -3460,6 +3586,7 @@ pub(super) fn certified_icosahedron_vertices(
 mod tests {
     use super::*;
     use crate::certified_options::{CertifiedDelivery, CertifiedMode, CertifiedRunOptions};
+    use crate::LonLatPoint;
 
     #[test]
     fn local_update_admission_is_explicit_and_mixed_coupled_only() {
@@ -3657,5 +3784,81 @@ mod tests {
         assert_eq!(level_at(&bounded, 100.0, 10.0), 0);
         let unbounded = plan(&tiny, None).unwrap();
         assert!(unbounded.effective_levels.iter().all(|&level| level == 2));
+    }
+
+    /// By address, a domain delivers the base faces the whole base finds:
+    /// boxes (across the dateline and round a pole too), circles, polygons
+    /// and unions, larger and smaller than a face.
+    #[test]
+    fn delivered_faces_by_address_are_the_whole_bases() {
+        let domains = vec![
+            GridRegion::Bbox {
+                west: 100.0,
+                east: 104.0,
+                north: 27.0,
+                south: 23.0,
+            },
+            GridRegion::Bbox {
+                west: 175.0,
+                east: -170.0,
+                north: -10.0,
+                south: -30.0,
+            },
+            GridRegion::Bbox {
+                west: -180.0,
+                east: 180.0,
+                north: 90.0,
+                south: 70.0,
+            },
+            GridRegion::Bbox {
+                west: 10.0,
+                east: 10.2,
+                north: 45.1,
+                south: 45.0,
+            },
+            GridRegion::Circle {
+                lon: 91.0,
+                lat: 31.0,
+                radius_km: 300.0,
+            },
+            GridRegion::Circle {
+                lon: -60.0,
+                lat: -89.0,
+                radius_km: 500.0,
+            },
+            GridRegion::Circle {
+                lon: 0.0,
+                lat: 0.0,
+                radius_km: 5.0,
+            },
+            GridRegion::Close {
+                points: [(30.0, 10.0), (36.0, 11.0), (34.0, 16.0), (31.0, 14.0)]
+                    .into_iter()
+                    .map(|(lon, lat)| LonLatPoint { lon, lat })
+                    .collect(),
+            },
+            GridRegion::Any(vec![
+                GridRegion::Circle {
+                    lon: 120.0,
+                    lat: 40.0,
+                    radius_km: 200.0,
+                },
+                GridRegion::Bbox {
+                    west: -80.0,
+                    east: -75.0,
+                    north: 5.0,
+                    south: 0.0,
+                },
+            ]),
+        ];
+        for n in [1, 2, 5, 12, 40] {
+            let base = earthmesh_refine_certified::MotherGrid::generate(n).unwrap();
+            for domain in &domains {
+                let whole = delivery_base_faces(domain, &base);
+                let by_address = delivery_base_faces_by_address(domain, n).unwrap();
+                assert!(!whole.is_empty(), "n {n} {domain:?}");
+                assert_eq!(by_address, whole, "n {n} {domain:?}");
+            }
+        }
     }
 }

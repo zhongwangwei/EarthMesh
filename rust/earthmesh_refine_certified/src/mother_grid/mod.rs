@@ -2,6 +2,7 @@ use earthmesh_mesh::{
     normalize_cartesian_to_radius, orientation_on_sphere, CartesianPoint, MeshState, Sign,
 };
 
+pub mod lattice;
 pub mod region;
 pub use region::{vertex_origin, RegionIndex, VertexOrigin};
 
@@ -23,13 +24,13 @@ pub enum VertexAddress {
     },
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum TriangleOrientation {
     Up,
     Down,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct TriangleAddress {
     pub base_face: u8,
     pub i: usize,

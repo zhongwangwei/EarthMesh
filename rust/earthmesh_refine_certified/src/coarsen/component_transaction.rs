@@ -1362,7 +1362,8 @@ fn visit_source_descendant_faces(
     address: TriangleAddress,
     visit: &mut impl FnMut(usize) -> Result<(), String>,
 ) -> Result<(), String> {
-    if address.n == source.subdivision {
+    if address.n == source.subdivision || super::core_condensation::source_has_face(source, address)
+    {
         return visit(source_face_slot(source, address)?);
     }
     if address.n == 0

@@ -20,7 +20,9 @@ impl HierarchyLeafSet {
                 .get(face)
                 .and_then(|address| *address)
                 .ok_or_else(|| format!("active face {face} has no hierarchy address"))?;
-            if address.n != grid.subdivision {
+            // A region may build faces of coarser levels where nothing finer is
+            // needed (design B1g); a whole grid has only its own level.
+            if address.n != grid.subdivision && grid.region.is_none() {
                 return Err(format!(
                     "active face {face} address subdivision {} does not match source subdivision {}",
                     address.n, grid.subdivision
@@ -99,7 +101,7 @@ pub(super) fn rebuild_from_leaf_set_with_custom_triangles(
 ) -> Result<HierarchyLeafMesh, String> {
     let mut custom_face_slots = BTreeSet::new();
     for &parent in custom_parents {
-        for child in source_descendants(parent, source.subdivision)? {
+        for child in source_faces_under(source, parent)? {
             custom_face_slots.insert(source_face_slot(source, child)?);
         }
     }
@@ -149,7 +151,7 @@ pub(super) fn rebuild_from_leaf_set_with_custom_face_slots(
     }
 
     for &leaf in &leaf_set.leaves {
-        if leaf.n == source_n {
+        if source_has_face(source, leaf) {
             let slot = source_face_slot(source, leaf)?;
             if std::mem::replace(&mut covered[slot], true) {
                 return Err(format!("source face {slot} is covered more than once"));
@@ -159,7 +161,7 @@ pub(super) fn rebuild_from_leaf_set_with_custom_face_slots(
             continue;
         }
         let mut corner_counts = std::collections::BTreeMap::<usize, usize>::new();
-        for child in source_descendants(leaf, source_n)? {
+        for child in source_faces_under(source, leaf)? {
             let slot = source_face_slot(source, child)?;
             if std::mem::replace(&mut covered[slot], true) {
                 return Err(format!("source face {slot} is covered more than once"));
@@ -279,6 +281,43 @@ pub fn condense_hierarchy_core(
     })
 }
 
+/// Whether the source built the face at `address`: a whole grid builds only
+/// its own level, a region may build coarser faces where nothing finer is
+/// needed (design B1g).
+pub(super) fn source_has_face(source: &MotherGrid, address: TriangleAddress) -> bool {
+    match &source.region {
+        Some(region) => region.face_slot(address).is_some(),
+        None => address.n == source.subdivision,
+    }
+}
+
+/// The source faces that tile `address`: the face itself if the source
+/// built it, else its children's, down to the faces the source built.
+pub(super) fn source_faces_under(
+    source: &MotherGrid,
+    address: TriangleAddress,
+) -> Result<Vec<TriangleAddress>, String> {
+    if source.region.is_none() {
+        return source_descendants(address, source.subdivision);
+    }
+    let mut faces = Vec::new();
+    let mut stack = vec![address];
+    while let Some(face) = stack.pop() {
+        if source_has_face(source, face) {
+            faces.push(face);
+            continue;
+        }
+        if face.n >= source.subdivision {
+            return Err(format!("source face {face:?} is outside the region"));
+        }
+        stack.extend(
+            face.children_2_to_1()
+                .ok_or_else(|| format!("invalid hierarchy address {face:?}"))?,
+        );
+    }
+    Ok(faces)
+}
+
 fn source_descendants(
     address: TriangleAddress,
     source_n: usize,
@@ -315,7 +354,7 @@ pub(super) fn source_corner_site(
     if corner >= 3 {
         return Err(format!("invalid hierarchy corner {corner}"));
     }
-    while leaf.n < source.subdivision {
+    while leaf.n < source.subdivision && !source_has_face(source, leaf) {
         let children = leaf
             .children_2_to_1()
             .ok_or_else(|| format!("invalid hierarchy leaf {leaf:?}"))?;
@@ -338,7 +377,7 @@ pub(super) fn source_face_slot(
     source: &MotherGrid,
     address: TriangleAddress,
 ) -> Result<usize, String> {
-    if address.n != source.subdivision {
+    if address.n != source.subdivision && source.region.is_none() {
         return Err(format!(
             "source face address subdivision {} does not match source subdivision {}",
             address.n, source.subdivision

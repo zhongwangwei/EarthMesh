@@ -267,6 +267,151 @@ pub fn materialization_extent(
     })
 }
 
+/// `materialization_extent` by lattice address alone, for bases too fine to
+/// build whole (design B1r-2): the same seeds, rings, delivered faces and
+/// frame, found by walking the faces around each raster cell instead of
+/// scanning every base face. A base of level `base_n`.
+///
+/// The walk from the face holding a raster cell's centre reaches every face
+/// the seed test accepts: the geodesic from the centre to such a face's
+/// centre crosses a chain of faces, each holding a point no farther than
+/// that face's centre, so each is within the test's bound plus the largest
+/// face radius -- which no face radius exceeds the longest edge to reach.
+/// The walk goes through faces within that wider bound and keeps those
+/// within the test's.
+pub fn materialization_extent_by_address(
+    raster: &RasterLevelField,
+    base_n: usize,
+    levels: usize,
+    margins: ExtentMargins,
+    delivered: &BTreeSet<TriangleAddress>,
+) -> Result<MaterializationExtent, String> {
+    use crate::mother_grid::lattice::{face_cap, faces_around, locate, longest_edge};
+    use std::collections::{BTreeMap, HashMap};
+
+    if base_n == 0 {
+        return Err("base subdivision must be positive".into());
+    }
+    if let Some(face) = delivered.iter().find(|face| face.n != base_n) {
+        return Err(format!(
+            "delivered face {face:?} is not a level-{base_n} face"
+        ));
+    }
+    let longest_edge = longest_edge(base_n)?;
+    let fine_edge = 2.0 * longest_edge / (1u64 << levels.min(62)) as f64;
+    let reach =
+        |level: usize| fine_edge * (margins.gradation_rings_per_level.max(1) * level + 2) as f64;
+    let mut caps = HashMap::new();
+    let mut cap_of = |address: TriangleAddress| -> Result<([f64; 3], f64), String> {
+        if let Some(&cap) = caps.get(&address) {
+            return Ok(cap);
+        }
+        let cap = face_cap(address)?;
+        caps.insert(address, cap);
+        Ok(cap)
+    };
+
+    // Seeds: from each raster cell above level zero, the faces whose cap
+    // meets the cell's cap widened by its reach, walked from the face that
+    // holds the cell's centre.
+    let (nlon, nlat) = (raster.nlon(), raster.nlat());
+    let dlon = 360.0 / nlon as f64;
+    let dlat = 180.0 / nlat as f64;
+    let mut seeds = BTreeSet::new();
+    for (cell, &level) in raster.levels().iter().enumerate() {
+        if level == 0 {
+            continue;
+        }
+        let points = raster
+            .spherical_cell(cell, dlon, dlat)
+            .into_iter()
+            .map(|(lon, lat)| Point::new(lon, lat))
+            .collect::<Vec<_>>();
+        let cap = SphericalCap::for_rings(std::slice::from_ref(&points))
+            .ok_or_else(|| format!("raster cell {cell} has no spherical cap"))?;
+        let (lon, lat) = cap.center_lon_lat_degrees();
+        let (lon, lat) = (lon.to_radians(), lat.to_radians());
+        let center = [lat.cos() * lon.cos(), lat.cos() * lon.sin(), lat.sin()];
+        let limit = cap.radius_radians() + reach(level);
+        let start = locate(base_n, center)
+            .ok_or_else(|| format!("raster cell {cell} lies on no base face"))?;
+        let mut queue = std::collections::VecDeque::from([start]);
+        let mut visited = BTreeSet::from([start]);
+        while let Some(face) = queue.pop_front() {
+            let (face_center, face_radius) = cap_of(face)?;
+            let apart = angle(center, face_center);
+            if apart > limit + face_radius + longest_edge {
+                continue;
+            }
+            if apart <= limit + face_radius {
+                seeds.insert(face);
+            }
+            for next in faces_around(face)? {
+                if visited.insert(next) {
+                    queue.push_back(next);
+                }
+            }
+        }
+    }
+
+    // Rings around the seeds, delivered faces with one ring, then the frame.
+    let rings = (1..=levels)
+        .map(|level| (margins.parent_rings_per_level + 1).div_ceil(1usize << (level - 1).min(62)))
+        .sum::<usize>()
+        + 2;
+    let mut distance = BTreeMap::new();
+    let mut queue = std::collections::VecDeque::new();
+    for &seed in &seeds {
+        distance.insert(seed, 0usize);
+        queue.push_back(seed);
+    }
+    while let Some(face) = queue.pop_front() {
+        let reached = distance[&face];
+        if reached == rings {
+            continue;
+        }
+        for next in faces_around(face)? {
+            if let std::collections::btree_map::Entry::Vacant(entry) = distance.entry(next) {
+                entry.insert(reached + 1);
+                queue.push_back(next);
+            }
+        }
+    }
+    for &face in delivered {
+        distance.entry(face).or_insert(0);
+        for next in faces_around(face)? {
+            distance.entry(next).or_insert(0);
+        }
+    }
+    let region = distance.keys().copied().collect::<BTreeSet<_>>();
+    let mut frame = BTreeSet::new();
+    for &face in &region {
+        frame.extend(
+            faces_around(face)?
+                .into_iter()
+                .filter(|next| !region.contains(next)),
+        );
+    }
+    let first_ring = frame.clone();
+    for face in first_ring {
+        frame.extend(
+            faces_around(face)?
+                .into_iter()
+                .filter(|next| !region.contains(next)),
+        );
+    }
+    let whole = 20usize
+        .checked_mul(base_n)
+        .and_then(|faces| faces.checked_mul(base_n))
+        .ok_or_else(|| "base face count overflows".to_string())?;
+    Ok(MaterializationExtent {
+        base_subdivision: base_n,
+        settled_faces: whole - region.len() - frame.len(),
+        region,
+        frame,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -475,5 +620,85 @@ mod tests {
         assert!(delivered.is_subset(&extent.region));
         assert!(extent.region.len() > delivered.len());
         assert!(!extent.frame.is_empty() && extent.settled_faces > 0);
+    }
+
+    /// By address the extent is the whole-grid extent, face for face: on
+    /// random rasters (polar rows and the dateline column among them), with
+    /// and without delivered faces, at the test margins and at the CLI's.
+    #[test]
+    fn the_extent_by_address_is_the_whole_grid_extent() {
+        let mut seed = 0x1234_5678_9abc_def1u64;
+        let mut next = || {
+            seed ^= seed << 13;
+            seed ^= seed >> 7;
+            seed ^= seed << 17;
+            seed
+        };
+        let (nlon, nlat) = (72usize, 36usize);
+        let wide = ExtentMargins {
+            gradation_rings_per_level: 2,
+            parent_rings_per_level: 7,
+        };
+        let mut partial = 0;
+        for (base_n, levels) in [
+            (3, 1),
+            (4, 2),
+            (6, 1),
+            (8, 3),
+            (12, 1),
+            (16, 2),
+            (24, 1),
+            (32, 2),
+        ] {
+            let base = MotherGrid::generate(base_n).unwrap();
+            let addresses = base
+                .triangle_addresses
+                .iter()
+                .flatten()
+                .copied()
+                .collect::<Vec<_>>();
+            for round in 0..4 {
+                let mut cells = (0..1 + next() % 3)
+                    .map(|_| {
+                        (
+                            (next() % (nlon * nlat) as u64) as usize,
+                            1 + (next() % 3) as usize,
+                        )
+                    })
+                    .collect::<Vec<_>>();
+                match round {
+                    1 => cells.push(((next() % nlon as u64) as usize, 1)),
+                    2 => cells.push(((nlat - 1) * nlon + (next() % nlon as u64) as usize, 2)),
+                    3 => cells.push(((next() % nlat as u64) as usize * nlon + nlon - 1, 1)),
+                    _ => {}
+                }
+                let raster = raster_with(nlon, nlat, &cells);
+                let delivered = if round % 2 == 1 {
+                    (0..2)
+                        .map(|_| addresses[(next() % addresses.len() as u64) as usize])
+                        .collect()
+                } else {
+                    BTreeSet::new()
+                };
+                for margins in [MARGINS, wide] {
+                    let whole = materialization_extent(&raster, &base, levels, margins, &delivered)
+                        .unwrap();
+                    let by_address = materialization_extent_by_address(
+                        &raster, base_n, levels, margins, &delivered,
+                    )
+                    .unwrap();
+                    assert_eq!(
+                        by_address, whole,
+                        "base {base_n} cells {cells:?} {margins:?}"
+                    );
+                    if whole.settled_faces > 0 && !whole.region.is_empty() {
+                        partial += 1;
+                    }
+                }
+            }
+        }
+        // Most cases leave part of the sphere settled: the test compares
+        // borders, not two copies of the whole sphere.
+        assert!(partial >= 28, "only {partial} cases leave faces settled");
     }
 }

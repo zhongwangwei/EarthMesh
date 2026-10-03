@@ -267,6 +267,12 @@ impl MotherGrid {
     /// corner coordinates, addresses, corner order and orientation, with
     /// vertex and face slots in the relative order `generate` gives them.
     /// Built from every face it is `generate(n)` itself.
+    ///
+    /// Faces may also be of coarser levels that divide `n` by a power of two
+    /// -- a source built finer only where it must be (design B1g). Such a
+    /// face is the one `generate` of its level builds; its corners are lattice
+    /// points of level `n` too, with the same coordinates (the levels nest bit
+    /// for bit), numbered by their origins at level `n`.
     pub fn generate_faces(
         n: usize,
         faces: impl IntoIterator<Item = TriangleAddress>,
@@ -275,11 +281,16 @@ impl MotherGrid {
             return Err("mother subdivision must be positive".into());
         }
         let faces = faces.into_iter().collect::<BTreeSet<_>>();
-        if let Some(face) = faces
-            .iter()
-            .find(|face| face.n != n || face.dense_index(n).is_err())
-        {
-            return Err(format!("face {face:?} is not a level-{n} lattice face"));
+        if let Some(face) = faces.iter().find(|face| {
+            face.n == 0
+                || face.n > n
+                || !n.is_multiple_of(face.n)
+                || !(n / face.n).is_power_of_two()
+                || face.dense_index(face.n).is_err()
+        }) {
+            return Err(format!(
+                "face {face:?} is not a lattice face dividing level {n}"
+            ));
         }
         let mut origins = BTreeSet::new();
         let mut face_origins = Vec::with_capacity(faces.len());
@@ -289,8 +300,9 @@ impl MotherGrid {
                 i: 0,
                 j: 0,
             }; 3];
+            let ratio = n / face.n;
             for (corner, (i, j)) in corners.iter_mut().zip(face_lattice_corners(face)) {
-                *corner = vertex_origin(n, face.base_face, i, j)?;
+                *corner = vertex_origin(n, face.base_face, i * ratio, j * ratio)?;
             }
             origins.extend(corners);
             face_origins.push((face, corners));
@@ -542,6 +554,59 @@ mod tests {
                 .cloned()
                 .collect()
         );
+    }
+
+    /// `generate` stores every face in lattice order: the base faces turn one
+    /// way, so `push_oriented` never swaps corners. A face built at a coarser
+    /// level therefore has the corners `source_corner_site` finds below it.
+    #[test]
+    fn generate_never_swaps_corners() {
+        for n in [1, 2, 3, 6] {
+            let whole = MotherGrid::generate(n).unwrap();
+            for face in whole.mesh.active_triangle_slots() {
+                let address = whole.triangle_addresses[face].unwrap();
+                let expected = face_lattice_corners(address).map(|(i, j)| {
+                    origin_address(n, vertex_origin(n, address.base_face, i, j).unwrap())
+                });
+                let stored =
+                    whole.mesh.triangles()[face].map(|site| whole.addresses[site].clone().unwrap());
+                assert_eq!(stored, expected, "n {n} {address:?}");
+            }
+        }
+    }
+
+    /// A source built coarser where nothing finer is needed rebuilds, leaf
+    /// for leaf, the mesh the whole grid rebuilds once those parents are
+    /// condensed: same vertices, faces, order and coordinates.
+    #[test]
+    fn a_coarser_source_rebuilds_as_the_condensed_whole_grid() {
+        use crate::coarsen::{rebuild_from_leaf_set, HierarchyLeafSet};
+        let n = 8;
+        let whole = MotherGrid::generate(n).unwrap();
+        let coarse_bases = every_face(2)
+            .into_iter()
+            .step_by(4)
+            .take(9)
+            .collect::<Vec<_>>();
+        let coarse = descendant_faces(coarse_bases.iter().copied(), n / 2).unwrap();
+        let fine = every_face(n)
+            .into_iter()
+            .filter(|face| !coarse.contains(&face.parent_2_to_1().unwrap()))
+            .collect::<Vec<_>>();
+        let mixed =
+            MotherGrid::generate_faces(n, fine.iter().copied().chain(coarse.iter().copied()))
+                .unwrap();
+
+        let mut condensed = HierarchyLeafSet::from_mother_grid(&whole).unwrap();
+        condensed
+            .condense_core(&coarse.iter().copied().collect::<Vec<_>>())
+            .unwrap();
+        let expected = rebuild_from_leaf_set(&whole, &condensed).unwrap();
+        let leaves = HierarchyLeafSet::from_mother_grid(&mixed).unwrap();
+        assert_eq!(leaves, condensed);
+        let rebuilt = rebuild_from_leaf_set(&mixed, &leaves).unwrap();
+        assert!(rebuilt.mesh == expected.mesh, "meshes differ");
+        assert_eq!(rebuilt.triangle_addresses, expected.triangle_addresses);
     }
 
     /// Ranks are slots: every vertex of `generate(n)` at its slot less two.

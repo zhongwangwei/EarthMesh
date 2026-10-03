@@ -98,7 +98,7 @@ pub fn assemble_region_sphere(
             .ok_or_else(|| format!("source slot {slot} has no delivered level"))?;
         vertices.insert(origin, (mesh.mesh.vertices()[compact], level));
     }
-    let settled_faces = descendant_faces(settled.faces(), settled_n)?;
+    let settled_faces = descendant_faces(settled.listed_faces()?.iter().copied(), settled_n)?;
     let mut settled_corners = BTreeMap::new();
     for &face in &settled_faces {
         let mut corners = [VertexOrigin {
