@@ -38,13 +38,14 @@ pub struct Criterion {
     pub threshold: f64,
 }
 
-/// The samples one face holds: count, and per layer the sum and the sum of
-/// squares of the values less the base face's first value (shifted, so a
-/// DEM's squares do not swamp its variance), and class counts for the
-/// layers a purity criterion reads.
+/// The samples one face holds, per layer -- each layer is sampled on its
+/// own grid: the count, the sum and the sum of squares of the values less
+/// the base face's first value of that layer (shifted, so a DEM's squares do
+/// not swamp its variance), and class counts for the layers a purity
+/// criterion reads.
 #[derive(Debug, Clone, Default)]
 struct Moments {
-    count: u64,
+    counts: Vec<u64>,
     sums: Vec<f64>,
     squares: Vec<f64>,
     classes: Vec<BTreeMap<i64, u64>>,
@@ -53,7 +54,7 @@ struct Moments {
 impl Moments {
     fn new(layers: usize, categorical: usize) -> Self {
         Self {
-            count: 0,
+            counts: vec![0; layers],
             sums: vec![0.0; layers],
             squares: vec![0.0; layers],
             classes: vec![BTreeMap::new(); categorical],
@@ -61,7 +62,9 @@ impl Moments {
     }
 
     fn add(&mut self, other: &Self) {
-        self.count += other.count;
+        for (count, value) in self.counts.iter_mut().zip(&other.counts) {
+            *count += value;
+        }
         for (sum, value) in self.sums.iter_mut().zip(&other.sums) {
             *sum += value;
         }
@@ -118,15 +121,16 @@ fn base_ancestor(mut face: TriangleAddress, base_n: usize) -> Option<TriangleAdd
 
 impl HeterogeneityField {
     /// The field under `base_faces` (of level `base_n`), refined `levels`
-    /// times, from samples -- a unit vector and one value per layer each.
-    /// Samples outside the base faces are ignored. A face holding fewer
-    /// than `minimum_samples` gives no evidence against forming it.
+    /// times, from samples -- a layer, a unit vector and the layer's value
+    /// there; each layer on its own grid. Samples outside the base faces are
+    /// ignored. A criterion on a face holding fewer than `minimum_samples`
+    /// of its layer gives no evidence against forming it.
     pub fn build(
         base_n: usize,
         levels: usize,
         base_faces: &BTreeSet<TriangleAddress>,
         layers: usize,
-        samples: impl IntoIterator<Item = ([f64; 3], Vec<f64>)>,
+        samples: impl IntoIterator<Item = (usize, [f64; 3], f64)>,
         criteria: &[Criterion],
         minimum_samples: u64,
     ) -> Result<Self, String> {
@@ -155,13 +159,13 @@ impl HeterogeneityField {
         let leaves_per_face = 1usize << (2 * levels);
 
         // Samples by base face, each at its finest face's quadtree index.
-        let mut grouped = BTreeMap::<TriangleAddress, Vec<(usize, Vec<f64>)>>::new();
-        for (point, values) in samples {
-            if values.len() != layers {
-                return Err(format!(
-                    "a sample has {} values for {layers} layers",
-                    values.len()
-                ));
+        let mut grouped = BTreeMap::<TriangleAddress, Vec<(usize, usize, f64)>>::new();
+        for (layer, point, value) in samples {
+            if layer >= layers {
+                return Err(format!("a sample of layer {layer} past {layers} layers"));
+            }
+            if !value.is_finite() {
+                continue;
             }
             let Some(finest) = locate(fine_n, point) else {
                 continue;
@@ -170,10 +174,11 @@ impl HeterogeneityField {
                 continue;
             };
             if base_faces.contains(&base) {
-                grouped
-                    .entry(base)
-                    .or_default()
-                    .push((quadtree_index(finest, base_n)?, values));
+                grouped.entry(base).or_default().push((
+                    quadtree_index(finest, base_n)?,
+                    layer,
+                    value,
+                ));
             }
         }
 
@@ -181,30 +186,33 @@ impl HeterogeneityField {
         let mut leaves = vec![0usize; levels + 1];
         leaves[0] = base_faces.len() - grouped.len();
         for (base, samples) in grouped {
-            let shift = samples[0].1.clone();
+            let mut shift = vec![None; layers];
+            for &(_, layer, value) in &samples {
+                shift[layer].get_or_insert(value);
+            }
+            let shift = shift
+                .into_iter()
+                .map(|value| value.unwrap_or(0.0))
+                .collect::<Vec<_>>();
             // Depth `levels`: the finest faces.
             let mut moments = vec![Moments::new(layers, categorical.len()); leaves_per_face];
-            for (index, values) in &samples {
-                let face = &mut moments[*index];
-                face.count += 1;
-                for layer in 0..layers {
-                    let value = values[layer] - shift[layer];
-                    face.sums[layer] += value;
-                    face.squares[layer] += value * value;
-                }
-                for (slot, &layer) in categorical.iter().enumerate() {
-                    *face.classes[slot]
-                        .entry(values[layer].round() as i64)
-                        .or_default() += 1;
+            for &(index, layer, value) in &samples {
+                let face = &mut moments[index];
+                face.counts[layer] += 1;
+                let shifted = value - shift[layer];
+                face.sums[layer] += shifted;
+                face.squares[layer] += shifted * shifted;
+                if let Some(slot) = categorical.iter().position(|&purity| purity == layer) {
+                    *face.classes[slot].entry(value.round() as i64).or_default() += 1;
                 }
             }
             let passes = |face: &Moments| -> bool {
-                if face.count < minimum_samples.max(1) {
-                    return true;
-                }
-                let count = face.count as f64;
                 criteria.iter().all(|criterion| {
                     let layer = criterion.layer;
+                    if face.counts[layer] < minimum_samples.max(1) {
+                        return true;
+                    }
+                    let count = face.counts[layer] as f64;
                     let mean = face.sums[layer] / count;
                     let variance = (face.squares[layer] / count - mean * mean).max(0.0);
                     match criterion.statistic {
@@ -287,6 +295,53 @@ impl HeterogeneityField {
         Ok(match self.required.get(&base) {
             Some(levels) => levels[quadtree_index(finest, self.base_n)?] as usize,
             None => 0,
+        })
+    }
+
+    /// Levels the field spans below its base faces.
+    pub fn levels(&self) -> usize {
+        self.levels
+    }
+
+    /// The finest level any face requires: 0 where everything merges to the
+    /// base.
+    pub fn finest_required(&self) -> usize {
+        self.required
+            .values()
+            .flat_map(|levels| levels.iter().copied())
+            .max()
+            .map_or(0, usize::from)
+    }
+
+    /// The same requirement on `levels` levels, at least the finest any face
+    /// requires: every face at that level is formed, so its finest
+    /// descendants all require one level and the levels below it ask
+    /// nothing. Reverse coarsening then starts there rather than on a finer
+    /// lattice it would merge whole -- a 30 m lattice over 90 m data, say.
+    pub fn truncated(&self, levels: usize) -> Result<Self, String> {
+        if levels > self.levels || levels < self.finest_required() {
+            return Err(format!(
+                "{levels} levels: the field spans {} and requires {}",
+                self.levels,
+                self.finest_required()
+            ));
+        }
+        let dropped = 2 * (self.levels - levels);
+        Ok(Self {
+            base_n: self.base_n,
+            levels,
+            base_faces: self.base_faces,
+            required: self
+                .required
+                .iter()
+                .map(|(&base, required)| {
+                    let kept = (0..1usize << (2 * levels))
+                        .map(|index| required[index << dropped])
+                        .collect();
+                    (base, kept)
+                })
+                .collect(),
+            leaves: self.leaves[..=levels].to_vec(),
         })
     }
 
@@ -429,7 +484,12 @@ mod tests {
             levels,
             &base_faces,
             2,
-            samples.clone(),
+            samples.iter().flat_map(|(point, values)| {
+                values
+                    .iter()
+                    .enumerate()
+                    .map(|(layer, &value)| (layer, *point, value))
+            }),
             &criteria,
             2,
         )
@@ -520,6 +580,54 @@ mod tests {
         assert_eq!(covered, finest.len());
     }
 
+    /// Built on more levels than any face requires, then truncated, the
+    /// field is the one built on the levels it requires: the faces at that
+    /// level are all formed either way, and above it the same samples are
+    /// summed.
+    #[test]
+    fn a_truncated_field_is_the_field_on_fewer_levels() {
+        let mut seed = 0x0f1e_2d3c_4b5a_6978u64;
+        let base_n = 5;
+        let centre = locate(base_n, [0.6, -0.2, 0.775]).unwrap();
+        let mut base_faces = BTreeSet::from([centre]);
+        base_faces.extend(faces_around(centre).unwrap());
+        // Three samples in every level-2 face -- too few to judge it, so
+        // every face from level 2 down is formed -- with a rough patch at
+        // one corner, smooth elsewhere.
+        let finest = descendant_faces(base_faces.iter().copied(), base_n << 2).unwrap();
+        let mut samples = Vec::new();
+        for face in finest {
+            for _ in 0..3 {
+                let weights = [
+                    1.0 + (next(&mut seed) % 50) as f64,
+                    1.0 + (next(&mut seed) % 50) as f64,
+                    1.0 + (next(&mut seed) % 50) as f64,
+                ];
+                let point = inside(face, weights);
+                let rough = if point[0] > 0.62 {
+                    (next(&mut seed) % 40) as f64
+                } else {
+                    0.0
+                };
+                samples.push((0, point, 100.0 * point[1] + rough));
+            }
+        }
+        let criteria = [Criterion {
+            layer: 0,
+            statistic: Statistic::StandardDeviation,
+            threshold: 6.0,
+        }];
+        // Four levels, of which the rough level-1 faces require two.
+        let deep =
+            HeterogeneityField::build(base_n, 4, &base_faces, 1, samples.clone(), &criteria, 4)
+                .unwrap();
+        assert_eq!(deep.finest_required(), 2);
+        let shallow =
+            HeterogeneityField::build(base_n, 2, &base_faces, 1, samples, &criteria, 4).unwrap();
+        assert_eq!(deep.truncated(2).unwrap(), shallow);
+        assert!(deep.truncated(1).is_err());
+    }
+
     /// A parent can look homogeneous while one child is not -- the other
     /// children sitting at the parent's mean. Top down, the parent would
     /// stop the refinement above that child; bottom up, the child is not
@@ -535,14 +643,14 @@ mod tests {
         for (k, grandchild) in children[0].children_2_to_1().unwrap().iter().enumerate() {
             let value = if k % 2 == 0 { 0.0 } else { 10.0 };
             for weights in [[1.0, 1.0, 1.0], [2.0, 1.0, 1.0]] {
-                samples.push((inside(*grandchild, weights), vec![value]));
+                samples.push((0, inside(*grandchild, weights), value));
             }
         }
         // The other children: many samples at 5, the parent's mean.
         for child in &children[1..] {
             for grandchild in child.children_2_to_1().unwrap() {
                 for a in 1..6 {
-                    samples.push((inside(grandchild, [a as f64, 2.0, 3.0]), vec![5.0]));
+                    samples.push((0, inside(grandchild, [a as f64, 2.0, 3.0]), 5.0));
                 }
             }
         }

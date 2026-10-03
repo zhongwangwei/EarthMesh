@@ -55,6 +55,7 @@ pub mod hydro_sweep;
 pub mod lambert_mode4_io;
 pub mod mask_counts;
 pub mod mask_source_discovery;
+pub mod merge_layer_samples;
 pub mod merit_hydro_io;
 pub mod merit_hydro_region_close;
 pub mod merit_tile_selection;

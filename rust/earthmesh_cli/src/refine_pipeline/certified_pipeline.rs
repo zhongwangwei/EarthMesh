@@ -7,7 +7,8 @@
 
 use crate::atomic_output::publish_artifacts;
 use crate::certified_options::{
-    CertifiedDelivery, CertifiedMaterialization, CertifiedMode, CertifiedRunOptions,
+    read_certified_merge_options, CertifiedDelivery, CertifiedMaterialization,
+    CertifiedMergeOptions, CertifiedMode, CertifiedRunOptions,
 };
 use crate::fvcom_mesh_2dm_output_path;
 use crate::gridfile_mesh_from_one_based_state;
@@ -238,6 +239,16 @@ pub(super) fn certified_subdivision(base_nxp: usize, level: usize) -> io::Result
     })
 }
 
+/// What a regional construction's requirement comes from.
+#[derive(Clone, Copy)]
+pub(super) enum RegionRequirement<'a> {
+    /// The requirement raster the requirement plan composes.
+    Raster(&'a earthmesh_refine_certified::RasterLevelField),
+    /// A lattice requirement field: a parent merges only if it is
+    /// homogeneous (guide 11.111). Published as the region only.
+    Lattice(&'a earthmesh_refine_certified::requirement::heterogeneity::HeterogeneityField),
+}
+
 #[allow(clippy::too_many_arguments)]
 pub(super) fn build_certified_construction(
     base_nxp: usize,
@@ -248,8 +259,21 @@ pub(super) fn build_certified_construction(
     local_update_path: Option<&Path>,
     fixed_topology: bool,
     delivery_domain: Option<&GridRegion>,
+    lattice: Option<&earthmesh_refine_certified::requirement::heterogeneity::HeterogeneityField>,
 ) -> io::Result<CertifiedConstruction> {
     let budget = options.maximum_cells.min(max_tris);
+    if lattice.is_some() {
+        return build_mixed_certified_construction(
+            base_nxp,
+            chosen_level,
+            options,
+            raster_requirements,
+            budget,
+            local_update_path,
+            delivery_domain,
+            lattice,
+        );
+    }
     let mixed_requirement = chosen_level > 0
         && raster_requirements
             .levels()
@@ -364,6 +388,7 @@ pub(super) fn build_certified_construction(
                 budget,
                 local_update_path,
                 delivery_domain,
+                None,
             );
         }
         Some(Err(reasons)) => {
@@ -439,6 +464,7 @@ pub(super) fn build_certified_construction(
             budget,
             local_update_path,
             delivery_domain,
+            None,
         );
     }
 
@@ -833,7 +859,7 @@ fn build_region_certified_construction(
     base_nxp: usize,
     chosen_level: usize,
     options: &CertifiedRunOptions,
-    raster_requirements: &earthmesh_refine_certified::RasterLevelField,
+    requirement: RegionRequirement<'_>,
     budget: usize,
     delivery_domain: &GridRegion,
     publish_region: bool,
@@ -853,16 +879,30 @@ fn build_region_certified_construction(
     // Everything up to the assembly is computed by lattice address: the
     // base is never built whole before it (guide 11.108).
     let delivered = delivery_base_faces_by_address(delivery_domain, base_nxp)?;
-    let extent = on_demand::materialization_extent_by_address(
-        raster_requirements,
-        base_nxp,
-        chosen_level,
-        on_demand::ExtentMargins {
-            gradation_rings_per_level: options.gradation_rings_per_level,
-            parent_rings_per_level: REGION_PARENT_RINGS,
-        },
-        &delivered,
-    )
+    let margins = on_demand::ExtentMargins {
+        gradation_rings_per_level: options.gradation_rings_per_level,
+        parent_rings_per_level: REGION_PARENT_RINGS,
+    };
+    let extent = match requirement {
+        RegionRequirement::Raster(raster) => on_demand::materialization_extent_by_address(
+            raster,
+            base_nxp,
+            chosen_level,
+            margins,
+            &delivered,
+        ),
+        RegionRequirement::Lattice(field) => field
+            .seed_faces(field.reach_rings(options.gradation_rings_per_level))
+            .and_then(|seeds| {
+                on_demand::materialization_extent_from_seeds(
+                    base_nxp,
+                    chosen_level,
+                    margins,
+                    &seeds,
+                    &delivered,
+                )
+            }),
+    }
     .map_err(invalid_data)?;
     if extent.region.is_empty() || extent.settled_faces == 0 {
         return Ok(None);
@@ -914,13 +954,34 @@ fn build_region_certified_construction(
         &mut phase_started,
     );
     let initial_mesh = fine.mesh.clone();
-    let projected = earthmesh_refine_certified::region_required_levels_from_raster(
-        raster_requirements,
-        &initial_mesh,
-        &outer,
-        whole_vertices,
-    )
-    .map_err(|error| invalid_data(format!("CMRC initial raster projection failed: {error}")))?;
+    let projected = match requirement {
+        RegionRequirement::Raster(raster) => {
+            earthmesh_refine_certified::region_required_levels_from_raster(
+                raster,
+                &initial_mesh,
+                &outer,
+                whole_vertices,
+            )
+            .map_err(|error| {
+                invalid_data(format!("CMRC initial raster projection failed: {error}"))
+            })?
+        }
+        RegionRequirement::Lattice(field) => {
+            let levels = field.required_by_site(&fine).map_err(invalid_data)?;
+            // The frame's far edge requires nothing by construction: the
+            // extent reaches every demanding face.
+            if let Some((slot, level)) = initial_mesh
+                .active_vertex_slots()
+                .zip(&levels)
+                .find(|(slot, &level)| level > 0 && outer.contains(slot))
+            {
+                return Err(invalid_data(format!(
+                    "CMRC merge criteria require level {level} at outer site {slot}"
+                )));
+            }
+            levels
+        }
+    };
     log_cmrc_phase(
         timing_enabled,
         "initial_requirement_projection",
@@ -1056,18 +1117,32 @@ fn build_region_certified_construction(
             delivered_levels.clone(),
         )
         .map_err(invalid_data)?;
-        let final_cell_requirements =
-            earthmesh_refine_certified::certify_region_final_cell_requirements_from_raster(
-                raster_requirements,
-                &mesh,
-                &final_levels,
-                &outer_sites,
-                whole_vertices,
-                1,
-            )
-            .map_err(|error| {
-                invalid_data(format!("CMRC final-cell certification failed: {error}"))
-            })?;
+        let final_cell_requirements = match requirement {
+            RegionRequirement::Raster(raster) => {
+                earthmesh_refine_certified::certify_region_final_cell_requirements_from_raster(
+                    raster,
+                    &mesh,
+                    &final_levels,
+                    &outer_sites,
+                    whole_vertices,
+                    1,
+                )
+            }
+            // Against the sites' requirement through the region's certified
+            // remap: each final cell takes the highest level of the finest
+            // cells it overlaps.
+            RegionRequirement::Lattice(_) => {
+                earthmesh_refine_certified::certify_final_cell_requirements_with_remap(
+                    &initial_mesh,
+                    &source_levels,
+                    &mesh,
+                    &final_levels,
+                    1,
+                    &region_remap,
+                )
+            }
+        }
+        .map_err(|error| invalid_data(format!("CMRC final-cell certification failed: {error}")))?;
         log_cmrc_phase(
             timing_enabled,
             "final_requirement_projection",
@@ -1205,6 +1280,11 @@ fn build_region_certified_construction(
         delivered_levels.clone(),
     )
     .map_err(invalid_data)?;
+    let RegionRequirement::Raster(raster_requirements) = requirement else {
+        return Err(invalid_data(
+            "CMRC merge criteria are published as the region, never assembled".into(),
+        ));
+    };
     let final_cell_requirements =
         earthmesh_refine_certified::certify_final_cell_requirements_from_raster(
             raster_requirements,
@@ -1283,6 +1363,20 @@ fn build_region_certified_construction(
     }))
 }
 
+/// On-demand materialization (design B1) serves regional runs -- a global
+/// run publishes every cell's remap. It is opt-in (`&certified
+/// materialization`, or EARTHMESH_CMRC_MATERIALIZATION for experiments)
+/// while it is checked against the whole sphere on the CLI cases.
+fn cmrc_materialization(options: &CertifiedRunOptions) -> CertifiedMaterialization {
+    match std::env::var("EARTHMESH_CMRC_MATERIALIZATION").as_deref() {
+        Ok("on_demand") => CertifiedMaterialization::OnDemand,
+        Ok("regional") => CertifiedMaterialization::Regional,
+        Ok("whole") => CertifiedMaterialization::Whole,
+        _ => options.materialization,
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
 pub(super) fn build_mixed_certified_construction(
     base_nxp: usize,
     chosen_level: usize,
@@ -1291,24 +1385,43 @@ pub(super) fn build_mixed_certified_construction(
     budget: usize,
     local_update_path: Option<&Path>,
     delivery_domain: Option<&GridRegion>,
+    lattice: Option<&earthmesh_refine_certified::requirement::heterogeneity::HeterogeneityField>,
 ) -> io::Result<CertifiedConstruction> {
-    // On-demand materialization (design B1) serves regional runs -- a global
-    // run publishes every cell's remap. It is opt-in (`&certified
-    // materialization`, or EARTHMESH_CMRC_MATERIALIZATION for experiments)
-    // while it is checked against the whole sphere on the CLI cases.
-    let materialization = match std::env::var("EARTHMESH_CMRC_MATERIALIZATION").as_deref() {
-        Ok("on_demand") => CertifiedMaterialization::OnDemand,
-        Ok("regional") => CertifiedMaterialization::Regional,
-        Ok("whole") => CertifiedMaterialization::Whole,
-        _ => options.materialization,
-    };
+    let materialization = cmrc_materialization(options);
+    if let Some(field) = lattice {
+        // The lattice field covers the domain's faces only: the region is all
+        // it can describe, so it is published as the region.
+        let (CertifiedMaterialization::Regional, None, Some(domain)) =
+            (materialization, local_update_path, delivery_domain)
+        else {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "CMRC merge criteria need a regional domain and &certified materialization = 'regional'",
+            ));
+        };
+        return build_region_certified_construction(
+            base_nxp,
+            chosen_level,
+            options,
+            RegionRequirement::Lattice(field),
+            budget,
+            domain,
+            true,
+        )?
+        .ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "CMRC merge criteria: the built region covers the sphere, nothing is settled",
+            )
+        });
+    }
     let on_demand = materialization != CertifiedMaterialization::Whole;
     if let (true, None, Some(domain)) = (on_demand, local_update_path, delivery_domain) {
         if let Some(construction) = build_region_certified_construction(
             base_nxp,
             chosen_level,
             options,
-            raster_requirements,
+            RegionRequirement::Raster(raster_requirements),
             budget,
             domain,
             materialization == CertifiedMaterialization::Regional,
@@ -2194,8 +2307,41 @@ pub(super) fn refine_with_certified(
             "CMRC NXP must be positive",
         ));
     }
-    let requirements = if config.refine {
-        certified_requirement_plan(
+    let requirements = match read_certified_merge_options(contents)? {
+        // The merge criteria are the requirement: reverse coarsening of a
+        // regional domain, published as the region, with no other source.
+        Some(merge) => {
+            let (
+                true,
+                CertifiedMode::ReverseCoarsening,
+                CertifiedMaterialization::Regional,
+                Some(domain),
+            ) = (
+                config.refine,
+                options.mode,
+                cmrc_materialization(&options),
+                regional_domain.as_ref(),
+            )
+            else {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    "CMRC merge criteria (&certified_merge) need NL%refine=.true., a regional \
+                     domain, and &certified mode='reverse_coarsening' with \
+                     materialization='regional'",
+                ));
+            };
+            let hydro = crate::hfield_refine::read_hfield_refine_options(contents)?
+                .is_some_and(|hfield| hfield.hydro_target_paths().is_some());
+            if refine.refine_spc || refine.refine_cal || hydro {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    "CMRC merge criteria (&certified_merge) replace the specified, calculated \
+                     and hydro requirement sources: turn those off",
+                ));
+            }
+            certified_merge_plan(&merge, base_nxp, domain, options.maximum_level)?
+        }
+        None if config.refine => certified_requirement_plan(
             contents,
             config,
             &refine,
@@ -2203,14 +2349,13 @@ pub(super) fn refine_with_certified(
             specified_level,
             calculated_level,
             regional_domain.as_ref(),
-        )?
-    } else {
-        CertifiedRequirementPlan::uniform()
+        )?,
+        None => CertifiedRequirementPlan::uniform(),
     };
     let requirement_nlon = requirements.nlon;
     let requirement_nlat = requirements.nlat;
     let required_levels = &requirements.effective_levels;
-    let chosen_level = required_levels.iter().copied().max().unwrap_or(0);
+    let chosen_level = requirements.chosen_level();
     if chosen_level > options.maximum_level {
         return Err(io::Error::new(
             io::ErrorKind::InvalidInput,
@@ -2321,6 +2466,7 @@ pub(super) fn refine_with_certified(
         // ICON takes no 5/7 pair: a closed refined sphere needs them.
         config.output_format.trim().eq_ignore_ascii_case("ICON"),
         regional_domain.as_ref(),
+        requirements.lattice.as_ref(),
     )?;
     log_cmrc_phase(timing_enabled, "certified_construction", &mut phase_started);
     let delivered_levels = earthmesh_refine_certified::TargetLevelField::from_active_voronoi_cells(
@@ -2370,7 +2516,7 @@ pub(super) fn refine_with_certified(
         )
     })?;
     let fulfillment = earthmesh_refine_certified::AdaptivityFulfillmentReport::from_levels(
-        required_levels.iter().copied(),
+        requirements.requested_levels(),
         delivered_levels.levels().iter().copied(),
         initial_cells,
         final_mesh.primal().triangle_count(),
@@ -2677,8 +2823,10 @@ pub(super) fn deliver_certified(
         "delivered_level": delivered_level,
         "delivered_level_min": delivered_levels.levels().iter().copied().min().unwrap_or(0),
         "delivered_level_max": delivered_levels.levels().iter().copied().max().unwrap_or(0),
-        "requirement_samples": required_levels.len(),
-        "requirement_grid": { "nlon": requirement_nlon, "nlat": requirement_nlat },
+        "requirement_samples": requirements.lattice.is_none().then_some(required_levels.len()),
+        "requirement_grid": requirements.lattice.is_none().then_some(
+            serde_json::json!({ "nlon": requirement_nlon, "nlat": requirement_nlat })
+        ),
         "requirement_max_level": chosen_level,
         "initial_mother_subdivision": initial_subdivision,
         "mother_subdivision": subdivision,
@@ -3018,7 +3166,7 @@ pub(super) fn deliver_certified(
         let resource_json = serde_json::to_vec_pretty(&serde_json::json!({
             "certification_elapsed_ms": started.elapsed().as_millis(),
             "requirement_layers": requirement_layers,
-            "requirement_raster_cells": required_levels.len(),
+            "requirement_raster_cells": requirements.lattice.is_none().then_some(required_levels.len()),
             "target_voronoi_cells": geometry_report.voronoi_cells,
             "remap_rows": remap.rows().len(),
             "remap_entries": remap.rows().iter().map(|row| row.sources.len()).sum::<usize>(),
@@ -3513,6 +3661,11 @@ pub(super) struct CertifiedRequirementPlan {
     domain_scoped: bool,
     /// Named regions dropped because they never reach the domain.
     regions_outside_domain: usize,
+    /// The lattice requirement field of merge criteria (guide 11.111); when
+    /// set it is the requirement, and the raster is an unused placeholder.
+    lattice: Option<earthmesh_refine_certified::requirement::heterogeneity::HeterogeneityField>,
+    /// What the merge criteria read and found, for the certificate.
+    lattice_provenance: Option<serde_json::Value>,
 }
 
 impl CertifiedRequirementPlan {
@@ -3528,6 +3681,31 @@ impl CertifiedRequirementPlan {
             sourced: false,
             domain_scoped: false,
             regions_outside_domain: 0,
+            lattice: None,
+            lattice_provenance: None,
+        }
+    }
+
+    /// The level the finest mother is built at: the lattice field's, or the
+    /// raster's highest.
+    fn chosen_level(&self) -> usize {
+        match &self.lattice {
+            Some(field) => field.levels(),
+            None => self.effective_levels.iter().copied().max().unwrap_or(0),
+        }
+    }
+
+    /// The requested levels the fulfillment report counts: the raster's
+    /// samples, or the leaves of the merge criteria's own mesh.
+    fn requested_levels(&self) -> Vec<usize> {
+        match &self.lattice {
+            Some(field) => field
+                .leaves_per_level()
+                .iter()
+                .enumerate()
+                .flat_map(|(level, &leaves)| std::iter::repeat_n(level, leaves))
+                .collect(),
+            None => self.effective_levels.clone(),
         }
     }
 
@@ -3586,6 +3764,20 @@ impl CertifiedRequirementPlan {
             }
             counts
         };
+        let graph_scheduling_target = serde_json::json!({
+            "status": if elastic.is_some() { "applied" } else { "not_applied" },
+            "scope": "initial_mother_voronoi_cells_after_raster_overlap_and_graph_gradation",
+            "histogram": elastic.map(|report| &report.requested_histogram),
+            "gradation_rings_per_level": elastic.map(|_| rings),
+        });
+        if let Some(lattice) = &self.lattice_provenance {
+            return serde_json::json!({
+                "policy": "lattice_requirement_remains_hard",
+                "requirement_scope": "regional_domain",
+                "lattice": lattice,
+                "graph_scheduling_target": graph_scheduling_target,
+            });
+        }
         serde_json::json!({
             "policy": "effective_raster_remains_hard",
             "requirement_scope": if self.domain_scoped { "regional_domain" } else { "global" },
@@ -3605,12 +3797,7 @@ impl CertifiedRequirementPlan {
                 }),
             },
             "raster_grid": { "nlon": self.nlon, "nlat": self.nlat },
-            "graph_scheduling_target": {
-                "status": if elastic.is_some() { "applied" } else { "not_applied" },
-                "scope": "initial_mother_voronoi_cells_after_raster_overlap_and_graph_gradation",
-                "histogram": elastic.map(|report| &report.requested_histogram),
-                "gradation_rings_per_level": elastic.map(|_| rings),
-            },
+            "graph_scheduling_target": graph_scheduling_target,
         })
     }
 }
@@ -3889,6 +4076,207 @@ pub(super) fn certified_requirement_plan(
         sourced: true,
         domain_scoped: domain.is_some(),
         regions_outside_domain,
+        lattice: None,
+        lattice_provenance: None,
+    })
+}
+
+/// Longitude-latitude windows covering `faces` -- each face's cap, marked on
+/// 0.01-degree longitude bins and read back as runs, so a window never
+/// crosses the dateline; over the faces' latitude range. A merge criterion's
+/// layer is read in these alone.
+fn lon_lat_windows(
+    faces: &BTreeSet<earthmesh_refine_certified::TriangleAddress>,
+) -> io::Result<Vec<earthmesh_inputs::merge_layer_samples::LonLatWindow>> {
+    use earthmesh_refine_certified::mother_grid::lattice;
+    const BINS: usize = 36_000;
+    let width = 360.0 / BINS as f64;
+    let mut marked = vec![false; BINS];
+    let (mut south, mut north) = (90.0f64, -90.0f64);
+    for &face in faces {
+        let (centre, radius) = lattice::face_cap(face)
+            .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?;
+        let lat = centre[2].clamp(-1.0, 1.0).asin();
+        let lon = centre[1].atan2(centre[0]);
+        south = south.min((lat - radius).to_degrees().max(-90.0));
+        north = north.max((lat + radius).to_degrees().min(90.0));
+        if lat.abs() + radius >= std::f64::consts::FRAC_PI_2 {
+            marked.fill(true);
+            continue;
+        }
+        let half = (radius.sin() / lat.cos()).min(1.0).asin();
+        let bin = |angle: f64| ((angle.to_degrees() + 180.0) / width).floor() as isize;
+        for at in bin(lon - half)..=bin(lon + half) {
+            marked[at.rem_euclid(BINS as isize) as usize] = true;
+        }
+    }
+    let mut windows = Vec::new();
+    let mut at = 0;
+    while at < BINS {
+        if !marked[at] {
+            at += 1;
+            continue;
+        }
+        let start = at;
+        while at < BINS && marked[at] {
+            at += 1;
+        }
+        windows.push(earthmesh_inputs::merge_layer_samples::LonLatWindow {
+            west: -180.0 + start as f64 * width,
+            east: -180.0 + at as f64 * width,
+            south,
+            north,
+        });
+    }
+    Ok(windows)
+}
+
+/// The merge criteria's requirement (`&certified_merge`, design H3): every
+/// layer read at its own resolution in the windows of the domain's base
+/// faces, and the lattice field built bottom up over those faces -- no
+/// requirement raster, no h-field. The field is cut to the finest level any
+/// face requires (one at least, so reverse coarsening has a level to merge).
+fn certified_merge_plan(
+    merge: &CertifiedMergeOptions,
+    base_nxp: usize,
+    domain: &GridRegion,
+    maximum_level: usize,
+) -> io::Result<CertifiedRequirementPlan> {
+    use earthmesh_refine_certified::requirement::heterogeneity::{
+        Criterion, HeterogeneityField, Statistic,
+    };
+    let invalid_data = |error: String| io::Error::new(io::ErrorKind::InvalidData, error);
+    let levels = merge.levels(base_nxp)?;
+    if levels > maximum_level {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!(
+                "CMRC MaximumLevelReached: the merge criteria start {levels} levels below the \
+                 base, &certified maximum_level is {maximum_level}"
+            ),
+        ));
+    }
+    let faces = delivery_base_faces_by_address(domain, base_nxp)?;
+    let windows = lon_lat_windows(&faces)?;
+    let mut layers = Vec::<(PathBuf, String)>::new();
+    let criteria = merge
+        .criteria
+        .iter()
+        .map(|criterion| {
+            let key = (criterion.file.clone(), criterion.variable.clone());
+            let layer = match layers.iter().position(|layer| *layer == key) {
+                Some(layer) => layer,
+                None => {
+                    layers.push(key);
+                    layers.len() - 1
+                }
+            };
+            Criterion {
+                layer,
+                statistic: criterion.statistic,
+                threshold: criterion.threshold,
+            }
+        })
+        .collect::<Vec<_>>();
+    let mut samples = Vec::with_capacity(layers.len());
+    for (file, variable) in &layers {
+        let mut read = Vec::new();
+        for &window in &windows {
+            read.extend(
+                earthmesh_inputs::merge_layer_samples::read_window_samples(file, variable, window)
+                    .map_err(|error| {
+                        io::Error::new(
+                            error.kind(),
+                            format!(
+                                "certified_merge layer {variable} in {}: {error}",
+                                file.display()
+                            ),
+                        )
+                    })?,
+            );
+        }
+        samples.push(read);
+    }
+    let unit = |lon: f64, lat: f64| {
+        let (lon, lat) = (lon.to_radians(), lat.to_radians());
+        [lat.cos() * lon.cos(), lat.cos() * lon.sin(), lat.sin()]
+    };
+    let field = HeterogeneityField::build(
+        base_nxp,
+        levels,
+        &faces,
+        layers.len(),
+        samples.iter().enumerate().flat_map(|(layer, read)| {
+            read.iter()
+                .map(move |&(lon, lat, value)| (layer, unit(lon, lat), value))
+        }),
+        &criteria,
+        merge.minimum_samples,
+    )
+    .map_err(invalid_data)?;
+    let finest_required = field.finest_required();
+    let field = field
+        .truncated(finest_required.max(1))
+        .map_err(invalid_data)?;
+    let base_cell_m = CertifiedMergeOptions::base_cell_m(base_nxp);
+    let statistic_name = |statistic: Statistic| match statistic {
+        Statistic::StandardDeviation => "std",
+        Statistic::CoefficientOfVariation => "cv",
+        Statistic::Purity => "purity",
+    };
+    let provenance = serde_json::json!({
+        "source": "merge_criteria",
+        "base_cell_m": base_cell_m,
+        "levels_requested": levels,
+        "finest_cell_m_requested": base_cell_m / (1u64 << levels) as f64,
+        "finest_level_required": finest_required,
+        "levels_built": field.levels(),
+        "base_faces": field.base_faces(),
+        "demanding_base_faces": field.demanding_base_faces().count(),
+        "criterion_mesh_leaves_per_level": field.leaves_per_level(),
+        "minimum_samples": merge.minimum_samples,
+        "windows": windows
+            .iter()
+            .map(|window| [window.west, window.east, window.south, window.north])
+            .collect::<Vec<_>>(),
+        "layers": layers
+            .iter()
+            .zip(&samples)
+            .map(|((file, variable), read)| serde_json::json!({
+                "file": file.display().to_string(),
+                "variable": variable,
+                "samples_read": read.len(),
+            }))
+            .collect::<Vec<_>>(),
+        "criteria": criteria
+            .iter()
+            .map(|criterion| serde_json::json!({
+                "layer": criterion.layer,
+                "statistic": statistic_name(criterion.statistic),
+                "threshold": criterion.threshold,
+            }))
+            .collect::<Vec<_>>(),
+    });
+    eprintln!(
+        "earthmesh_cli: cmrc_merge base_faces={} samples={:?} levels={levels} \
+         finest_required={finest_required} leaves_per_level={:?}",
+        faces.len(),
+        samples.iter().map(Vec::len).collect::<Vec<_>>(),
+        field.leaves_per_level()
+    );
+    if samples.iter().all(Vec::is_empty) {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "certified_merge: no layer has a valid sample in the regional domain (check that \
+             the layers cover it)",
+        ));
+    }
+    Ok(CertifiedRequirementPlan {
+        lattice: Some(field),
+        lattice_provenance: Some(provenance),
+        sourced: true,
+        domain_scoped: true,
+        ..CertifiedRequirementPlan::uniform()
     })
 }
 

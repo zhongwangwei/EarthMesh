@@ -83,7 +83,7 @@ fn a_heterogeneity_field_drives_the_region_epochs() {
             [[1.0, 1.0, 1.0], [4.0, 1.0, 1.0], [1.0, 1.0, 4.0]]
                 .map(|weights| {
                     let point = inside(face, weights);
-                    (point, vec![height(point)])
+                    (0, point, height(point))
                 })
                 .into_iter()
         })

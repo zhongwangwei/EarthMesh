@@ -5274,7 +5274,7 @@ CLI 测试 `on_demand_materialization_delivers_the_whole_spheres_regional_grid`�
 完成的那例：区域最终网格 66,771 面、角度 38.25°–81.80°，交付 18,883 个 31 m 的 Voronoi 单元（需求在域内合成，31 m 正好铺满
 交付域），外面一圈 62 m 过渡，再外是 125 m 基面直到物化区边缘。峰值内存大半是 0.02° 的全球 h-field 栅格。
 
-### 11.111 格点需求场：父单元均匀才合并（H1–H2 库，2026-10-03）
+### 11.111 格点需求场：父单元均匀才合并（H1–H3，2026-10-03）
 
 用户 2026-10-03 定下的方向（设计稿 `docs/certified_mesh/heterogeneity_merge.md`）：CMRC 以“最细、最粗”两个分辨率加一张合并
 判据表描述，判据直接在格点三角形上自下而上评估，不再经过 h-field。CMRC 的反向粗化本身从不用 h-field；需求规划为了与其他后端
@@ -5292,5 +5292,23 @@ CLI 测试 `on_demand_materialization_delivers_the_whole_spheres_regional_grid`�
   每个格点的需求（相邻最细面的最大值，格点三角形为锐角，Voronoi 单元落在相邻面内）。之后的渐变包络、分量粗化与证书照旧。
   端到端测试：缓坡加一块 30 m 起伏的粗糙区，缓坡合并到基面、粗糙区保持最细，粗化内部的证书全部通过（1.1 s）。
 
+- **namelist（H3）**：`&certified_merge` 给出最细一级（`levels`，或 `finest_m`：按 h-field 的口径 2πR/(5·NXP) 算基面单元，
+  级数取最接近的 2 的幂）、每层样本下限 `minimum_samples`（默认 4）与编号的判据 `layer_file(i)`、`layer_variable(i)`、
+  `statistic(i)`（`std`、`cv`、`purity`）、`threshold(i)`。基面即 NXP。它取代 `&mkrefine` 的指定、计算与水文需求（同时开启
+  即报错），只用于区域发布：`NL%refine=.true.`、区域域、`&certified mode='reverse_coarsening'`、`materialization='regional'`
+  缺一即报错。
+- **窗口读数据（`earthmesh_inputs::merge_layer_samples`）**：交付基面的外接球冠按 0.01° 经度分箱，连续段即读取窗口（不跨日界
+  线）。每层只读窗口内的像元，保持原分辨率：带一维经纬坐标的 NetCDF（(lat, lon) 或 (lon, lat) 排列，经度 −180–180 或
+  0–360）、无坐标的全球格网（`dem.nc` 的排法，北到南、每度 nlon/360 格）、或 MERIT-Hydro 式 5° 瓦片目录（`n20e100.nc`，缺的
+  瓦片是海洋，跳过）。缺测值（`_FillValue`/`missing_value`、非有限值、|v| ≥ 1e30）跳过。
+- **截到所需的最细级**：最细面没有一个要求的级数时（90 m 数据配 30 m 的最细级，最细两级每面不足样本下限、全部成形），
+  需求场截到最细的所需级再交给粗化（`truncated`）：那一级的面全部成形，其最细后代需求相同，以下各级不提需求；与直接在较少
+  级数上建场逐面相同（测试）。至少保留一级，粗化才有可合并的层。
+- **证书**：`requirement_layers.policy = lattice_requirement_remains_hard`，`lattice` 记录读取窗口、每层读到的像元数、判据、
+  所需最细级与判据网格各级叶子数；`requirement_grid` 等栅格字段为空。满足度报告的“请求”直方图是判据网格的叶子。
+- **CLI 端到端**：昆明周围 2.5°×3° 的区域，NXP=120、一级；高程分两个 5° 瓦片（缓坡加 0.8° 半径 30 m 起伏），土地覆盖以
+  103.5°E 分两类。66 个交付基面、两层各 6794 像元；45 个基面合并到底，21 个保持细一级（84 片叶子）。发布网格中粗糙区中心
+  0.3° 内的单元全为 1 级，远离粗糙区和类别界线处有 0 级（3.5 s）。
+
 细长特征代价高：同样的流程，若需求是一道沿斜线的 50 m 陡坎（最细一级成一条窄带），过渡边界长、拓扑搜索要十几分钟；紧凑的
-粗糙区只要几秒。尚未完成：CLI 的判据表与窗口读数据（H3）、Studio 面板（H4）、真实 30 m DEM 演示（H5）。
+粗糙区只要几秒。尚未完成：Studio 面板（H4）、真实 DEM 演示（H5）。
