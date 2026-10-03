@@ -7,6 +7,11 @@
 //! of 5-degree tiles named like MERIT-Hydro's (`n20e100.nc` holds latitudes
 //! 20 to 25 north, longitudes 100 to 105 east).
 //!
+//! A tile's pixels lie inside the tile its name gives, which registers them:
+//! MERIT-Hydro's NetCDF tiles store each pixel's south-west corner, and the
+//! axes are moved by the half pixel that centres them in the tile. A single
+//! file's coordinates are taken as pixel centres, as CF has them.
+//!
 //! Missing: a declared `_FillValue` or `missing_value`, a non-finite value or
 //! one of magnitude 1e30 or more, and -9999 -- MERIT-Hydro marks its ocean so
 //! without declaring it. Only that value: a bathymetry legitimately goes
@@ -48,7 +53,7 @@ pub fn read_window_samples(
         ));
     }
     if !path.is_dir() {
-        return read_file_window(path, variable, window);
+        return read_file_window(path, variable, window, None);
     }
     let mut samples = Vec::new();
     let tile = |degrees: f64| (degrees / 5.0).floor() as i32 * 5;
@@ -66,16 +71,43 @@ pub fn read_window_samples(
             if !file.is_file() {
                 continue;
             }
-            let clipped = LonLatWindow {
-                west: window.west.max(lon0 as f64),
-                east: window.east.min(lon0 as f64 + 5.0),
-                south: window.south.max(lat0 as f64),
-                north: window.north.min(lat0 as f64 + 5.0),
+            let bounds = LonLatWindow {
+                west: lon0 as f64,
+                east: lon0 as f64 + 5.0,
+                south: lat0 as f64,
+                north: lat0 as f64 + 5.0,
             };
-            samples.extend(read_file_window(&file, variable, clipped)?);
+            let clipped = LonLatWindow {
+                west: window.west.max(bounds.west),
+                east: window.east.min(bounds.east),
+                south: window.south.max(bounds.south),
+                north: window.north.min(bounds.north),
+            };
+            samples.extend(read_file_window(&file, variable, clipped, Some(bounds))?);
         }
     }
     Ok(samples)
+}
+
+/// An axis of a tile spanning `low..high`, moved by the shift that centres
+/// it there when that is at most half a pixel: corner coordinates become
+/// centres, centres stay.
+fn centre_in(values: &mut [f64], low: f64, high: f64) {
+    if values.len() < 2 {
+        return;
+    }
+    let (min, max) = values
+        .iter()
+        .fold((f64::INFINITY, f64::NEG_INFINITY), |(min, max), &value| {
+            (min.min(value), max.max(value))
+        });
+    let pixel = (max - min) / (values.len() - 1) as f64;
+    let shift = (low + high) / 2.0 - (min + max) / 2.0;
+    if shift.abs() <= 0.5 * pixel * (1.0 + 1.0e-6) {
+        for value in values {
+            *value += shift;
+        }
+    }
 }
 
 /// The contiguous indices of `values` within `low..=high`.
@@ -141,6 +173,7 @@ fn read_file_window(
     path: &Path,
     variable_name: &str,
     window: LonLatWindow,
+    tile: Option<LonLatWindow>,
 ) -> io::Result<Vec<(f64, f64, f64)>> {
     let file = crate::open_netcdf(path).map_err(crate::netcdf_to_io_error)?;
     let variable = file.variable(variable_name).ok_or_else(|| {
@@ -165,7 +198,11 @@ fn read_file_window(
         coordinate(&file, &["lat", "latitude"])?,
         coordinate(&file, &["lon", "longitude"])?,
     ) {
-        (Some((lat_dim, lats)), Some((lon_dim, lons))) => {
+        (Some((lat_dim, mut lats)), Some((lon_dim, mut lons))) => {
+            if let Some(tile) = tile {
+                centre_in(&mut lats, tile.south, tile.north);
+                centre_in(&mut lons, tile.west, tile.east);
+            }
             let latitude_first = if dimensions[0].0 == lat_dim && dimensions[1].0 == lon_dim {
                 true
             } else if dimensions[0].0 == lon_dim && dimensions[1].0 == lat_dim {
@@ -322,6 +359,50 @@ mod tests {
             expected.sort_by(|a, b| a.partial_cmp(b).unwrap());
             assert_eq!(got, expected, "{}", source.display());
         }
+        std::fs::remove_dir_all(&directory).unwrap();
+    }
+
+    /// A MERIT-Hydro tile stores each pixel's south-west corner: read from
+    /// its folder, the pixels come back at their centres; read as a single
+    /// file, at the coordinates it states.
+    #[test]
+    fn a_tile_of_corner_coordinates_is_read_at_pixel_centres() {
+        let directory = temp("corners");
+        std::fs::create_dir_all(&directory).unwrap();
+        let path = directory.join("s05w010.nc");
+        let mut file = crate::create_netcdf(&path).unwrap();
+        file.add_dimension("longitude", 5).unwrap();
+        file.add_dimension("latitude", 5).unwrap();
+        // South-west corners, rows north to south, as MERIT's tiles.
+        let lons = (0..5).map(|i| -10.0 + i as f64).collect::<Vec<_>>();
+        let lats = (0..5).map(|j| -1.0 - j as f64).collect::<Vec<_>>();
+        file.add_variable::<f64>("longitude", &["longitude"])
+            .unwrap()
+            .put_values(&lons, ..)
+            .unwrap();
+        file.add_variable::<f64>("latitude", &["latitude"])
+            .unwrap()
+            .put_values(&lats, ..)
+            .unwrap();
+        let values = (0..25).map(|index| index as f32).collect::<Vec<_>>();
+        file.add_variable::<f32>("elv", &["longitude", "latitude"])
+            .unwrap()
+            .put_values(&values, (.., ..))
+            .unwrap();
+        drop(file);
+        let window = LonLatWindow {
+            west: -10.0,
+            east: -5.0,
+            south: -5.0,
+            north: 0.0,
+        };
+        let mut centred = read_window_samples(&directory, "elv", window).unwrap();
+        centred.sort_by(|a, b| a.partial_cmp(b).unwrap());
+        assert_eq!(centred.len(), 25);
+        assert_eq!(centred[0], (-9.5, -4.5, 4.0));
+        assert_eq!(centred[24], (-5.5, -0.5, 20.0));
+        let raw = read_window_samples(&path, "elv", window).unwrap();
+        assert!(raw.iter().any(|&(lon, lat, _)| (lon, lat) == (-10.0, -5.0)));
         std::fs::remove_dir_all(&directory).unwrap();
     }
 
