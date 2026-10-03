@@ -3,6 +3,7 @@ mod api;
 pub mod certificate;
 pub mod coarsen;
 mod config;
+pub mod construction;
 mod equidistributed_mother;
 mod fingerprint;
 mod mother_geometry;

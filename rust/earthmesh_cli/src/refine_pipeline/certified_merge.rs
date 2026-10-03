@@ -95,7 +95,8 @@ pub(super) fn merge_requirement(
             ),
         ));
     }
-    let faces = super::certified_pipeline::delivery_base_faces_by_address(domain, base_nxp)?;
+    let faces =
+        earthmesh_refine_certified::construction::delivery_base_faces_by_address(domain, base_nxp)?;
     let windows = lattice::lon_lat_boxes(faces.iter().copied()).map_err(invalid_data)?;
 
     // Input: each distinct layer once, in every window.
