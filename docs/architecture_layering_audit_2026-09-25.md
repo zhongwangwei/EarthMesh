@@ -579,3 +579,15 @@ namelist 到写出的调用链）的结论：**还没有都按这个形状编排
 海域按 `isolated_ocean`、关闭时孤立块报警告而不拒绝（技术指南 11.114）。**更正**：上面第 3 条"陆海裁剪不保护需求单元"是照
 `retain_edge_connected_components_with_hard_demand_one_based` 过时的文档写的；共用规则早已只留最大连通块，需求只决定顶点处
 留哪个扇区、并报告丢掉的需求单元，所以这一条的实际差别只有这两点。
+
+MPAS 宽度：输出层原来靠来源字符串的前缀认生产者（校验版本与层级上限、决定 `nominalMinDc`），现在来源是类型
+`MpasWidthSource`，文件里记录的字符串不变，输出不变。MPAS/FVCOM 写出改走共用交付这一条做不到输出不变：CMRC 直接跑
+namelist 时自己写 `result/MPASOUT_NXP####_global.nc4`，最终交付见清单里已有模型就不再调用共用写出；改走共用写出后文件
+移到 `standard/MPAS/mesh.nc4`，`meshDensity` 按生产者的参考宽度计算，并多两个出处属性；只跑原始流水线时 CMRC 也不再顺带出
+MPAS。待用户定。
+
+第 1 项（用户选：先做不改输出的结构统一）。输入层的 `ComposedRequirement` 与 `compose_requirement` 是每条栅格路线的起点：
+命名区域、阈值判据与水文目标合成一张单元宽度场，连同阈值审计。h-field 路线在它之上叠母网格、区域外缘与量化
+（`compose_levelled_hfield`、`compose_spherical_hfield`），CMRC 在它之上按基面量化、再按证书需要抬高子栅格区域
+（`certified_requirement_plan`）。两边原来各自调用合成与水文叠加，现在差别只在拿到需求之后怎么读它。输出逐字节不变。
+点+半径路线（逐层的圆）是另一种需求表达，没有并进来。

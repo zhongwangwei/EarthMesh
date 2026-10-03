@@ -2481,36 +2481,22 @@ pub(super) fn certified_requirement_plan(
     let base_m = hfield.base_m.unwrap_or_else(|| {
         2.0 * std::f64::consts::PI * earthmesh_hfield::EARTH_RADIUS_METERS / (5.0 * base_nxp as f64)
     });
-    let (mut field, threshold_provenance) = if has_threshold_sources {
-        let (field, report) = crate::hfield_refine::build_composed_hfield_with_report(
-            &regions,
-            refine,
-            mesh_type,
-            Some(config),
-            base_m,
-            &hfield,
-            calculated_level.clamp(1, field_max_level),
-            domain,
-        )?;
-        (field, Some(report))
-    } else {
-        (
-            crate::hfield_refine::build_composed_hfield(
-                &regions,
-                refine,
-                mesh_type,
-                Some(config),
-                base_m,
-                &hfield,
-                calculated_level.clamp(1, field_max_level),
-                domain,
-            )?,
-            None,
-        )
-    };
-    crate::hydro_refinement_adapter::apply_hydro_target_to_field(
-        &mut field, &hfield, base_m, domain,
+    // The requirement every raster route starts from (`compose_requirement`);
+    // what follows -- quantizing it at the base, and raising what a
+    // certificate cannot see between raster samples -- is CMRC's own reading.
+    let requirement = crate::hfield_refine::compose_requirement(
+        &regions,
+        refine,
+        mesh_type,
+        config,
+        base_m,
+        &hfield,
+        calculated_level.clamp(1, field_max_level),
+        domain,
+        base_m,
     )?;
+    let threshold_provenance = has_threshold_sources.then_some(requirement.threshold_report);
+    let field = requirement.field;
     let mut levels = field
         .level_map(base_m, quantized_max_level)?
         .into_iter()

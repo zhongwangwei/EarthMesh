@@ -2366,7 +2366,53 @@ pub fn compose_spherical_hfield(
     threshold_level: usize,
     domain: Option<&GridRegion>,
 ) -> io::Result<HField> {
-    let mut field = build_composed_hfield(
+    let mut field = compose_requirement(
+        regions,
+        refine,
+        mesh_type,
+        config,
+        base_m,
+        options,
+        threshold_level,
+        domain,
+        base_m,
+    )?
+    .field;
+    constrain_hfield_to_domain(&mut field, domain, base_m, options.g)?;
+    Ok(field)
+}
+
+/// What a run asks of the mesh, before any backend reads it: its named
+/// regions, threshold criteria and hydro target levels composed into one
+/// cell-width field on the h-field raster, and what the thresholds read.
+///
+/// Every raster route starts here. The h-field backends take it over a
+/// mother, grade the domain's edge and quantize it to levels
+/// ([`compose_levelled_hfield`]); CMRC quantizes it itself and raises what
+/// its certificate needs (`certified_requirement_plan`). They differ in what
+/// they make of the requirement, not in what the requirement is.
+pub struct ComposedRequirement {
+    pub field: HField,
+    /// The threshold audit: what each criterion read and asked, per level.
+    pub threshold_report: serde_json::Value,
+}
+
+/// Compose a run's requirement: regions and thresholds at `base_m`, hydro
+/// target levels counted from `hydro_base_m` (the mother's cell size over a
+/// mother; `base_m` otherwise).
+#[allow(clippy::too_many_arguments)]
+pub fn compose_requirement(
+    regions: &[RefinementRegion],
+    refine: &RefineConfig,
+    mesh_type: &str,
+    config: &EarthmeshConfig,
+    base_m: f64,
+    options: &HfieldRefineOptions,
+    threshold_level: usize,
+    domain: Option<&GridRegion>,
+    hydro_base_m: f64,
+) -> io::Result<ComposedRequirement> {
+    let (mut field, threshold_report) = build_composed_hfield_with_report(
         regions,
         refine,
         mesh_type,
@@ -2377,10 +2423,15 @@ pub fn compose_spherical_hfield(
         domain,
     )?;
     crate::hydro_refinement_adapter::apply_hydro_target_to_field(
-        &mut field, options, base_m, domain,
+        &mut field,
+        options,
+        hydro_base_m,
+        domain,
     )?;
-    constrain_hfield_to_domain(&mut field, domain, base_m, options.g)?;
-    Ok(field)
+    Ok(ComposedRequirement {
+        field,
+        threshold_report,
+    })
 }
 
 /// [`compose_spherical_hfield`] over a mother of cell size `mother_m`: the
@@ -2401,19 +2452,18 @@ fn compose_spherical_hfield_over_mother(
     mother_m: f64,
     transition_rows: Option<f64>,
 ) -> io::Result<HField> {
-    let mut field = build_composed_hfield(
+    let mut field = compose_requirement(
         regions,
         refine,
         mesh_type,
-        Some(config),
+        config,
         base_m,
         options,
         threshold_level,
         domain,
-    )?;
-    crate::hydro_refinement_adapter::apply_hydro_target_to_field(
-        &mut field, options, mother_m, domain,
-    )?;
+        mother_m,
+    )?
+    .field;
     let Some(domain) = domain else {
         return Ok(field);
     };
