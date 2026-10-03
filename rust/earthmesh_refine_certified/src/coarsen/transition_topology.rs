@@ -106,6 +106,32 @@ pub enum TransitionTopologyOutcome {
     },
 }
 
+/// Parent patches of one source mother, each worked out once. A patch is a
+/// function of the source and the parent alone, so a search keeps them for
+/// its whole run.
+struct Patches<'a> {
+    source: &'a MotherGrid,
+    known: std::cell::RefCell<std::collections::HashMap<TriangleAddress, ParentPatch>>,
+}
+
+impl<'a> Patches<'a> {
+    fn new(source: &'a MotherGrid) -> Self {
+        Self {
+            source,
+            known: Default::default(),
+        }
+    }
+
+    fn get(&self, parent: TriangleAddress) -> Result<ParentPatch, String> {
+        if let Some(patch) = self.known.borrow().get(&parent) {
+            return Ok(patch.clone());
+        }
+        let patch = parent_patch(self.source, parent)?;
+        self.known.borrow_mut().insert(parent, patch.clone());
+        Ok(patch)
+    }
+}
+
 #[derive(Debug, Clone)]
 struct ParentPatch {
     corners: [usize; 3],
@@ -144,9 +170,12 @@ fn solve_transition_topology_from_cursor_with_promotion(
     topology_states_cursor: usize,
     mut preferred_core_promotion: Option<(TriangleAddress, usize)>,
 ) -> TransitionTopologyOutcome {
+    // A search asks for the same parent's patch from its preflight, its
+    // core forecast, its boundary and every halo expansion: each once.
+    let patches = &Patches::new(source);
     let mut core = set(component.core_parents.iter().copied());
     let mut transition = set(component.transition_parents.iter().copied());
-    if let Err(reason) = preflight(source, component, &core, &transition) {
+    if let Err(reason) = preflight(patches, component, &core, &transition) {
         return TransitionTopologyOutcome::InvalidBoundary {
             states_examined: 0,
             halo_expansions: 0,
@@ -169,7 +198,7 @@ fn solve_transition_topology_from_cursor_with_promotion(
             .iter()
             .copied()
             .filter(|&parent| {
-                parent_patch(source, parent).is_ok_and(|patch| {
+                patches.get(parent).is_ok_and(|patch| {
                     patch.neighbours.iter().any(|neighbour| {
                         !in_core(&core, *neighbour) && !transition.contains(neighbour)
                     })
@@ -177,7 +206,7 @@ fn solve_transition_topology_from_cursor_with_promotion(
             })
             .collect::<BTreeSet<_>>();
         if uncovered.is_empty() && transition.is_empty() {
-            return pure_core(source, component.id, &core, halo_expansions);
+            return pure_core(patches, component.id, &core, halo_expansions);
         }
         if !uncovered.is_empty() {
             if uncovered.len() == core.len() {
@@ -215,7 +244,7 @@ fn solve_transition_topology_from_cursor_with_promotion(
         let local_limit = remaining_states.div_ceil(remaining_halos);
         let local_cursor = topology_states_cursor.saturating_sub(states_examined);
         match solve_once(
-            source,
+            patches,
             component.id,
             core.clone(),
             transition.clone(),
@@ -244,7 +273,7 @@ fn solve_transition_topology_from_cursor_with_promotion(
                     };
                 }
                 let Some(expansion_cost) = promote_core_boundary(
-                    source,
+                    patches,
                     &mut core,
                     &mut transition,
                     preferred_core_promotion.take(),
@@ -261,7 +290,7 @@ fn solve_transition_topology_from_cursor_with_promotion(
                 if reason.starts_with("coarse inner boundary:")
                     && halo_expansions < limits.maximum_halo_expansions
                 {
-                    match promote_pinched_core(source, &mut core, &mut transition) {
+                    match promote_pinched_core(patches, &mut core, &mut transition) {
                         Ok(true) => {
                             halo_expansions += 1;
                             continue;
@@ -275,7 +304,7 @@ fn solve_transition_topology_from_cursor_with_promotion(
                 if reason.starts_with("fine outer boundary:")
                     && halo_expansions < limits.maximum_halo_expansions
                 {
-                    match retain_fine_at_pinches(source, &core, &mut transition) {
+                    match retain_fine_at_pinches(patches, &core, &mut transition) {
                         Ok(true) => {
                             halo_expansions += 1;
                             continue;
@@ -300,7 +329,7 @@ fn solve_transition_topology_from_cursor_with_promotion(
                         halo_expansions,
                     };
                 }
-                let peel = core_boundary(source, &core);
+                let peel = core_boundary(patches, &core);
                 if peel.is_empty() || peel.len() == core.len() {
                     return TransitionTopologyOutcome::ProvenInfeasible {
                         states_examined,
@@ -309,7 +338,7 @@ fn solve_transition_topology_from_cursor_with_promotion(
                     };
                 }
                 let Some(expansion_cost) = promote_core_boundary(
-                    source,
+                    patches,
                     &mut core,
                     &mut transition,
                     preferred_core_promotion.take(),
@@ -328,11 +357,12 @@ fn solve_transition_topology_from_cursor_with_promotion(
 }
 
 fn preflight(
-    source: &MotherGrid,
+    patches: &Patches<'_>,
     component: &HierarchyComponent,
     core: &BTreeSet<TriangleAddress>,
     transition: &BTreeSet<TriangleAddress>,
 ) -> Result<(), String> {
+    let source = patches.source;
     if source.subdivision < 2 || !source.subdivision.is_multiple_of(2) {
         return Err("transition topology requires an even source subdivision >= 2".into());
     }
@@ -361,7 +391,7 @@ fn preflight(
                 parent
             ));
         }
-        parent_patch(source, parent)?;
+        patches.get(parent)?;
     }
     // Parents of a built region that touch the settled region are joined
     // through it: the planner put them in one component through it.
@@ -369,7 +399,8 @@ fn preflight(
         .iter()
         .copied()
         .filter(|&parent| {
-            parent_patch(source, parent)
+            patches
+                .get(parent)
                 .is_ok_and(|patch| patch.neighbours.iter().any(|p| p.is_outside()))
         })
         .collect::<Vec<_>>();
@@ -378,7 +409,7 @@ fn preflight(
     let mut stack = vec![seed];
     let mut through_settled = false;
     while let Some(parent) = stack.pop() {
-        for neighbour in parent_patch(source, parent)?.neighbours {
+        for neighbour in patches.get(parent)?.neighbours {
             if neighbour.is_outside() && !through_settled {
                 through_settled = true;
                 for &joined in &settled_neighbours {
@@ -416,13 +447,13 @@ fn promote_to_transition(
 }
 
 fn promote_core_boundary(
-    source: &MotherGrid,
+    patches: &Patches<'_>,
     core: &mut BTreeSet<TriangleAddress>,
     transition: &mut BTreeSet<TriangleAddress>,
     preferred: Option<(TriangleAddress, usize)>,
     remaining_halo_expansions: usize,
 ) -> Option<usize> {
-    let peel = core_boundary(source, core);
+    let peel = core_boundary(patches, core);
     if peel.is_empty() || peel.len() == core.len() {
         return None;
     }
@@ -430,7 +461,7 @@ fn promote_core_boundary(
         .filter(|(parent, cost)| peel.contains(parent) && *cost <= remaining_halo_expansions)
     {
         Some((parent, cost)) => (
-            preferred_boundary_segment(source, &peel, transition, parent)?,
+            preferred_boundary_segment(patches, &peel, transition, parent)?,
             cost,
         ),
         None => (peel, 1),
@@ -443,12 +474,13 @@ fn promote_core_boundary(
 }
 
 fn preferred_boundary_segment(
-    source: &MotherGrid,
+    patches: &Patches<'_>,
     peel: &BTreeSet<TriangleAddress>,
     transition: &BTreeSet<TriangleAddress>,
     preferred: TriangleAddress,
 ) -> Option<BTreeSet<TriangleAddress>> {
-    let anchors = parent_patch(source, preferred)
+    let anchors = patches
+        .get(preferred)
         .ok()?
         .neighbours
         .into_iter()
@@ -459,7 +491,8 @@ fn preferred_boundary_segment(
         return Some(segment);
     }
     for &parent in peel {
-        if parent_patch(source, parent)
+        if patches
+            .get(parent)
             .ok()?
             .neighbours
             .iter()
@@ -472,24 +505,25 @@ fn preferred_boundary_segment(
 }
 
 fn core_boundary(
-    source: &MotherGrid,
+    patches: &Patches<'_>,
     core: &BTreeSet<TriangleAddress>,
 ) -> BTreeSet<TriangleAddress> {
     core.iter()
         .copied()
         .filter(|&parent| {
-            parent_patch(source, parent)
+            patches
+                .get(parent)
                 .is_ok_and(|patch| patch.neighbours.iter().any(|p| !in_core(core, *p)))
         })
         .collect()
 }
 
 fn promote_pinched_core(
-    source: &MotherGrid,
+    patches: &Patches<'_>,
     core: &mut BTreeSet<TriangleAddress>,
     transition: &mut BTreeSet<TriangleAddress>,
 ) -> Result<bool, String> {
-    let pinches = branched_boundary_vertices(coarse_boundary_edges(source, core, transition)?);
+    let pinches = branched_boundary_vertices(coarse_boundary_edges(patches, core, transition)?);
     if pinches.is_empty() {
         return Ok(false);
     }
@@ -497,7 +531,8 @@ fn promote_pinched_core(
         .iter()
         .copied()
         .filter(|parent| {
-            parent_patch(source, *parent)
+            patches
+                .get(*parent)
                 .is_ok_and(|patch| patch.corners.iter().any(|corner| pinches.contains(corner)))
         })
         .collect::<BTreeSet<_>>();
@@ -509,11 +544,11 @@ fn promote_pinched_core(
 }
 
 fn retain_fine_at_pinches(
-    source: &MotherGrid,
+    patches: &Patches<'_>,
     core: &BTreeSet<TriangleAddress>,
     transition: &mut BTreeSet<TriangleAddress>,
 ) -> Result<bool, String> {
-    let pinches = branched_boundary_vertices(fine_boundary_edges(source, core, transition)?);
+    let pinches = branched_boundary_vertices(fine_boundary_edges(patches, core, transition)?);
     if pinches.is_empty() {
         return Ok(false);
     }
@@ -521,7 +556,7 @@ fn retain_fine_at_pinches(
         .iter()
         .copied()
         .filter(|parent| {
-            parent_patch(source, *parent).is_ok_and(|patch| {
+            patches.get(*parent).is_ok_and(|patch| {
                 patch
                     .corners
                     .iter()
@@ -554,11 +589,12 @@ fn branched_boundary_vertices(edges: Vec<(usize, usize)>) -> BTreeSet<usize> {
 }
 
 fn pure_core(
-    source: &MotherGrid,
+    patches: &Patches<'_>,
     component_id: u64,
     core: &BTreeSet<TriangleAddress>,
     halo_expansions: usize,
 ) -> TransitionTopologyOutcome {
+    let source = patches.source;
     let mut leaf_set = match HierarchyLeafSet::from_mother_grid(source) {
         Ok(v) => v,
         Err(reason) => return invalid(0, halo_expansions, reason),
@@ -577,7 +613,7 @@ fn pure_core(
             reason,
         };
     }
-    let boundary = match boundary(source, core, &BTreeSet::new()) {
+    let boundary = match boundary(patches, core, &BTreeSet::new()) {
         Ok(boundary) => boundary,
         Err(reason) => return invalid(0, halo_expansions, reason),
     };
@@ -605,7 +641,7 @@ fn pure_core(
 }
 
 fn solve_once(
-    source: &MotherGrid,
+    patches: &Patches<'_>,
     component_id: u64,
     core: BTreeSet<TriangleAddress>,
     transition: BTreeSet<TriangleAddress>,
@@ -613,6 +649,7 @@ fn solve_once(
     start_index: usize,
     budget: usize,
 ) -> TransitionTopologyOutcome {
+    let source = patches.source;
     let mut states = 0usize;
     let mut leaf_set = match HierarchyLeafSet::from_mother_grid(source) {
         Ok(v) => v,
@@ -621,19 +658,19 @@ fn solve_once(
     if let Err(reason) = leaf_set.condense_core(&core.iter().copied().collect::<Vec<_>>()) {
         return invalid(states, halo_expansions, reason);
     }
-    let mut patches = BTreeMap::<TriangleAddress, ParentPatch>::new();
+    let mut parent_patches = BTreeMap::<TriangleAddress, ParentPatch>::new();
     for &parent in core.iter().chain(&transition) {
-        let patch = match parent_patch(source, parent) {
+        let patch = match patches.get(parent) {
             Ok(patch) => patch,
             Err(reason) => return invalid(states, halo_expansions, reason),
         };
-        patches.insert(parent, patch);
+        parent_patches.insert(parent, patch);
     }
     let custom_transition = transition
         .iter()
         .copied()
         .filter(|parent| {
-            patches[parent]
+            parent_patches[parent]
                 .neighbours
                 .iter()
                 .any(|neighbour| in_core(&core, *neighbour))
@@ -655,7 +692,7 @@ fn solve_once(
 
     let mut variants = Vec::<Vec<Vec<[usize; 3]>>>::new();
     for parent in &custom_transition {
-        let patch = &patches[parent];
+        let patch = &parent_patches[parent];
         let polygon = transition_polygon(patch, &core);
         if !(3..=5).contains(&polygon.len()) {
             return invalid(
@@ -679,11 +716,11 @@ fn solve_once(
         variants.push(variants_for_parent);
     }
 
-    let boundary = match boundary(source, &core, &transition) {
+    let boundary = match boundary(patches, &core, &transition) {
         Ok(boundary) => boundary,
         Err(reason) => return invalid(states, halo_expansions, reason),
     };
-    let forecast = match base_degree_forecast(source, &core, &custom_transition, &patches) {
+    let forecast = match base_degree_forecast(source, &core, &custom_transition, &parent_patches) {
         Ok(forecast) => forecast,
         Err(reason) => return invalid(states, halo_expansions, reason),
     };
@@ -1994,12 +2031,13 @@ fn edge(a: usize, b: usize) -> (usize, usize) {
 }
 
 fn boundary(
-    source: &MotherGrid,
+    patches: &Patches<'_>,
     core: &BTreeSet<TriangleAddress>,
     transition: &BTreeSet<TriangleAddress>,
 ) -> Result<TransitionBoundary, String> {
-    let coarse_edges = coarse_boundary_edges(source, core, transition)?;
-    let fine_edges = fine_boundary_edges(source, core, transition)?;
+    let source = patches.source;
+    let coarse_edges = coarse_boundary_edges(patches, core, transition)?;
+    let fine_edges = fine_boundary_edges(patches, core, transition)?;
     let coarse = cycles_from_edges(coarse_edges)
         .map_err(|reason| format!("coarse inner boundary: {reason}"))?;
     let fine =
@@ -2038,13 +2076,13 @@ fn boundary(
 }
 
 fn coarse_boundary_edges(
-    source: &MotherGrid,
+    patches: &Patches<'_>,
     core: &BTreeSet<TriangleAddress>,
     transition: &BTreeSet<TriangleAddress>,
 ) -> Result<Vec<(usize, usize)>, String> {
     let mut edges = Vec::new();
     for &parent in core {
-        let patch = parent_patch(source, parent)?;
+        let patch = patches.get(parent)?;
         for side in 0..3 {
             if transition.contains(&patch.neighbours[side]) {
                 edges.push((patch.corners[(side + 1) % 3], patch.corners[side]));
@@ -2055,13 +2093,13 @@ fn coarse_boundary_edges(
 }
 
 fn fine_boundary_edges(
-    source: &MotherGrid,
+    patches: &Patches<'_>,
     core: &BTreeSet<TriangleAddress>,
     transition: &BTreeSet<TriangleAddress>,
 ) -> Result<Vec<(usize, usize)>, String> {
     let mut edges = Vec::new();
     for &parent in transition {
-        let patch = parent_patch(source, parent)?;
+        let patch = patches.get(parent)?;
         for side in 0..3 {
             if !in_core(core, patch.neighbours[side])
                 && !transition.contains(&patch.neighbours[side])
@@ -2850,10 +2888,12 @@ mod tests {
         let initial_transition = *core.first().unwrap();
         core.remove(&initial_transition);
         let mut transition = BTreeSet::from([initial_transition]);
-        let peel = core_boundary(&source, &core);
+        let peel = core_boundary(&Patches::new(&source), &core);
         assert!(peel.len() > 1);
         let preferred = *peel.first().unwrap();
-        let expected = preferred_boundary_segment(&source, &peel, &transition, preferred).unwrap();
+        let expected =
+            preferred_boundary_segment(&Patches::new(&source), &peel, &transition, preferred)
+                .unwrap();
         assert!(expected.len() > 1);
         let untouched = core
             .iter()
@@ -2863,7 +2903,13 @@ mod tests {
         let initial_core_len = core.len();
 
         assert_eq!(
-            promote_core_boundary(&source, &mut core, &mut transition, Some((preferred, 1)), 1,),
+            promote_core_boundary(
+                &Patches::new(&source),
+                &mut core,
+                &mut transition,
+                Some((preferred, 1)),
+                1,
+            ),
             Some(1)
         );
         assert_eq!(core.len(), initial_core_len - expected.len());
