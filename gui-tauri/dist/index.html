@@ -2267,7 +2267,6 @@ let expertEdit = { enabled: false, nxp: null, openmp: null, niter: null, niterRe
     certifiedMaximumCells: CERTIFIED_DEFAULTS.maximum_cells,
     certifiedGradationRingsPerLevel: CERTIFIED_DEFAULTS.gradation_rings_per_level,
     certifiedSearchBudget: CERTIFIED_DEFAULTS.search_budget,
-    certifiedMaterialization: CERTIFIED_DEFAULTS.materialization || "whole",
     certifiedRequirement: "discrete",
     certifiedMergeFinestM: null,
     certifiedMergeMinimumSamples: 4,
@@ -2631,8 +2630,7 @@ let expertEdit = { enabled: false, nxp: null, openmp: null, niter: null, niterRe
         maximumLevel: refine.certifiedMaximumLevel,
         maximumCells: refine.certifiedMaximumCells,
         gradationRingsPerLevel: refine.certifiedGradationRingsPerLevel,
-        searchBudget: refine.certifiedSearchBudget,
-        materialization: mergeOn ? "regional" : (refine.certifiedMaterialization || "whole")
+        searchBudget: refine.certifiedSearchBudget
       });
       yaml = await invoke("set_certified_merge", {
         yaml,
@@ -3410,9 +3408,12 @@ let expertEdit = { enabled: false, nxp: null, openmp: null, niter: null, niterRe
       </div>
       <div id="certifiedMergePreviewResult" style="font-size:12px;margin-top:8px"></div>
       <div style="color:var(--muted);font-size:12px;line-height:1.6;margin-top:8px">${z
-        ? "需要区域域与认证反向粗化，并按区域发布。启用时指定细化与阈值细化不参与（设置保留，关闭合并判据后恢复）。"
-        : "Needs a regional domain and certified reverse coarsening, published as the region. While on, specified and threshold refinement take no part (their settings are kept for when merge criteria are turned off)."}</div>
+        ? "需要区域域与认证反向粗化。启用时指定细化与阈值细化不参与（设置保留，关闭合并判据后恢复）。"
+        : "Needs a regional domain and certified reverse coarsening. While on, specified and threshold refinement take no part (their settings are kept for when merge criteria are turned off)."}</div>
     </div>` : "";
+    // A regional domain is built as its region (guide 11.116): the modes that
+    // move a closed sphere's vertices serve global grids only.
+    const certifiedRegional = domainMode !== "global";
     const redGreenOptions = `<div id="redGreenOptions" class="expert" style="margin-top:12px">
       <span class="expert-tag">⚙ ${z?"专家 — ":"EXPERT — "}Red-Green · ${z?"专属参数":"specific parameters"}</span>
       <div class="grid2">
@@ -3425,7 +3426,7 @@ let expertEdit = { enabled: false, nxp: null, openmp: null, niter: null, niterRe
     const certifiedOptions = `<div id="certifiedOptions" style="border:1px solid var(--border);border-radius:8px;padding:14px;margin-top:12px">
       <div style="font-weight:700;margin-bottom:10px">CMRC · ${z?"严格参数":"strict parameters"}</div>
       <div class="grid2">
-        ${field(z?"运行模式":"Mode",`<select class="select" id="certifiedMode"><option value="safe_mother_only" ${specifiedRefine.certifiedMode==="safe_mother_only"?"selected":""}>${z?"仅安全母网格（统一最细层，不做自适应粗化）":"Safe mother only (uniform finest level; no adaptive coarsening)"}</option><option value="reverse_coarsening" ${specifiedRefine.certifiedMode==="reverse_coarsening"?"selected":""}>${z?"认证反向粗化":"Certified reverse coarsening"}</option><option value="stretched_mother" ${specifiedRefine.certifiedMode==="stretched_mother"?"selected":""}>${z?"认证拉伸（较粗母网格向需求拉伸，全球 ICON 可用）":"Certified stretch (coarser mother stretched toward the demand; global ICON)"}</option><option value="equidistributed_mother" ${specifiedRefine.certifiedMode==="equidistributed_mother"?"selected":""}>${z?"认证等分布（只挪顶点、无七边形，可多区域）":"Certified equidistribution (vertices moved only, no heptagons; several regions)"}</option></select>`)}
+        ${field(z?"运行模式":"Mode",`<select class="select" id="certifiedMode"><option value="safe_mother_only" ${specifiedRefine.certifiedMode==="safe_mother_only"?"selected":""}>${z?"仅安全母网格（统一最细层，不做自适应粗化）":"Safe mother only (uniform finest level; no adaptive coarsening)"}</option><option value="reverse_coarsening" ${specifiedRefine.certifiedMode==="reverse_coarsening"?"selected":""}>${z?"认证反向粗化":"Certified reverse coarsening"}</option><option value="stretched_mother" ${specifiedRefine.certifiedMode==="stretched_mother"?"selected":""}${certifiedRegional?" disabled":""}>${z?"认证拉伸（较粗母网格向需求拉伸，全球 ICON 可用）":"Certified stretch (coarser mother stretched toward the demand; global ICON)"}</option><option value="equidistributed_mother" ${specifiedRefine.certifiedMode==="equidistributed_mother"?"selected":""}${certifiedRegional?" disabled":""}>${z?"认证等分布（只挪顶点、无七边形，可多区域）":"Certified equidistribution (vertices moved only, no heptagons; several regions)"}</option></select>`,certifiedRegional ? (z?"区域域只按区域构造：认证拉伸与认证等分布要移动整个球面的顶点，只用于全球网格":"a regional domain is built as its region alone: certified stretch and equidistribution move the whole sphere's vertices, for global grids only") : "")}
         ${field(z?"交付":"Delivery",`<select class="select" id="certifiedDelivery"><option value="tri" ${specifiedRefine.certifiedDelivery==="tri"?"selected":""}>Tri</option><option value="hex" ${specifiedRefine.certifiedDelivery==="hex"?"selected":""}>Hex / Voronoi</option><option value="coupled" ${specifiedRefine.certifiedDelivery==="coupled"?"selected":""}>Coupled</option></select>`)}
         ${field(z?"角度合同":"Angle contract",`<select class="select" id="certifiedAngleContract"><option value="legacy_strict_40_to_80" ${specifiedRefine.certifiedAngleContract==="legacy_strict_40_to_80"?"selected":""}>${z?"Legacy 严格 40°–80°":"Legacy strict 40°–80°"}</option><option value="domain_quality_38_to_82_v1" ${specifiedRefine.certifiedAngleContract==="domain_quality_38_to_82_v1"?"selected":""}>${z?"DQX 几何 38°–82°（偏好 40°–80°）":"DQX geometry 38°–82° (prefers 40°–80°)"}</option></select>`,z?"这里启用 DQX 几何硬门；空间质量调度仍需 domain-export 执行路径。":"This enables the DQX geometry gate; spatial-quality scheduling still requires the domain-export execution path.")}
         ${expertField(z?"最高母网格级":"Maximum mother level",`<input class="input" type="number" id="certifiedMaximumLevel" min="0" max="20" step="1" value="${specifiedRefine.certifiedMaximumLevel}">`)}
@@ -3433,7 +3434,6 @@ let expertEdit = { enabled: false, nxp: null, openmp: null, niter: null, niterRe
         ${expertField(z?"每级渐变图环":"Gradation rings per level",`<input class="input" type="number" id="certifiedGradationRingsPerLevel" min="1" step="1" value="${specifiedRefine.certifiedGradationRingsPerLevel}">`)}
         ${expertField(z?"层级搜索预算":"Hierarchy search budget",`<input class="input" type="number" id="certifiedSearchBudget" min="1" step="1" value="${specifiedRefine.certifiedSearchBudget}">`)}
         ${field(z?"认证内容":"Certificate",`<input class="input" value="Euler 2 · charge 12 · primal/dual/requirement/balance/remap" disabled>`,z?"角度硬门以上方所选合同为准；任一认证失败都不写正式 gridfile":"The selected contract defines the angle gate; no formal gridfile is written if certification fails")}
-        ${specifiedRefine.certifiedMode==="reverse_coarsening" ? field(z?"物化方式":"Materialization",`<select class="select" id="certifiedMaterialization" ${certifiedMergeOn?"disabled":""}><option value="whole" ${!certifiedMergeOn && (specifiedRefine.certifiedMaterialization||"whole")==="whole"?"selected":""}>${z?"整球（默认）":"Whole sphere (default)"}</option><option value="on_demand" ${!certifiedMergeOn && specifiedRefine.certifiedMaterialization==="on_demand"?"selected":""}>${z?"按需（只建需求所及，再拼回整球）":"On demand (built where needed, put back into the sphere)"}</option><option value="regional" ${certifiedMergeOn || specifiedRefine.certifiedMaterialization==="regional"?"selected":""}>${z?"区域发布（只建需求所及，按区域发布）":"Regional publication (built where needed, published as the region)"}</option></select>`,certifiedMergeOn ? (z?"合并判据按区域发布":"merge criteria are published as the region") : (z?"按需与区域发布只用于区域域；区域发布可到 30 m":"on demand and regional need a regional domain; regional reaches 30 m")) : ""}
       </div>
       ${certifiedMergeBlock}
       ${specifiedRefine.certifiedMode==="stretched_mother"
@@ -3738,9 +3738,8 @@ let expertEdit = { enabled: false, nxp: null, openmp: null, niter: null, niterRe
       if (certifiedMergeSwitch) certifiedMergeSwitch.onchange = () => {
         specifiedRefine.certifiedRequirement = certifiedMergeSwitch.checked ? "merge" : "discrete";
         if (certifiedMergeSwitch.checked) {
-          // The merge criteria are reverse coarsening published as the region.
+          // The merge criteria are reverse coarsening of a regional domain.
           specifiedRefine.certifiedMode = "reverse_coarsening";
-          specifiedRefine.certifiedMaterialization = "regional";
           // Two levels below the base to start from, in round metres.
           if (specifiedRefine.certifiedMergeFinestM == null) {
             const quarter = nxpToKm(currentNxp()) * 1000 / 4;
@@ -3753,11 +3752,6 @@ let expertEdit = { enabled: false, nxp: null, openmp: null, niter: null, niterRe
         }
         clearRunArtifacts();
         enhanceRefinementStep();
-      };
-      const certifiedMaterialization = document.getElementById("certifiedMaterialization");
-      if (certifiedMaterialization) certifiedMaterialization.onchange = () => {
-        specifiedRefine.certifiedMaterialization = certifiedMaterialization.value;
-        clearRunArtifacts();
       };
       const mergeFinest = document.getElementById("certifiedMergeFinestM");
       if (mergeFinest) {
@@ -4200,7 +4194,6 @@ let expertEdit = { enabled: false, nxp: null, openmp: null, niter: null, niterRe
         certifiedMaximumCells: sum.certified_maximum_cells ?? algorithmDefaults.certifiedMaximumCells,
         certifiedGradationRingsPerLevel: sum.certified_gradation_rings_per_level ?? algorithmDefaults.certifiedGradationRingsPerLevel,
         certifiedSearchBudget: sum.certified_search_budget ?? algorithmDefaults.certifiedSearchBudget,
-        certifiedMaterialization: sum.certified_materialization ?? algorithmDefaults.certifiedMaterialization,
         certifiedRequirement: sum.certified_merge ? "merge" : "discrete",
         certifiedMergeFinestM: sum.certified_merge ? sum.certified_merge.finest_m : null,
         certifiedMergeMinimumSamples: sum.certified_merge ? sum.certified_merge.minimum_samples : algorithmDefaults.certifiedMergeMinimumSamples,

@@ -44,6 +44,9 @@ pub fn write_unstructured_mesh_netcdf_with_metadata(
     if let Some(context) = metadata.hfield {
         context.validate()?;
     }
+    if let Some(sites) = metadata.open_boundary {
+        sites.validate(mesh.m_points.len())?;
+    }
     for (name, values) in [
         ("earthmesh_m_refine_level", metadata.m_refine_level),
         (
@@ -184,6 +187,9 @@ pub fn write_unstructured_mesh_netcdf_with_metadata(
     }
     if let Some(context) = metadata.hfield {
         context.write(&mut file)?;
+    }
+    if let Some(sites) = metadata.open_boundary {
+        sites.write(&mut file)?;
     }
     file.close().map_err(netcdf_to_io_error)?;
     Ok(UnstructuredMeshWriteReport {

@@ -74,6 +74,8 @@ pub struct GridfileMetadataSlices<'a> {
     pub w_refine_level: Option<&'a [i32]>,
     pub w_refine_level_orig: Option<&'a [i32]>,
     pub w_ngr: Option<&'a [i32]>,
+    /// A regional parent's open edge: the sites with no cell (guide 11.116).
+    pub open_boundary: Option<&'a crate::open_boundary_sites::OpenBoundarySites>,
 }
 
 /// Mesh node coordinates plus compact connectivity read from an EarthMesh gridfile.

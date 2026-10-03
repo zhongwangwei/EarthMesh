@@ -59,6 +59,7 @@ impl<'a> MethodCMetadataSlices<'a> {
             w_refine_level: None,
             w_refine_level_orig: Some(self.w_refine_level_orig),
             w_ngr: Some(self.w_ngr),
+            open_boundary: None,
             m_lineage: Some(self.m_lineage),
             w_lineage: Some(self.w_lineage),
         }

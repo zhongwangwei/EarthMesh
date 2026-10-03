@@ -10,9 +10,54 @@ use crate::{
 };
 use std::collections::HashSet;
 
+/// Keys a project no longer has that older files still carry: read and
+/// dropped, so they change nothing. `refinement.certified.materialization`
+/// was retired when a regional run came to be built as its region and a
+/// global run whole, with nothing to choose (guide 11.116).
+const RETIRED_KEYS: &[&[&str]] = &[&["refinement", "certified", "materialization"]];
+
+/// Removes the retired keys from a parsed JSON document; whether any was.
+fn drop_retired_json_keys(document: &mut serde_json::Value) -> bool {
+    let mut dropped = false;
+    for path in RETIRED_KEYS {
+        let (last, parents) = path.split_last().expect("retired keys are non-empty");
+        let node = parents
+            .iter()
+            .try_fold(&mut *document, |node, key| node.get_mut(*key));
+        if let Some(map) = node.and_then(serde_json::Value::as_object_mut) {
+            dropped |= map.remove(*last).is_some();
+        }
+    }
+    dropped
+}
+
+/// Removes the retired keys from a parsed YAML document; whether any was.
+fn drop_retired_yaml_keys(document: &mut serde_yaml::Value) -> bool {
+    let mut dropped = false;
+    for path in RETIRED_KEYS {
+        let (last, parents) = path.split_last().expect("retired keys are non-empty");
+        let node = parents
+            .iter()
+            .try_fold(&mut *document, |node, key| node.get_mut(*key));
+        if let Some(map) = node.and_then(serde_yaml::Value::as_mapping_mut) {
+            dropped |= map.remove(*last).is_some();
+        }
+    }
+    dropped
+}
+
 impl ProjectConfig {
     pub fn from_json(s: &str) -> Result<Self, String> {
-        let config: Self = serde_json::from_str(s).map_err(|e| e.to_string())?;
+        let mut document: serde_json::Value = serde_json::from_str(s).map_err(|e| e.to_string())?;
+        let retired = drop_retired_json_keys(&mut document);
+        // Parsed from the text when nothing was dropped, so errors keep their
+        // line and column.
+        let config: Self = if retired {
+            serde_json::from_value(document)
+        } else {
+            serde_json::from_str(s)
+        }
+        .map_err(|e| e.to_string())?;
         Self::validated(config)
     }
 
@@ -21,7 +66,14 @@ impl ProjectConfig {
     }
 
     pub fn from_yaml(s: &str) -> Result<Self, String> {
-        let config: Self = serde_yaml::from_str(s).map_err(|e| e.to_string())?;
+        let mut document: serde_yaml::Value = serde_yaml::from_str(s).map_err(|e| e.to_string())?;
+        let retired = drop_retired_yaml_keys(&mut document);
+        let config: Self = if retired {
+            serde_yaml::from_value(document)
+        } else {
+            serde_yaml::from_str(s)
+        }
+        .map_err(|e| e.to_string())?;
         Self::validated(config)
     }
 
@@ -203,6 +255,22 @@ impl ProjectConfig {
         let DomainConfig::Regional { shape, .. } = &self.domain else {
             return Ok(());
         };
+        // A regional run is built as its region and published as it (guide
+        // 11.116); these two move the vertices of a closed sphere, for a
+        // global ICON grid.
+        if let mode @ (crate::CertifiedMode::StretchedMother
+        | crate::CertifiedMode::EquidistributedMother) = self.refinement.certified.mode
+        {
+            return Err(format!(
+                "CMRC mode {} moves the vertices of a closed sphere for a global grid; a \
+                 regional domain is built as its region, with mode reverse_coarsening or \
+                 safe_mother_only",
+                match mode {
+                    crate::CertifiedMode::StretchedMother => "stretched_mother",
+                    _ => "equidistributed_mother",
+                }
+            ));
+        }
         if self.target.kind == MeshDomainKind::Coupled {
             return Err(
                 "CMRC regional delivery does not support coupled targets; deliver land/ocean regions separately"
@@ -403,7 +471,7 @@ impl ProjectConfig {
     }
 
     /// CMRC's merge criteria (guide 11.111) are reverse coarsening of a
-    /// regional domain, published as the region, and the only requirement:
+    /// regional domain, built and published as the region, and the only requirement:
     /// the engine refuses anything else, so the project does too, before a
     /// run is started.
     fn validate_certified_merge(&self) -> Result<(), String> {
@@ -415,12 +483,6 @@ impl ProjectConfig {
         if certified.mode != crate::CertifiedMode::ReverseCoarsening {
             return Err(
                 "refinement.certified.merge needs refinement.certified.mode reverse_coarsening"
-                    .to_string(),
-            );
-        }
-        if certified.materialization != crate::CertifiedMaterialization::Regional {
-            return Err(
-                "refinement.certified.merge needs refinement.certified.materialization regional"
                     .to_string(),
             );
         }

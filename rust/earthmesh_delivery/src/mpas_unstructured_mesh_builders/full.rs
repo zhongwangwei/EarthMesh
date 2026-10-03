@@ -17,6 +17,7 @@ use crate::UnstructuredMesh;
 use earthmesh_mesh::connect_on_cell_one_based;
 use earthmesh_mesh::edge_distance_angle_one_based;
 use earthmesh_mesh::get_area_production_one_based;
+use earthmesh_mesh::get_area_unit_one_based;
 use earthmesh_mesh::lonlat_points_to_unit_xyz;
 use earthmesh_mesh::order_vertices_on_cell_by_shared_edges_one_based;
 use earthmesh_mesh::order_vertices_on_cell_one_based;
@@ -42,6 +43,31 @@ pub fn build_mpas_mesh_from_unstructured_one_based(
     cellwidth: &[f64],
     nxp: usize,
     step: usize,
+) -> io::Result<MpasMesh> {
+    build_mpas_mesh(mesh, cellwidth, nxp, step, false)
+}
+
+/// The same payload over an open regional parent (guide 11.116) whose open
+/// sites are appended as W rows without a ring
+/// (`open_boundary_sites::mesh_with_open_sites`). Every cell's edges and
+/// vertices are whole; the open sites have no cell, so the edges between a
+/// cell and one carry no weights and the payload is not validated: it is a
+/// source to subset, and the subset is what is checked.
+pub fn build_mpas_mesh_from_open_parent_one_based(
+    mesh: &UnstructuredMesh,
+    cellwidth: &[f64],
+    nxp: usize,
+    step: usize,
+) -> io::Result<MpasMesh> {
+    build_mpas_mesh(mesh, cellwidth, nxp, step, true)
+}
+
+fn build_mpas_mesh(
+    mesh: &UnstructuredMesh,
+    cellwidth: &[f64],
+    nxp: usize,
+    step: usize,
+    open: bool,
 ) -> io::Result<MpasMesh> {
     let (mesh, cellwidth) = normalize_mpas_placeholder_inputs(mesh, cellwidth)?;
     let mesh = &mesh;
@@ -132,7 +158,7 @@ pub fn build_mpas_mesh_from_unstructured_one_based(
         )
     })?;
 
-    let area = get_area_production_one_based(GetAreaUnitInput {
+    let area_input = GetAreaUnitInput {
         vertices: &vertices,
         edge_points: &edge_points,
         cell_points: &cells,
@@ -141,7 +167,14 @@ pub fn build_mpas_mesh_from_unstructured_one_based(
         cells_on_edge: &edge_output.cells_on_edge,
         vertices_on_cell: &ordered_vertices_on_cell,
         n_edges_on_cell: &n_edges_on_cell,
-    })
+    };
+    // The closed path keeps the production wrapper and its reconstruction
+    // check; an open parent's edge vertices have no third cell to check.
+    let area = if open {
+        get_area_unit_one_based(area_input)
+    } else {
+        get_area_production_one_based(area_input).map(|area| area.unit)
+    }
     .ok_or_else(|| {
         io::Error::new(
             io::ErrorKind::InvalidData,
@@ -180,15 +213,26 @@ pub fn build_mpas_mesh_from_unstructured_one_based(
         )
     })?;
 
+    // An open site has no cell to weigh: its edges are left without weights,
+    // as an edge with no second cell is.
+    let weighed_cells_on_edge = if open {
+        edge_output
+            .cells_on_edge
+            .iter()
+            .map(|cells| cells.map(|cell| if n_edges_on_cell[cell] == 0 { 0 } else { cell }))
+            .collect::<Vec<_>>()
+    } else {
+        edge_output.cells_on_edge.clone()
+    };
     let weights = set_weights_on_edge_one_based(
-        &area.unit.area_cell,
+        &area.area_cell,
         &edge_metrics.angle_edge,
         &edge_metrics.dc_edge,
         &edge_metrics.dv_edge,
-        &area.unit.kite_areas_on_vertex,
+        &area.kite_areas_on_vertex,
         &cell_connectivity.edges_on_cell,
         &cells_on_triangle,
-        &edge_output.cells_on_edge,
+        &weighed_cells_on_edge,
         &ordered_vertices_on_cell,
         &edge_output.vertices_on_edge,
         &n_edges_on_cell,
@@ -254,10 +298,9 @@ pub fn build_mpas_mesh_from_unstructured_one_based(
         vertices_on_edge: zero_based_pair_rows("vertices_on_edge", &edge_output.vertices_on_edge)?,
         n_edges_on_edge: usize_values_to_i32("n_edges_on_edge", &weights.n_edges_on_edge)?,
         edges_on_edge: zero_based_padded_rows("edges_on_edge", &weights.edges_on_edge, 20)?,
-        area_cell: area.unit.area_cell,
-        area_triangle: area.unit.area_triangle,
+        area_cell: area.area_cell,
+        area_triangle: area.area_triangle,
         kite_areas_on_vertex: area
-            .unit
             .kite_areas_on_vertex
             .into_iter()
             .map(|row| row.to_vec())
@@ -271,6 +314,8 @@ pub fn build_mpas_mesh_from_unstructured_one_based(
         error_segment: weights.error_segment,
     };
     trim_mpas_inserted_placeholder_rows(&mut mpas, trim_cell_rows, trim_vertex_rows);
-    validate_mpas_mesh(&mpas)?;
+    if !open {
+        validate_mpas_mesh(&mpas)?;
+    }
     Ok(mpas)
 }

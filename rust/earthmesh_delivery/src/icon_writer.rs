@@ -68,8 +68,10 @@ pub fn write_icon_from_final_gridfile(
     write_icon_final(gridfile, None, output, nxp)
 }
 
-/// Export a whole-triangle selection with metrics from its explicit closed
-/// parent. Boundary dual_area retains the full parent dual, not a clipped volume.
+/// Export a whole-triangle selection with metrics from its explicit parent:
+/// a closed global one, or a regional run's built region, open at its far
+/// edge (guide 11.116). Boundary dual_area retains the full parent dual, not a
+/// clipped volume.
 pub fn write_icon_from_final_gridfile_with_parent(
     gridfile: &Path,
     parent: &Path,
@@ -87,10 +89,11 @@ fn write_icon_final(
 ) -> io::Result<IconGridWriteReport> {
     let points = crate::read_gridfile_mesh_points(gridfile)?;
     let input = crate::quality_input_from_gridfile(&points)?;
+    let mut open_parent = false;
     let selected = parent
         .map(|parent| {
             let original = crate::read_gridfile_mesh_points(parent)?;
-            validate_closed_triangle_parent(&original)?;
+            open_parent = !validate_triangle_parent(&original)?;
             crate::gridfile_lineage::verify_whole_triangle_lineage(parent, gridfile, &points)
         })
         .transpose()?;
@@ -116,11 +119,41 @@ fn write_icon_final(
         }
     }
     let mesh = crate::read_unstructured_mesh_netcdf(parent.unwrap_or(gridfile))?;
+    // An open parent's edge rows keep their positions and lose their rings:
+    // a selected triangle with a corner there has only two cells and is
+    // refused below, so every number delivered is a closed parent's.
+    let (mesh, opened) = if open_parent {
+        crate::open_boundary_sites::mesh_with_open_fans_as_sites(&mesh)?
+    } else {
+        (mesh, 0)
+    };
     // ICON consumes only geometry/connectivity from this existing intermediate:
     // neither its MPAS density nor nominalMinDc is exported as ICON demand.
     let cellwidth = vec![1.0; mesh.w_points.len()];
-    let mpas = crate::build_mpas_mesh_from_unstructured_one_based(&mesh, &cellwidth, nxp, 1)?;
-    validate_mpas_mesh(&mpas)?;
+    let mpas = if opened > 0 {
+        crate::build_mpas_mesh_from_open_parent_one_based(&mesh, &cellwidth, nxp, 1)?
+    } else {
+        let mpas = crate::build_mpas_mesh_from_unstructured_one_based(&mesh, &cellwidth, nxp, 1)?;
+        validate_mpas_mesh(&mpas)?;
+        mpas
+    };
+    if let (true, Some(selected)) = (open_parent, selected.as_deref()) {
+        // Every corner of a delivered triangle is a whole cell of the parent,
+        // or its dual area and edges would not be the closed parent's.
+        let corners = derive_cells_on_vertex(&mpas)?;
+        if let Some(&triangle) = selected
+            .iter()
+            .find(|&&id| corners.get(id).is_none_or(|cells| cells.len() != 3))
+        {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!(
+                    "ICON selected triangle {triangle} has a corner on the open parent's edge; \
+                     the parent must reach past the delivered triangles"
+                ),
+            ));
+        }
+    }
     let grid = build_icon_grid_selection(&mpas, selected.as_deref())?;
     validate_selected_triangles(&points, &input, &grid)?;
     crate::atomic_output::validate_output_path(gridfile, output)?;
@@ -605,25 +638,39 @@ fn grid_uuid(vertices: &[CartesianPoint], domain: usize) -> String {
 }
 
 // ICON represents M triangles; a legal degree-four W fan is not a HEX cell.
-fn validate_closed_triangle_parent(points: &crate::GridfileMeshPoints) -> io::Result<()> {
+// The parent is one piece: a closed sphere, or a regional run's built region,
+// open at its far edge with a disk's Euler count (guide 11.116). Whether it is
+// closed.
+fn validate_triangle_parent(points: &crate::GridfileMeshPoints) -> io::Result<bool> {
     use earthmesh_quality::topology::{
-        boundary_topology, connected_component_count, euler_characteristic, MeshTopologyValidator,
-        Severity,
+        boundary_topology, connected_component_count, euler_characteristic,
+        genus_zero_euler_expectation, MeshTopologyValidator, Severity, TopologyIssueType,
     };
     let input = crate::quality_input_from_gridfile(points)?;
-    if boundary_topology(&input).edge_count != 0
-        || euler_characteristic(&input) != 2
-        || connected_component_count(&input) != 1
+    let boundary = boundary_topology(&input);
+    let euler = euler_characteristic(&input);
+    let closed = boundary.edge_count == 0;
+    if connected_component_count(&input) != 1
+        || (closed && euler != 2)
+        || (!closed && genus_zero_euler_expectation(&input, &boundary) != Some(euler))
     {
         return Err(io::Error::new(
             io::ErrorKind::Unsupported,
-            "ICON regional delivery requires one closed triangular sphere as explicit parent",
+            "ICON regional delivery requires one triangular parent: a closed triangular \
+             sphere, or one open region",
         ));
     }
     if let Some(issue) = MeshTopologyValidator::new(&input)
         .validate_all()
         .into_iter()
-        .find(|issue| issue.severity == Severity::Fail)
+        .find(|issue| {
+            issue.severity == Severity::Fail
+                && (closed
+                    || !matches!(
+                        issue.issue_type,
+                        TopologyIssueType::DisconnectedMesh | TopologyIssueType::OrphanCell
+                    ))
+        })
     {
         return Err(io::Error::new(
             io::ErrorKind::InvalidData,
@@ -634,7 +681,7 @@ fn validate_closed_triangle_parent(points: &crate::GridfileMeshPoints) -> io::Re
             ),
         ));
     }
-    Ok(())
+    Ok(closed)
 }
 
 fn validate_selected_triangles(

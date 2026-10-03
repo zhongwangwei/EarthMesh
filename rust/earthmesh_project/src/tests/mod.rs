@@ -3363,7 +3363,6 @@ fn certified_algorithm_is_a_parallel_backend_and_lowers_its_strict_bounds() {
         maximum_cells: 900_000,
         gradation_rings_per_level: 5,
         search_budget: 12_000,
-        materialization: crate::CertifiedMaterialization::Whole,
         merge: None,
     };
 
@@ -3386,9 +3385,72 @@ fn certified_algorithm_is_a_parallel_backend_and_lowers_its_strict_bounds() {
     assert!(namelist.contains("NL%search_budget = 12000"));
     assert!(!namelist.contains("&adaptive"));
     assert!(!namelist.contains("legacy"));
-    // Whole materialization is the engine's default and is not written.
-    assert!(!namelist.contains("NL%materialization"));
+    // Nothing chooses where the mother is built: the domain does.
+    assert!(!namelist.contains("NL%materialization"), "{namelist}");
     assert!(!namelist.contains("&certified_merge"));
+}
+
+/// A regional run is built and published as its region, a global run whole
+/// (guide 11.116): the key that once chose is read from older files and
+/// dropped, and the modes that move a closed sphere's vertices are refused
+/// for a regional domain -- the safe mother is built over the region.
+#[test]
+fn certified_construction_follows_the_domain() {
+    let mut project = sample();
+    project.target.kind = MeshDomainKind::Earth;
+    project.refinement.backend = crate::RefinementBackend::Certified;
+    project.refinement.certified.mode = crate::CertifiedMode::ReverseCoarsening;
+    let yaml = project.to_yaml().expect("certified project yaml");
+    assert!(!yaml.contains("materialization"), "{yaml}");
+    for value in ["whole", "on_demand", "regional"] {
+        let older = yaml.replace(
+            "    search_budget:",
+            &format!("    materialization: {value}\n    search_budget:"),
+        );
+        assert!(older.contains("materialization"), "{older}");
+        assert_eq!(
+            ProjectConfig::from_yaml(&older).expect("older project"),
+            project
+        );
+        let mut json: serde_json::Value =
+            serde_json::from_str(&project.to_json().expect("project json")).unwrap();
+        json["refinement"]["certified"]["materialization"] = value.into();
+        assert_eq!(
+            ProjectConfig::from_json(&json.to_string()).expect("older json"),
+            project
+        );
+    }
+    // Any other unknown key is still an error, with its position.
+    let typo = yaml.replace(
+        "    search_budget:",
+        "    search_budgets: 1\n    search_budget:",
+    );
+    let error = ProjectConfig::from_yaml(&typo).expect_err("typo");
+    assert!(
+        error.contains("search_budgets") && error.contains("line"),
+        "{error}"
+    );
+
+    let mut safe = project.clone();
+    safe.refinement.certified.mode = crate::CertifiedMode::SafeMotherOnly;
+    safe.validate().expect("the safe mother over a region");
+    for mode in [
+        crate::CertifiedMode::StretchedMother,
+        crate::CertifiedMode::EquidistributedMother,
+    ] {
+        let mut regional = project.clone();
+        regional.refinement.certified.mode = mode;
+        let error = regional
+            .validate()
+            .expect_err("closed-sphere mode on a region");
+        assert!(
+            error.contains("moves the vertices of a closed sphere"),
+            "{error}"
+        );
+        let mut global = regional.clone();
+        global.domain = DomainConfig::Global;
+        global.validate().expect("closed-sphere mode on the globe");
+    }
 }
 
 /// CMRC's merge criteria (guide 11.111) lower to `&certified_merge` and are
@@ -3402,7 +3464,6 @@ fn certified_merge_criteria_lower_to_their_own_section_and_need_a_regional_run()
     project.refinement.threshold_enabled = false;
     project.refinement.backend = crate::RefinementBackend::Certified;
     project.refinement.certified.mode = crate::CertifiedMode::ReverseCoarsening;
-    project.refinement.certified.materialization = crate::CertifiedMaterialization::Regional;
     project.refinement.certified.merge = Some(crate::CertifiedMergeRecipe {
         finest_m: 50_000.0,
         minimum_samples: 6,
@@ -3424,9 +3485,9 @@ fn certified_merge_criteria_lower_to_their_own_section_and_need_a_regional_run()
     let reparsed = yaml_round_trip(&project);
     assert_eq!(reparsed, project);
     let namelist = reparsed.try_lower().expect("merge project").to_namelist();
+    assert!(!namelist.contains("NL%materialization"), "{namelist}");
     for line in [
         "NL%refine = .TRUE.",
-        "NL%materialization = 'regional'",
         "&certified_merge",
         "NL%finest_m = 50000",
         "NL%minimum_samples = 6",
@@ -3454,10 +3515,6 @@ fn certified_merge_criteria_lower_to_their_own_section_and_need_a_regional_run()
     refused(
         &|p| p.refinement.certified.mode = crate::CertifiedMode::SafeMotherOnly,
         "needs refinement.certified.mode reverse_coarsening",
-    );
-    refused(
-        &|p| p.refinement.certified.materialization = crate::CertifiedMaterialization::Whole,
-        "needs refinement.certified.materialization regional",
     );
     refused(
         &|p| p.domain = DomainConfig::Global,

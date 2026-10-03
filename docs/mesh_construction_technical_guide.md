@@ -5441,3 +5441,42 @@ Stretch/ICON（`fixed_topology_adaptive_run`）每一轮都写上全部命名区
 全球网格上两份 MPAS 的数值一致：共用写出按 (参考宽度/宽度)^4 算 `meshDensity`，参考宽度就是最细的交付宽度（测试里
 1280 km，第 1 层 1.0、第 0 层 0.0625，与原来相同）；CMRC 的宽度不是名义需求，`nominalMinDc` 仍取构建器的值。区域海洋的
 FVCOM 本来就是同一个 `write_fvcom_from_final_gridfile` 从带开边界上下文的 gridfile 写出，只是换了位置。
+
+### 11.116 区域运行一律按区域构造：撤掉物化选项，不再退回整球（B1h，2026-10-03）
+
+Whole、OnDemand、Regional 三种物化方式让人分不清，区域运行还会在五种情况下悄悄改建整球（用户 2026-10-03：“不应该有退回全球
+的情况”）。现在只有一条规则：有交付域的运行按区域构造、按区域发布（11.109）；全球运行建整球。没有可选的东西。
+
+- **撤掉的**：`&certified materialization`、工程字段 `refinement.certified.materialization`、Studio 的“物化方式”、
+  `EARTHMESH_CMRC_MATERIALIZATION`。旧 namelist 里的这个键读入后给一行警告、不起作用；旧工程文件里的键读入时丢掉（只有含这个
+  键时才改走不带行号的解析，别的错误仍报行列号）。
+- **OnDemand 不再是运行方式**：它是 B1c–f 的验证阶段（按需构造后装配整球，与整球逐字节比）。`assemble_region_sphere` 留在
+  引擎里，`tests/region_epochs.rs` 仍用它与整球逐格对照。
+- **原来退回整球的五种情况**：
+  1. **区域加两圈 F 盖满球面**（S 为空）：照走区域路线，区域就是闭合球面——`settled_base_faces = 0`，证书的 `region.scope`
+     写 `built_region_closed_sphere`，仍按区域形式发布。调度器“已定区停在某级”的检查对空的 S 不适用（`SettledRegion::is_empty`）。
+  2. **已定区没能随分量粗化**：报错，不再整球重跑。
+  3. **实验性的 local update**：区域运行报错（它移动的是闭合球面）。
+  4. **什么都没提交**（未要求任何层级，或闭合区域的需求不让任何地方粗化）：最终网格就是区域母网格，remap 是恒等
+     （`ConservativeRemap::identity_on`，外边界格点没有行）。
+  5. **模式**：`safe_mother_only` 在区域上是同一套格点只生成区域（`RegionRequirement::Uniform`：不投影、不粗化，交付层级都是
+     所选层级，与整球一样不出最终需求证书），域内单元与整球安全母网格逐个相同。区域 ICON 靠它：反向粗化会出 5/7 度对，ICON
+     不收。`stretched_mother` 与 `equidistributed_mother` 要移动整个球面的顶点，区域运行拒绝（工程校验、CLI、Studio 都拦）。
+- **模型交付从开放的父网格出**：共用的 MPAS/ICON 区域写出器原来要求闭合 parent（先在整球上算度量再取子集），区域 parent 是
+  开放的，于是两者都改为也收开放 parent，数值与闭合 parent 给的相同：
+  - **hex parent** 记下外边界格点（`earthmesh_open_site_lon/lat`，`earthmesh_m_open_site`：每个 M 行的各角是哪个外边界格点，
+    `open_boundary_sites`）。MPAS 写出器把它们追加成没有环的 W 行（`mesh_with_open_sites`），每个单元的边与顶点于是完整；
+    构建器的开放模式（`build_mpas_mesh_from_open_parent_one_based`）不给这些行排序、连边、算权重，也不在构建时整体校验；取子集
+    前检查每个交付单元的邻居都是真单元，取子集后整体校验。
+  - **tri parent** 只收三个角都是单元的面，开放边界表现为扇不闭合的 W 行。ICON 写出器把这些行的环去掉
+    （`mesh_with_open_fans_as_sites`），选中三角形的三个角必须都是完整单元。
+- **证书**：不另加字段；有没有 `region` 块就说明了构造方式。
+
+**对照**：CLI 测试 `a_regional_run_delivers_the_global_runs_cells`（NXP 16，bbox 域，一个 1 级圆）用同一需求跑全球与区域：区域
+交付的每个单元在全球网格里都有，位置、角点、层级逐位相同，remap 行逐条相同；区域 parent 出的 MPAS 与全球的在同位置的单元
+（`areaCell`）、边（`dcEdge`、`dvEdge`、`angleEdge`）、顶点（`areaTriangle`）上逐位相同，`weightsOnEdge` 与 `kiteAreasOnVertex`
+在四周单元都交付了的边与顶点上逐位相同——交付边界上的边，区域子集本来就丢掉了域外的边，全球文件里则是全的。
+ICON 的 `icon_final_delivery` 一例把交付文件本身当 parent：它开放、却够不到自己的边外，交付三角形的角落在开放边上，被拒。
+`a_region_that_reaches_round_the_sphere_is_published_as_the_region` 检查闭合区域，`a_regional_run_refuses_what_only_a_closed_sphere_can_take`
+检查两种移动母网格模式被拒。原来按整球 parent 写的区域测试改按区域 parent：谱系指向区域 parent，三角形子集对照它；Any 并集的
+成员各自建自己的区域、行号不同，改按单元位置比较。

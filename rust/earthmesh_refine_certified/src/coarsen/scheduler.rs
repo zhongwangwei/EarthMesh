@@ -539,11 +539,15 @@ fn run_elastic_component_epochs_impl(
             };
             &owned_level_grid
         };
-        if region.is_some() && settled_level != source_level {
+        // An empty settled region -- the built region closed round the
+        // sphere -- has no level to keep.
+        if region.is_some_and(|region| !region.settled.is_empty()) && settled_level != source_level
+        {
             return ElasticCmrcOutcome::NotCertifiable {
                 reason: format!(
-                    "the settled region stayed at level {settled_level}, which a built region \
-                     cannot represent; run the whole sphere"
+                    "the settled region stayed at level {settled_level}: the component that \
+                     reaches it did not coarsen, and a built region cannot represent a settled \
+                     face finer than the base"
                 ),
             };
         }

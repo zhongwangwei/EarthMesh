@@ -111,6 +111,32 @@ impl ConservativeRemap {
         remap
     }
 
+    /// The identity on some of one mesh's cells, numbered as its active sites
+    /// are: each keeps itself, whole. What a built region certifies when no
+    /// component committed -- no level asked for, or a closed region whose
+    /// demand coarsens nothing -- its outer boundary sites having no cell.
+    pub fn identity_on(mesh: &MeshState, cells: impl IntoIterator<Item = usize>) -> Self {
+        let fingerprint = mesh_fingerprint(mesh);
+        let rows = cells
+            .into_iter()
+            .map(|cell| RemapRow {
+                target: cell,
+                sources: vec![(cell, 1.0)],
+            })
+            .collect::<Vec<_>>();
+        let targets = rows.iter().map(|row| row.target).collect();
+        Self {
+            rows,
+            coverage_error: 0.0,
+            source_fingerprint: Some(fingerprint),
+            target_fingerprint: Some(fingerprint),
+            covered_targets: Some(PartialCoverage {
+                targets,
+                whole_cells: mesh.active_vertex_slots().count(),
+            }),
+        }
+    }
+
     pub(crate) fn validate_mesh_binding(
         &self,
         source: &MeshState,

@@ -7,8 +7,8 @@
 
 use crate::atomic_output::publish_artifacts;
 use crate::certified_options::{
-    read_certified_merge_options, CertifiedDelivery, CertifiedMaterialization,
-    CertifiedMergeOptions, CertifiedMode, CertifiedRunOptions,
+    read_certified_merge_options, CertifiedDelivery, CertifiedMergeOptions, CertifiedMode,
+    CertifiedRunOptions,
 };
 use crate::gridfile_mesh_from_one_based_state;
 use crate::mkgrd_run_types::CertifiedRunRecord;
@@ -30,17 +30,18 @@ use earthmesh_mesh::{MeshState, RefinementRegion};
 
 use crate::write_clean_regional_ocean_gridfile;
 use earthmesh_refine_certified::construction::{
-    build_certified_construction, certified_outcome_error, cmrc_materialization,
-    cmrc_timing_enabled, log_cmrc_phase, CertifiedConstruction, LocalUpdateDecision,
-    RegionPublication,
+    build_certified_construction, certified_outcome_error, cmrc_timing_enabled, log_cmrc_phase,
+    CertifiedConstruction, LocalUpdateDecision, RegionPublication,
 };
 
 use super::global_source::*;
 
 /// What a regional publication covers, for the certificate and the manifest.
 fn region_publication_json(region: &RegionPublication) -> serde_json::Value {
+    // A region that reaches round the sphere settles nothing and is closed.
+    let closed = region.settled_base_faces == 0;
     serde_json::json!({
-        "scope": "built_region_open_mesh",
+        "scope": if closed { "built_region_closed_sphere" } else { "built_region_open_mesh" },
         "outer_boundary_sites": region.outer_sites,
         "certified_cells": region.certified_cells,
         "built_finest_mother_cells": region.built_cells,
@@ -50,7 +51,7 @@ fn region_publication_json(region: &RegionPublication) -> serde_json::Value {
         "region_base_faces": region.region_base_faces,
         "frame_base_faces": region.frame_base_faces,
         "settled_base_faces": region.settled_base_faces,
-        "settled_by_construction": "outside the outer boundary: never built, the base mother there",
+        "settled_by_construction": if closed { "nothing: the built region is the sphere" } else { "outside the outer boundary: never built, the base mother there" },
     })
 }
 
@@ -527,6 +528,8 @@ pub(super) struct CertifiedRefinement {
     /// The closed sphere's Voronoi state; a regional publication has none.
     state: Option<earthmesh_mesh::VoronoiGridState>,
     region: Option<RegionPublication>,
+    /// The regional parent's open edge, for the model writers.
+    open_boundary: Option<crate::open_boundary_sites::OpenBoundarySites>,
     started: Instant,
     timing_enabled: bool,
     phase_started: Instant,
@@ -701,25 +704,16 @@ pub(super) fn refine_with_certified(
     }
     let requirements = match read_certified_merge_options(contents)? {
         // The merge criteria are the requirement: reverse coarsening of a
-        // regional domain, published as the region, with no other source.
+        // regional domain, built and published as the region, with no other
+        // source.
         Some(merge) => {
-            let (
-                true,
-                CertifiedMode::ReverseCoarsening,
-                CertifiedMaterialization::Regional,
-                Some(domain),
-            ) = (
-                config.refine,
-                options.mode,
-                cmrc_materialization(&options),
-                regional_domain.as_ref(),
-            )
+            let (true, CertifiedMode::ReverseCoarsening, Some(domain)) =
+                (config.refine, options.mode, regional_domain.as_ref())
             else {
                 return Err(io::Error::new(
                     io::ErrorKind::InvalidInput,
                     "CMRC merge criteria (&certified_merge) need NL%refine=.true., a regional \
-                     domain, and &certified mode='reverse_coarsening' with \
-                     materialization='regional'",
+                     domain, and &certified mode='reverse_coarsening'",
                 ));
             };
             let hydro = crate::hfield_refine::read_hfield_refine_options(contents)?
@@ -998,8 +992,8 @@ pub(super) fn refine_with_certified(
         };
     // A regional publication's mesh is open: published as it is, without the
     // closed sphere's Voronoi state.
-    let (state, output_mesh) = if let Some(region) = &region {
-        let output_mesh = build_open_cmrc_gridfile(
+    let (state, output_mesh, open_boundary) = if let Some(region) = &region {
+        let (output_mesh, open_boundary) = build_open_cmrc_gridfile(
             final_mesh.primal(),
             requested_view,
             Some(region.site_radius),
@@ -1014,12 +1008,12 @@ pub(super) fn refine_with_certified(
                 ),
             ));
         }
-        (None, output_mesh)
+        (None, output_mesh, open_boundary)
     } else {
         let triangular = final_mesh.primal().to_triangular_mesh(pentagons, None)?;
         let state = spherical_voronoi_state(&triangular)?;
         let output_mesh = build_certified_cmrc_gridfile(final_mesh.primal(), &state)?;
-        (Some(state), output_mesh)
+        (Some(state), output_mesh, None)
     };
     log_cmrc_phase(
         timing_enabled,
@@ -1058,6 +1052,7 @@ pub(super) fn refine_with_certified(
         pentagons,
         state,
         region,
+        open_boundary,
         started,
         timing_enabled,
         phase_started,
@@ -1107,6 +1102,7 @@ pub(super) fn deliver_certified(
         pentagons,
         state,
         region,
+        open_boundary,
         started,
         timing_enabled,
         mut phase_started,
@@ -1422,6 +1418,7 @@ pub(super) fn deliver_certified(
                     w_lineage: Some(&w_pre_export_lineage),
                     m_refine_level: Some(&m_refine_levels),
                     w_refine_level: Some(&w_refine_levels),
+                    open_boundary: open_boundary.as_ref(),
                     ..Default::default()
                 },
             )?;
@@ -1673,9 +1670,11 @@ pub(super) fn deliver_certified(
 /// faces, in slot order, each face at the spherical circumcentre `pcvt`
 /// puts it at. For `view` "hex" every face with a cell at a corner is kept,
 /// its cell-less corners naming the placeholder row, and every cell has its
-/// certified cyclic fan, as the closed builder publishes it. For "tri" the
-/// faces are those with cells at all three corners, and each cell lists the
-/// ones it has, in fan order. On a closed mesh both are the closed builder's.
+/// certified cyclic fan, as the closed builder publishes it; those corners
+/// are the sites on the open edge, returned beside the mesh with their
+/// positions for the model writers (guide 11.116). For "tri" the faces are
+/// those with cells at all three corners, and each cell lists the ones it
+/// has, in fan order. On a closed mesh both are the closed builder's.
 ///
 /// `radius` is what circumcentres are normalized to; `None` takes `pcvt`'s
 /// own choice, the first active site's radius.
@@ -1683,7 +1682,10 @@ pub(super) fn build_open_cmrc_gridfile(
     primal: &MeshState,
     view: &str,
     radius: Option<f64>,
-) -> io::Result<crate::UnstructuredMesh> {
+) -> io::Result<(
+    crate::UnstructuredMesh,
+    Option<crate::open_boundary_sites::OpenBoundarySites>,
+)> {
     use earthmesh_mesh::{CartesianPoint, VoronoiError, MESH_STATE_FIRST_ID};
     let invalid = |message: String| io::Error::new(io::ErrorKind::InvalidData, message);
     let id = |row: usize| {
@@ -1763,6 +1765,31 @@ pub(super) fn build_open_cmrc_gridfile(
         None => first_site_radius()?,
     };
 
+    // The corners that are no cell, numbered from 1 as first met.
+    let mut open_site = vec![0i32; primal.vertices().len()];
+    let mut open_points = Vec::new();
+    let mut m_corners = vec![[0i32; 3]];
+    for &face in &faces {
+        let mut corners = [0i32; 3];
+        for (slot, site) in primal.triangles()[face].into_iter().enumerate() {
+            if fans[site].is_some() {
+                continue;
+            }
+            if open_site[site] == 0 {
+                open_points.push(lon_lat(primal.vertices()[site]));
+                open_site[site] = i32::try_from(open_points.len())
+                    .map_err(|_| invalid("CMRC open edge exceeds i32 sites".into()))?;
+            }
+            corners[slot] = open_site[site];
+        }
+        m_corners.push(corners);
+    }
+    let open_boundary =
+        (!open_points.is_empty()).then_some(crate::open_boundary_sites::OpenBoundarySites {
+            points: open_points,
+            m_corners,
+        });
+
     let mut m_points = Vec::with_capacity(faces.len() + 1);
     let mut m_to_w = Vec::with_capacity(faces.len() + 1);
     m_points.push(placeholder);
@@ -1818,13 +1845,16 @@ pub(super) fn build_open_cmrc_gridfile(
         w_to_m.push(row);
         n_w_to_m.push(fan.len() as i32);
     }
-    Ok(crate::UnstructuredMesh {
-        m_points,
-        w_points,
-        m_to_w,
-        w_to_m,
-        n_w_to_m,
-    })
+    Ok((
+        crate::UnstructuredMesh {
+            m_points,
+            w_points,
+            m_to_w,
+            w_to_m,
+            n_w_to_m,
+        },
+        open_boundary,
+    ))
 }
 
 pub(super) fn build_certified_cmrc_gridfile(
@@ -2647,7 +2677,7 @@ mod tests {
             let state = spherical_voronoi_state(&triangular).unwrap();
             let closed = build_certified_cmrc_gridfile(&grid.mesh, &state).unwrap();
             for view in ["tri", "hex"] {
-                let open = build_open_cmrc_gridfile(&grid.mesh, view, None).unwrap();
+                let open = build_open_cmrc_gridfile(&grid.mesh, view, None).unwrap().0;
                 assert_eq!(open, closed, "n {n} {view}");
             }
         }
@@ -2681,7 +2711,9 @@ mod tests {
             earthmesh_refine_certified::MotherGrid::generate_faces(n, built.clone()).unwrap();
         let index = part.region.as_ref().unwrap();
         let numbering = region::GlobalNumbering::new(n);
-        let whole_rows = build_open_cmrc_gridfile(&whole.mesh, "hex", None).unwrap();
+        let whole_rows = build_open_cmrc_gridfile(&whole.mesh, "hex", None)
+            .unwrap()
+            .0;
         // The whole mesh's first site is the rank-0 lattice vertex.
         let radius = earthmesh_mesh::magnitude(whole.mesh.vertices()[2]);
         // Whole-mesh rows by address and by origin.
@@ -2699,7 +2731,9 @@ mod tests {
         };
         let boundary = index.outer_boundary();
         for view in ["tri", "hex"] {
-            let rows = build_open_cmrc_gridfile(&part.mesh, view, Some(radius)).unwrap();
+            let rows = build_open_cmrc_gridfile(&part.mesh, view, Some(radius))
+                .unwrap()
+                .0;
             // Faces: which are kept, and where.
             let mut face_of_row = BTreeMap::<usize, TriangleAddress>::new();
             let mut kept = 0;

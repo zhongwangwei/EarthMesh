@@ -72,6 +72,7 @@ pub mod mpas_topology;
 pub mod mpas_topology_checker;
 pub mod mpas_unstructured_mesh_builders;
 pub mod obc_boundary_io;
+pub mod open_boundary_sites;
 pub mod quality_global_writer;
 pub use colm_package_io::{
     write_colm_coupling_netcdf_from_csv, write_colm_package_delivery_manifest_with_quality,
@@ -175,7 +176,8 @@ pub use mpas_topology::{
     zero_based_padded_rows, zero_based_pair_rows, zero_based_triplet_rows,
 };
 pub use mpas_unstructured_mesh_builders::{
-    build_mpas_mesh_from_unstructured_one_based, build_mpas_simple_mesh_from_unstructured_one_based,
+    build_mpas_mesh_from_open_parent_one_based, build_mpas_mesh_from_unstructured_one_based,
+    build_mpas_simple_mesh_from_unstructured_one_based,
 };
 pub use netcdf_io::{
     create_netcdf, netcdf_to_io_error, open_netcdf, require_len, required_dimension_len,

@@ -445,11 +445,6 @@ pub struct CertifiedRefinementRecipe {
     pub gradation_rings_per_level: u8,
     #[serde(default = "default_certified_search_budget")]
     pub search_budget: usize,
-    /// Where reverse coarsening builds its finest mother: the whole sphere,
-    /// on demand (put back together into the sphere), or on demand and
-    /// published as the region (guide 11.109).
-    #[serde(default, skip_serializing_if = "CertifiedMaterialization::is_whole")]
-    pub materialization: CertifiedMaterialization,
     /// The merge-if-homogeneous requirement (guide 11.111): reverse
     /// coarsening from `finest_m` down to the base, a parent formed only where
     /// every criterion passes on the data it covers. It replaces the
@@ -468,31 +463,7 @@ impl Default for CertifiedRefinementRecipe {
             maximum_cells: default_certified_maximum_cells(),
             gradation_rings_per_level: default_certified_gradation_rings_per_level(),
             search_budget: default_certified_search_budget(),
-            materialization: CertifiedMaterialization::Whole,
             merge: None,
-        }
-    }
-}
-
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum CertifiedMaterialization {
-    #[default]
-    Whole,
-    OnDemand,
-    Regional,
-}
-
-impl CertifiedMaterialization {
-    fn is_whole(&self) -> bool {
-        *self == Self::Whole
-    }
-
-    pub fn engine_str(self) -> &'static str {
-        match self {
-            Self::Whole => "whole",
-            Self::OnDemand => "on_demand",
-            Self::Regional => "regional",
         }
     }
 }

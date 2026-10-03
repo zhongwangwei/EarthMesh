@@ -466,6 +466,11 @@ impl SettledRegion {
         })
     }
 
+    /// No face is settled: the built region reaches round the sphere.
+    pub fn is_empty(&self) -> bool {
+        self.faces == 0
+    }
+
     /// Settled faces at level `n`.
     pub fn faces_at_level(&self, n: usize) -> usize {
         let ratio = n / self.base_subdivision;

@@ -7,7 +7,7 @@ use earthmesh_refine_certified::requirement::heterogeneity::Statistic;
 use earthmesh_refine_certified::AngleContractId;
 
 pub use earthmesh_refine_certified::construction::{
-    CertifiedDelivery, CertifiedMaterialization, CertifiedMode, CertifiedRunOptions,
+    CertifiedDelivery, CertifiedMode, CertifiedRunOptions,
 };
 
 fn invalid(message: impl Into<String>) -> io::Error {
@@ -78,18 +78,13 @@ pub fn read_certified_options(contents: &str) -> io::Result<CertifiedRunOptions>
             "search_budget" => {
                 options.search_budget = parse_usize(&assignment.field, &assignment.value)?
             }
-            "materialization" => {
-                options.materialization = match assignment.value.to_ascii_lowercase().as_str() {
-                    "whole" => CertifiedMaterialization::Whole,
-                    "on_demand" => CertifiedMaterialization::OnDemand,
-                    "regional" => CertifiedMaterialization::Regional,
-                    other => {
-                        return Err(invalid(format!(
-                            "certified materialization must be whole, on_demand or regional, got {other}"
-                        )))
-                    }
-                }
-            }
+            // Retired (guide 11.116): a regional run is built and published
+            // as its region, a global run whole. Older namelists still name it.
+            "materialization" => eprintln!(
+                "earthmesh_cli: warning: &certified materialization='{}' is ignored: a regional \
+                 run is built as its region, a global run as the whole sphere",
+                assignment.value
+            ),
             other => return Err(invalid(format!("unknown &certified field '{other}'"))),
         }
     }
@@ -397,17 +392,14 @@ mod tests {
         assert_eq!(options.gradation_rings_per_level, 4);
         assert_eq!(options.search_budget, 700);
 
-        for (value, expected) in [
-            ("whole", CertifiedMaterialization::Whole),
-            ("on_demand", CertifiedMaterialization::OnDemand),
-            ("regional", CertifiedMaterialization::Regional),
-        ] {
-            let options =
+        // Retired: older namelists still name it, and it changes nothing.
+        for value in ["whole", "on_demand", "regional"] {
+            assert_eq!(
                 read_certified_options(&format!("&certified\n NL%materialization='{value}'\n/"))
-                    .unwrap();
-            assert_eq!(options.materialization, expected);
+                    .unwrap(),
+                CertifiedRunOptions::default()
+            );
         }
-        assert!(read_certified_options("&certified\n NL%materialization='typo'\n/").is_err());
         assert!(read_certified_options("&certified\n NL%mode='typo'\n/").is_err());
         assert!(read_certified_options("&certified\n NL%angle_contract='typo'\n/").is_err());
         assert!(read_certified_options("&certified\n NL%maximum_cells=0\n/").is_err());

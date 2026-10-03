@@ -590,7 +590,10 @@ fn icon_final_with_explicit_parent_rejects_bad_mapping_without_replacing_output(
             "wrong_final_lineage" => "outside explicit parent",
             "changed_parent_coordinate" => "outside explicit parent",
             "changed_final_corner" => "triangle corners",
-            "changed_parent_corner" | "regional_parent" => "closed triangular sphere",
+            "changed_parent_corner" => "closed triangular sphere",
+            // An open parent is a regional run's built region (guide 11.116);
+            // the delivered grid itself does not reach past its own edge.
+            "regional_parent" => "open parent's edge",
             _ => unreachable!(),
         };
         assert!(

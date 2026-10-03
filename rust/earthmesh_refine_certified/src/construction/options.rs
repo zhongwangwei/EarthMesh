@@ -27,23 +27,6 @@ pub enum CertifiedDelivery {
     Coupled,
 }
 
-/// Where reverse coarsening builds the finest mother (design B1, guide
-/// 11.106): over the whole sphere, or only where the requirement reaches and
-/// a regional run delivers cells, the rest settled by construction.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub enum CertifiedMaterialization {
-    #[default]
-    Whole,
-    /// Built on demand, then put back together into the whole sphere, which
-    /// is certified and published as the whole route publishes it.
-    OnDemand,
-    /// Built on demand and published as the region: the delivered domain
-    /// cut from the built region's final mesh, the parent being that mesh --
-    /// no sphere is assembled, so the base may be as fine as a 30 m run needs
-    /// (guide 11.109).
-    Regional,
-}
-
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct CertifiedRunOptions {
     pub mode: CertifiedMode,
@@ -53,7 +36,6 @@ pub struct CertifiedRunOptions {
     pub maximum_cells: usize,
     pub gradation_rings_per_level: usize,
     pub search_budget: usize,
-    pub materialization: CertifiedMaterialization,
 }
 
 impl Default for CertifiedRunOptions {
@@ -70,7 +52,6 @@ impl Default for CertifiedRunOptions {
             maximum_cells: 10_000_000,
             gradation_rings_per_level: 3,
             search_budget: 100_000,
-            materialization: CertifiedMaterialization::Whole,
         }
     }
 }

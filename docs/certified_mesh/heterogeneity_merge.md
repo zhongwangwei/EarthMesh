@@ -43,7 +43,7 @@ CMRC 是反向粗化：从最细一级出发，逐级合并完整的四子块，
 | H1 | 格点统计、逐级聚合、可合并判定、需求场（库） | 完成（指南 11.111）：与逐面直接计算逐面相同；反例中不均匀子单元保持最细 |
 | H2 | CMRC 接受格点需求场：范围、初始投影、最终证书 | 完成：种子、按种子求范围、格点需求、端到端粗化测试、CLI 区域构造 |
 | H3 | namelist 与窗口读数据 | 完成：`&certified_merge`；坐标 NetCDF、无坐标全球格网、5° 瓦片目录；CLI 测试中 DEM 与土地覆盖各一层 |
-| H4 | Studio 面板：最细 / 最粗、判据表、预览 | 完成：工程字段 `refinement.certified.merge`/`materialization`；CMRC 第三个策略开关；`--cmrc-merge-preview`；协议 v5；GUI 四项门禁通过 |
+| H4 | Studio 面板：最细 / 最粗、判据表、预览 | 完成：工程字段 `refinement.certified.merge`/`materialization`（后者已撤销，指南 11.116）；CMRC 第三个策略开关；`--cmrc-merge-preview`；协议 v5；GUI 四项门禁通过 |
 | H5 | 真实 30 m DEM 区域演示 | 本机无 30 m 数据，改用 MERIT-Hydro 90 m（昆明）：两级 12 s 认证通过，并附对照报告；三级卡在过渡搜索（同 11.110）（指南 11.112） |
 
 ## 5. 待定

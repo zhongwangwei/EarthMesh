@@ -160,9 +160,11 @@ pub fn write_mpas_from_final_gridfile(
     write_final_mpas(gridfile.as_ref(), None, output_dir.as_ref(), format)
 }
 
-/// Deliver an exact whole-cell selection using an explicit closed global parent.
-/// Parent geometry/metrics and density reference survive; boundary connectivity
-/// is reindexed by the existing MPAS subset adapter, not reconstructed.
+/// Deliver an exact whole-cell selection using an explicit parent: a closed
+/// global one, or a regional run's built region, open at its far edge and
+/// carrying the sites there (guide 11.116). Parent geometry/metrics and
+/// density reference survive; boundary connectivity is reindexed by the
+/// existing MPAS subset adapter, not reconstructed.
 pub fn write_mpas_from_final_gridfile_with_parent(
     gridfile: impl AsRef<Path>,
     parent_gridfile: impl AsRef<Path>,
@@ -204,7 +206,13 @@ fn write_final_mpas(
     let mesh = read_unstructured_mesh_netcdf(source)?;
     crate::validate_published_cell_degrees(&mesh, "hex")?;
     let points = crate::read_gridfile_mesh_points(source)?;
-    validate_final_mpas_topology(&points, true)?;
+    // A regional parent is open at its far edge and names the sites there;
+    // only an explicit parent may be.
+    let open_sites = match parent {
+        Some(parent) => crate::open_boundary_sites::read_open_boundary_sites(parent)?,
+        None => None,
+    };
+    validate_final_mpas_topology(&points, open_sites.is_none())?;
     let selection = if parent.is_some() {
         let selected_context = required_mpas_context(gridfile)?;
         let selected_points = crate::read_gridfile_mesh_points(gridfile)?;
@@ -233,12 +241,24 @@ fn write_final_mpas(
     };
     let first =
         crate::unstructured_mesh_support::unstructured_w_row_layout(&mesh).first_physical_row;
+    // An open parent's edge sites join as W rows without a ring, so every
+    // cell's edges and vertices are whole; they never reach the selection.
+    let (mesh, cellwidth_km, first_open_row) = match &open_sites {
+        Some(sites) => {
+            let (open, first_open) =
+                crate::open_boundary_sites::mesh_with_open_sites(&mesh, sites)?;
+            let mut widths = context.cellwidth_km.clone();
+            widths.resize(open.w_points.len(), context.density_reference_width_km);
+            (open, widths, Some(first_open))
+        }
+        None => (mesh, context.cellwidth_km.clone(), None),
+    };
     // The builder's local-min normalization is not the producer-global reference.
     // Never infer nominal sizes from final geometry. Only the explicit HField
     // source below uses its generation-demand reference for nominalMinDc.
     let density = std::iter::once(1.0)
         .chain(
-            context.cellwidth_km[first..]
+            cellwidth_km[first..]
                 .iter()
                 .map(|width| (context.density_reference_width_km / width).powi(4)),
         )
@@ -285,12 +305,21 @@ fn write_final_mpas(
             publish_artifacts(&[(&staged_mesh, &mesh_output)], &[&graph_output])?;
             Ok((mesh_output, None))
         } else {
-            let mut full = build_mpas_mesh_from_unstructured_one_based(
-                &mesh,
-                &context.cellwidth_km,
-                context.base_nxp,
-                context.step,
-            )?;
+            let mut full = if first_open_row.is_some() {
+                crate::build_mpas_mesh_from_open_parent_one_based(
+                    &mesh,
+                    &cellwidth_km,
+                    context.base_nxp,
+                    context.step,
+                )?
+            } else {
+                build_mpas_mesh_from_unstructured_one_based(
+                    &mesh,
+                    &cellwidth_km,
+                    context.base_nxp,
+                    context.step,
+                )?
+            };
             if full.mesh_density.len() != density.len() {
                 return Err(io::Error::new(
                     io::ErrorKind::InvalidData,
@@ -309,7 +338,13 @@ fn write_final_mpas(
             }
             full.mesh_density = density;
             if let Some(rows) = &selection {
+                if let Some(first_open) = first_open_row {
+                    selected_cells_are_interior(&full, rows, first_open - first + 1)?;
+                }
                 full = crate::mpas_subset::subset_mpas_mesh_in_cell_order(&full, rows)?;
+                if first_open_row.is_some() {
+                    crate::validate_mpas_mesh(&full)?;
+                }
             }
             if format == ModelFormat::MpasSimple {
                 let simple = crate::MpasSimpleMesh {
@@ -355,6 +390,34 @@ fn write_final_mpas(
         );
     }
     result
+}
+
+/// Every cell next to a selected one is a cell of the parent, not a site on
+/// its open edge: the selected cells' edges then carry their weights, and
+/// every number delivered is the one a closed parent would give. `first_open`
+/// is the payload row of the first open site.
+fn selected_cells_are_interior(
+    full: &crate::MpasMesh,
+    rows: &[usize],
+    first_open: usize,
+) -> io::Result<()> {
+    for &cell in rows {
+        let edges = usize::try_from(full.n_edges_on_cell[cell]).unwrap_or(0);
+        if full.cells_on_cell[cell]
+            .iter()
+            .take(edges)
+            .any(|&neighbour| neighbour <= 0 || neighbour as usize >= first_open)
+        {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!(
+                    "selected MPAS cell {cell} borders the regional parent's open edge; \
+                     the parent must reach at least one cell past the delivered domain"
+                ),
+            ));
+        }
+    }
+    Ok(())
 }
 
 fn required_mpas_context(

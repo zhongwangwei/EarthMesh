@@ -45,6 +45,7 @@ impl FinalRefineLevelVectors {
             w_refine_level: self.w.as_deref(),
             w_refine_level_orig: self.w_orig.as_deref(),
             w_ngr: self.w_ngr.as_deref(),
+            open_boundary: None,
         }
     }
 

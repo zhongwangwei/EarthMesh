@@ -4292,7 +4292,6 @@ fn certified_controls_round_trip_through_the_gui_commands() {
         900_000,
         5,
         12_000,
-        None,
     )
     .expect("CMRC options");
     let summary = project_summary(yaml).expect("summary");
@@ -4326,7 +4325,6 @@ fn certified_delivery_cell_mismatch_is_rejected_by_gui_commands() {
         900_000,
         5,
         12_000,
-        None,
     )
     .expect("inactive CMRC recipe remains editable and dormant");
     let dormant = ProjectConfig::from_yaml(&inactive_tri).expect("inactive certified yaml");
@@ -4361,7 +4359,6 @@ fn certified_delivery_cell_mismatch_is_rejected_by_gui_commands() {
         900_000,
         5,
         12_000,
-        None,
     )
     .expect_err("TRI delivery does not match the HEX target");
     assert!(
@@ -4383,7 +4380,6 @@ fn certified_delivery_cell_mismatch_is_rejected_by_gui_commands() {
         900_000,
         5,
         12_000,
-        None,
     )
     .expect("HEX delivery matches the HEX target");
     let error = crate::project_edits::set_target_cell(hex_delivery, "tri".to_string())
@@ -4394,28 +4390,27 @@ fn certified_delivery_cell_mismatch_is_rejected_by_gui_commands() {
     );
 }
 
-/// CMRC's merge criteria (guide 11.111) through the Studio commands: set
-/// with their materialization, kept by a later options edit, refused where
-/// the engine would refuse them, and without them refinement needs a source.
+/// CMRC's merge criteria (guide 11.111) through the Studio commands: set,
+/// kept by a later options edit, refused where the engine would refuse them,
+/// and without them refinement needs a source.
 #[test]
 fn certified_merge_criteria_round_trip_through_the_gui_commands() {
     let base = circle_project("CMRC merge").to_yaml().expect("yaml");
     let yaml = crate::project_edits::set_refinement_backend(base, "certified".to_string())
         .expect("CMRC backend");
-    let options = |yaml: String, materialization: Option<&str>| {
+    let options = |yaml: String, mode: &str| {
         crate::project_edits::set_certified_options(
             yaml,
-            "reverse_coarsening".to_string(),
+            mode.to_string(),
             "coupled".to_string(),
             "domain_quality_38_to_82_v1".to_string(),
             8,
             10_000_000,
             3,
             100_000,
-            materialization.map(str::to_string),
         )
     };
-    let yaml = options(yaml, Some("regional")).expect("regional materialization");
+    let yaml = options(yaml, "reverse_coarsening").expect("reverse coarsening");
     // NXP 40 is a 200 km base: 50 km is two levels below it.
     let merge = earthmesh_project::CertifiedMergeRecipe {
         finest_m: 50_000.0,
@@ -4431,21 +4426,16 @@ fn certified_merge_criteria_round_trip_through_the_gui_commands() {
         .expect("merge criteria");
     let yaml = set_refinement(yaml, true, false, 1).expect("merge criteria are a source");
     let summary = project_summary(yaml.clone()).expect("summary");
-    assert_eq!(summary.certified_materialization, "regional");
     assert_eq!(summary.certified_merge.as_ref(), Some(&merge));
 
-    let kept =
-        project_summary(options(yaml.clone(), None).expect("options edit")).expect("summary");
-    assert_eq!(kept.certified_materialization, "regional");
+    let kept = project_summary(options(yaml.clone(), "reverse_coarsening").expect("options edit"))
+        .expect("summary");
     assert_eq!(kept.certified_merge.as_ref(), Some(&merge));
 
-    let error = options(yaml.clone(), Some("whole")).expect_err("merge needs regional");
-    assert!(error.contains("materialization regional"), "{error}");
-    let error = options(yaml.clone(), Some("sideways")).expect_err("unknown materialization");
-    assert!(
-        error.contains("unknown certified materialization"),
-        "{error}"
-    );
+    // A regional run is built as its region (guide 11.116): the modes that
+    // move a closed sphere's vertices are refused for it.
+    let error = options(yaml.clone(), "stretched_mother").expect_err("closed sphere on a region");
+    assert!(error.contains("reverse_coarsening"), "{error}");
     let error = crate::project_edits::set_certified_merge(yaml, None)
         .expect_err("refinement on with no source");
     assert!(error.contains("no refinement source"), "{error}");

@@ -12,10 +12,9 @@ use std::{
 };
 
 use earthmesh_project::{
-    CertifiedMaterialization, CertifiedMergeCriterion, CertifiedMergeRecipe,
-    CertifiedMergeStatistic, CertifiedMode, DomainConfig, MeshCellKind, MeshDomainKind,
-    MeshIntentPreset, ModelFormat, ProjectConfig, RefinementBackend, RegionShape, ResolutionSpec,
-    ViolationPolicy,
+    CertifiedMergeCriterion, CertifiedMergeRecipe, CertifiedMergeStatistic, CertifiedMode,
+    DomainConfig, MeshCellKind, MeshDomainKind, MeshIntentPreset, ModelFormat, ProjectConfig,
+    RefinementBackend, RegionShape, ResolutionSpec, ViolationPolicy,
 };
 
 fn temp_root(name: &str) -> PathBuf {
@@ -147,8 +146,7 @@ fn merge_criteria_drive_a_regional_reverse_coarsening() {
              NL%landtype_file='none'\n/\n\
              &certified\n  NL%mode='reverse_coarsening'\n  NL%delivery='coupled'\n  \
              NL%maximum_level=2\n  NL%maximum_cells=200000\n  \
-             NL%gradation_rings_per_level=3\n  NL%search_budget=100\n  \
-             NL%materialization='regional'\n/\n\
+             NL%gradation_rings_per_level=3\n  NL%search_budget=100\n/\n\
              &certified_merge\n  NL%levels=1\n  NL%minimum_samples=4\n  \
              NL%layer_file(1)='{}'\n  NL%layer_variable(1)='elv'\n  \
              NL%statistic(1)='std'\n  NL%threshold(1)=5.\n  \
@@ -252,7 +250,6 @@ fn a_project_previews_and_runs_its_merge_criteria() {
     project.refinement.enabled = true;
     project.refinement.backend = RefinementBackend::Certified;
     project.refinement.certified.mode = CertifiedMode::ReverseCoarsening;
-    project.refinement.certified.materialization = CertifiedMaterialization::Regional;
     project.refinement.certified.maximum_cells = 200_000;
     // The base is about 67 km; 33 km is one level below it.
     project.refinement.certified.merge = Some(CertifiedMergeRecipe {

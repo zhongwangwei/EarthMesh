@@ -219,6 +219,7 @@ pub use earthmesh_delivery::mpas_mesh_types;
 pub use earthmesh_delivery::mpas_simple_writer;
 pub use earthmesh_delivery::mpas_topology;
 pub use earthmesh_delivery::mpas_unstructured_mesh_builders;
+pub use earthmesh_delivery::open_boundary_sites;
 pub use earthmesh_delivery::quality_global_writer;
 use gridfile_output_writers::{
     write_mpas_mesh_from_netcdf_inputs, write_mpas_simple_mesh_from_netcdf_inputs,

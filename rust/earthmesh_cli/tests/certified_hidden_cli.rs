@@ -284,11 +284,29 @@ fn assert_snapshot_unchanged(snapshot: &[(PathBuf, Vec<u8>)]) {
     }
 }
 
-fn assert_parent_gridfile_is_closed_sphere(
+/// The parent a regional delivery's lineage names: the built region, never
+/// a sphere assembled around it (guide 11.116).
+fn parent_mesh(
+    run: &earthmesh_cli::mkgrd_run_types::RefinePipelineRunReport,
+) -> earthmesh_cli::unstructured_mesh_support::UnstructuredMesh {
+    earthmesh_cli::unstructured_mesh_io::read_unstructured_mesh_netcdf(
+        run.refinement_parent_gridfile(),
+    )
+    .unwrap()
+}
+
+/// A regional parent is the built region's final mesh: one piece, open at
+/// the frame's far edge. Returns its cell count.
+fn assert_parent_gridfile_is_the_built_region(
     parent_path: &std::path::Path,
     expected_lbx_points: usize,
     mode_grid: &str,
 ) -> usize {
+    assert!(parent_path
+        .file_name()
+        .unwrap()
+        .to_string_lossy()
+        .ends_with("_regional_parent.nc4"));
     let parent_points =
         earthmesh_cli::grid_quality_pipeline::read_gridfile_mesh_points(parent_path).unwrap();
     assert_eq!(expected_lbx_points, parent_points.w_lon.len());
@@ -298,13 +316,10 @@ fn assert_parent_gridfile_is_closed_sphere(
     } else {
         earthmesh_cli::grid_quality_pipeline::quality_input_from_gridfile(&parent_points).unwrap()
     };
+    assert!(earthmesh_quality::topology::boundary_topology(&parent_input).edge_count > 0);
     assert_eq!(
-        earthmesh_quality::topology::boundary_topology(&parent_input).edge_count,
-        0
-    );
-    assert_eq!(
-        earthmesh_quality::topology::euler_characteristic(&parent_input),
-        2
+        earthmesh_quality::topology::connected_component_count(&parent_input),
+        1
     );
     parent_input.cells.len()
 }
@@ -465,15 +480,24 @@ fn assert_regional_hex_cells_are_whole_global_subset(
     assert!(checked > 0);
 }
 
-fn published_lineage_ids(gridfile: &std::path::Path, mode_grid: &str) -> BTreeSet<i64> {
+/// The published cells by where they are -- the W site of a HEX cell, the
+/// circumcentre of a triangle: each regional run's parent numbers its own
+/// rows (guide 11.116), so cells cut from different runs compare by place.
+fn published_cell_positions(gridfile: &std::path::Path, mode_grid: &str) -> BTreeSet<(u64, u64)> {
+    let grid = earthmesh_cli::grid_quality_pipeline::read_gridfile_mesh_points(gridfile).unwrap();
     let lineages =
         earthmesh_cli::grid_quality_pipeline::read_gridfile_cell_lineages(gridfile).unwrap();
-    let ids = if mode_grid == "tri" {
-        lineages.m
+    let (lon, lat, ids) = if mode_grid == "tri" {
+        (&grid.m_lon, &grid.m_lat, &lineages.m)
     } else {
-        lineages.w
+        (&grid.w_lon, &grid.w_lat, &lineages.w)
     };
-    ids.into_iter().filter(|id| *id >= 2).collect()
+    lon.iter()
+        .zip(lat)
+        .zip(ids)
+        .filter(|(_, &id)| id >= 2)
+        .map(|((lon, lat), _)| (lon.to_bits(), lat.to_bits()))
+        .collect()
 }
 
 fn assert_published_centers_inside_domain(
@@ -1013,100 +1037,13 @@ fn a_moved_mother_that_cannot_serve_is_coarsened_where_a_heptagon_may_stand() {
     assert_eq!(certificate["physical_residuals"], 0, "{certificate}");
 }
 
-/// On demand (guide 11.106) the finest mother is built only where the
-/// requirement reaches and the region is delivered: the delivered grid and
-/// the certificate are the whole sphere's byte for byte, and the remap keeps
-/// the rows of the cells it certified, weight for weight.
+/// A regional run is built as its region and published as it (guides 11.109,
+/// 11.116): nothing outside the built region is built or assembled, yet every
+/// delivered cell is the global run's -- same sites, corners and level -- and
+/// so is its remap row, weight for weight. The certificate says what the
+/// region covers.
 #[test]
-fn on_demand_materialization_delivers_the_whole_spheres_regional_grid() {
-    let root = temp_root("on_demand_materialization");
-    let sources = root.join("sources");
-    fs::create_dir_all(&sources).unwrap();
-    let prefix = sources.join("hotspot");
-    earthmesh_cli::circle_close_mask_io::write_circle_mask_netcdf(
-        sources.join("hotspot_001.nc4"),
-        &earthmesh_cli::circle_close_mask_io::CircleMask {
-            refine_degree: 1,
-            points: vec![earthmesh_cli::coordinate_types::LonLatPoint {
-                lon: 12.0,
-                lat: 8.0,
-            }],
-            radius_km: vec![500.0],
-        },
-    )
-    .unwrap();
-    let mut results = Vec::new();
-    for materialization in ["whole", "on_demand"] {
-        let base = root.join(materialization);
-        fs::create_dir_all(&base).unwrap();
-        let path = base.join("cmrc.nml");
-        fs::write(
-            &path,
-            specified_circle_namelist(&base, "regional", &prefix)
-                .replace("NL%NXP=3", "NL%NXP=16")
-                .replace("NL%maximum_cells=1000", "NL%maximum_cells=100000")
-                .replace("safe_mother_only", "reverse_coarsening")
-                .replace(
-                    "NL%search_budget=100\n/",
-                    &format!("NL%search_budget=100\n  NL%materialization='{materialization}'\n/"),
-                )
-                .replace(
-                    "NL%mask_domain_global=.true.",
-                    "NL%mask_domain_global=.false.\n  NL%mask_domain_type='bbox'\n  \
-                     NL%mask_domain_fprefix='inline:bbox:w=0,e=25,s=-5,n=20'",
-                ),
-        )
-        .unwrap();
-        let certified = earthmesh_cli::run_refine_pipeline_namelist(&path, &base, 100_000, None)
-            .unwrap()
-            .certified_run
-            .unwrap();
-        assert_eq!(certified.product_outcome, "certified_adaptive");
-        results.push(certified);
-    }
-    let files = |certified: &earthmesh_cli::mkgrd_run_types::CertifiedRunRecord| {
-        snapshot_result_dir(certified.certificate.parent().unwrap())
-            .into_iter()
-            .map(|(path, bytes)| (path.file_name().unwrap().to_owned(), bytes))
-            .collect::<BTreeMap<_, _>>()
-    };
-    let (whole, on_demand) = (files(&results[0]), files(&results[1]));
-    for name in whole.keys() {
-        let name = name.to_string_lossy();
-        if name.ends_with(".nc4") || name == "certified_certificate.json" {
-            assert!(
-                whole[std::ffi::OsStr::new(name.as_ref())]
-                    == on_demand[std::ffi::OsStr::new(name.as_ref())],
-                "{name} differs"
-            );
-        }
-    }
-    let rows = |certified: &earthmesh_cli::mkgrd_run_types::CertifiedRunRecord| {
-        let text = fs::read_to_string(certified.pre_export_remap.as_ref().unwrap()).unwrap();
-        text.lines()
-            .skip(1)
-            .map(|line| {
-                let mut fields = line.split(',');
-                let target = fields.next().unwrap().parse::<usize>().unwrap();
-                let source = fields.next().unwrap().parse::<usize>().unwrap();
-                ((target, source), fields.next().unwrap().to_owned())
-            })
-            .collect::<BTreeMap<_, _>>()
-    };
-    let (whole_rows, on_demand_rows) = (rows(&results[0]), rows(&results[1]));
-    assert!(!on_demand_rows.is_empty() && on_demand_rows.len() < whole_rows.len());
-    for (pair, weight) in &on_demand_rows {
-        assert_eq!(whole_rows.get(pair), Some(weight), "remap entry {pair:?}");
-    }
-}
-
-/// Published as the region (guide 11.109), nothing outside the built region
-/// is assembled: the delivered grid is the whole sphere's apart from its
-/// lineage, which names rows of the regional parent instead of the global
-/// one; every delivered cell's remap row is the whole sphere's; the
-/// certificate says what it covers.
-#[test]
-fn regional_publication_delivers_the_whole_spheres_cells() {
+fn a_regional_run_delivers_the_global_runs_cells() {
     let root = temp_root("regional_publication");
     let sources = root.join("sources");
     fs::create_dir_all(&sources).unwrap();
@@ -1124,27 +1061,27 @@ fn regional_publication_delivers_the_whole_spheres_cells() {
     )
     .unwrap();
     let mut results = Vec::new();
-    for materialization in ["whole", "regional"] {
-        let base = root.join(materialization);
+    for (name, domain) in [
+        ("global", None),
+        (
+            "regional",
+            Some(
+                "NL%mask_domain_global=.false.\n  NL%mask_domain_type='bbox'\n  \
+                 NL%mask_domain_fprefix='inline:bbox:w=0,e=25,s=-5,n=20'",
+            ),
+        ),
+    ] {
+        let base = root.join(name);
         fs::create_dir_all(&base).unwrap();
         let path = base.join("cmrc.nml");
-        fs::write(
-            &path,
-            specified_circle_namelist(&base, "regional", &prefix)
-                .replace("NL%NXP=3", "NL%NXP=16")
-                .replace("NL%maximum_cells=1000", "NL%maximum_cells=100000")
-                .replace("safe_mother_only", "reverse_coarsening")
-                .replace(
-                    "NL%search_budget=100\n/",
-                    &format!("NL%search_budget=100\n  NL%materialization='{materialization}'\n/"),
-                )
-                .replace(
-                    "NL%mask_domain_global=.true.",
-                    "NL%mask_domain_global=.false.\n  NL%mask_domain_type='bbox'\n  \
-                     NL%mask_domain_fprefix='inline:bbox:w=0,e=25,s=-5,n=20'",
-                ),
-        )
-        .unwrap();
+        let mut namelist = specified_circle_namelist(&base, "regional", &prefix)
+            .replace("NL%NXP=3", "NL%NXP=16")
+            .replace("NL%maximum_cells=1000", "NL%maximum_cells=100000")
+            .replace("safe_mother_only", "reverse_coarsening");
+        if let Some(domain) = domain {
+            namelist = namelist.replace("NL%mask_domain_global=.true.", domain);
+        }
+        fs::write(&path, namelist).unwrap();
         let certified = earthmesh_cli::run_refine_pipeline_namelist(&path, &base, 100_000, None)
             .unwrap()
             .certified_run
@@ -1155,42 +1092,57 @@ fn regional_publication_delivers_the_whole_spheres_cells() {
     let result_dir = |certified: &earthmesh_cli::mkgrd_run_types::CertifiedRunRecord| {
         certified.certificate.parent().unwrap().to_path_buf()
     };
-    let (whole_dir, regional_dir) = (result_dir(&results[0]), result_dir(&results[1]));
-    let grid = fs::read_dir(&regional_dir)
-        .unwrap()
-        .map(|entry| entry.unwrap().file_name().into_string().unwrap())
-        .find(|name| name.starts_with("gridfile_") && !name.contains("parent"))
-        .unwrap();
-    let stem = grid.trim_end_matches(".nc4");
+    let (global_dir, regional_dir) = (result_dir(&results[0]), result_dir(&results[1]));
+    let gridfile = |dir: &std::path::Path| {
+        fs::read_dir(dir)
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name().into_string().unwrap())
+            .find(|name| name.starts_with("gridfile_") && !name.contains("parent"))
+            .unwrap()
+    };
+    let (global_grid, regional_grid) = (gridfile(&global_dir), gridfile(&regional_dir));
+    let stem = regional_grid.trim_end_matches(".nc4");
     assert!(regional_dir
         .join(format!("{stem}_regional_parent.nc4"))
         .is_file());
     assert!(!regional_dir
         .join(format!("{stem}_global_parent.nc4"))
         .exists());
-    assert!(whole_dir
-        .join(format!("{stem}_global_parent.nc4"))
-        .is_file());
 
     use earthmesh_cli::grid_quality_pipeline::{
         read_gridfile_cell_lineages, read_gridfile_mesh_points,
     };
-    let (whole, regional) = (
-        read_gridfile_mesh_points(whole_dir.join(&grid)).unwrap(),
-        read_gridfile_mesh_points(regional_dir.join(&grid)).unwrap(),
+    let (global, regional) = (
+        read_gridfile_mesh_points(global_dir.join(&global_grid)).unwrap(),
+        read_gridfile_mesh_points(regional_dir.join(&regional_grid)).unwrap(),
     );
-    assert_eq!(regional.w_lon, whole.w_lon);
-    assert_eq!(regional.w_lat, whole.w_lat);
-    assert_eq!(regional.m_lon, whole.m_lon);
-    assert_eq!(regional.m_lat, whole.m_lat);
-    assert_eq!(regional.m_to_w, whole.m_to_w);
-    assert_eq!(regional.w_to_m, whole.w_to_m);
-    assert_eq!(regional.n_w, whole.n_w);
-    assert_eq!(regional.w_refine_level, whole.w_refine_level);
-    assert_eq!(regional.m_refine_level, whole.m_refine_level);
+    // Rows are compared by what they hold, not where they sit: each file
+    // chooses its own placeholder layout.
+    use earthmesh_cli::unstructured_mesh_support::{
+        gridfile_m_row_layout, gridfile_w_row_layout, GridfileMeshPoints,
+    };
+    let site =
+        |mesh: &GridfileMeshPoints, w: usize| (mesh.w_lon[w].to_bits(), mesh.w_lat[w].to_bits());
+    let corners = |mesh: &GridfileMeshPoints, w: usize| {
+        let m_layout = gridfile_m_row_layout(mesh);
+        let start = w * mesh.w_to_m_width;
+        mesh.w_to_m[start..start + mesh.n_w[w] as usize]
+            .iter()
+            .map(|&id| {
+                let m = m_layout
+                    .physical_row_for_canonical_id(id, mesh.m_lon.len())
+                    .expect("corner id");
+                (mesh.m_lon[m].to_bits(), mesh.m_lat[m].to_bits())
+            })
+            .collect::<BTreeSet<_>>()
+    };
+    let global_layout = gridfile_w_row_layout(&global);
+    let global_row = (global_layout.first_physical_row..global.w_lon.len())
+        .map(|w| (site(&global, w), w))
+        .collect::<BTreeMap<_, _>>();
 
-    let rows = |certified: &earthmesh_cli::mkgrd_run_types::CertifiedRunRecord| {
-        let text = fs::read_to_string(certified.pre_export_remap.as_ref().unwrap()).unwrap();
+    let rows = |path: &std::path::Path| {
+        let text = fs::read_to_string(path).unwrap();
         let mut rows = BTreeMap::<usize, BTreeMap<usize, String>>::new();
         for line in text.lines().skip(1) {
             let mut fields = line.split(',');
@@ -1202,30 +1154,41 @@ fn regional_publication_delivers_the_whole_spheres_cells() {
         }
         rows
     };
-    let (whole_rows, regional_rows) = (rows(&results[0]), rows(&results[1]));
-    assert!(regional_rows.len() < whole_rows.len());
-    let (whole_lineage, regional_lineage) = (
-        read_gridfile_cell_lineages(whole_dir.join(&grid))
-            .unwrap()
-            .w,
-        read_gridfile_cell_lineages(regional_dir.join(&grid))
-            .unwrap()
-            .w,
-    );
+    let global_rows = rows(results[0].remap.as_ref().unwrap());
+    let regional_rows = rows(results[1].pre_export_remap.as_ref().unwrap());
+    assert!(regional_rows.len() < global_rows.len());
+    let lineage = read_gridfile_cell_lineages(regional_dir.join(&regional_grid))
+        .unwrap()
+        .w;
     let mut delivered = 0;
-    for (&w, &r) in whole_lineage.iter().zip(&regional_lineage) {
-        if w <= 1 {
+    for (w, &r) in lineage.iter().enumerate() {
+        if r <= 1 {
             continue;
         }
         delivered += 1;
+        let g = *global_row
+            .get(&site(&regional, w))
+            .unwrap_or_else(|| panic!("delivered cell {w} is not a global cell"));
+        assert_eq!(corners(&regional, w), corners(&global, g), "cell {w}");
         assert_eq!(
-            regional_rows.get(&(r as usize - 2)),
-            whole_rows.get(&(w as usize - 2)),
-            "delivered cell with lineage {w} / {r}"
+            regional.w_refine_level[w], global.w_refine_level[g],
+            "cell {w}"
         );
-        assert!(regional_rows.contains_key(&(r as usize - 2)));
+        // Remap targets are canonical ids less the two reserved ones.
+        let global_target = global_layout.canonical_id_for_physical_row(g).unwrap() as usize - 2;
+        let row = regional_rows.get(&(r as usize - 2));
+        assert!(row.is_some(), "delivered cell {w} has no remap row");
+        assert_eq!(
+            row,
+            global_rows.get(&global_target),
+            "remap row of cell {w}"
+        );
     }
     assert!(delivered > 0);
+    assert_eq!(
+        delivered,
+        regional.w_lon.len() - gridfile_w_row_layout(&regional).first_physical_row
+    );
 
     let certificate: serde_json::Value =
         serde_json::from_slice(&fs::read(&results[1].certificate).unwrap()).unwrap();
@@ -1238,9 +1201,248 @@ fn regional_publication_delivers_the_whole_spheres_cells() {
         regional_rows.len()
     );
     assert!(region["settled_base_faces"].as_u64().unwrap() > 0);
-    let whole_certificate: serde_json::Value =
+    let global_certificate: serde_json::Value =
         serde_json::from_slice(&fs::read(&results[0].certificate).unwrap()).unwrap();
-    assert!(whole_certificate["region"].is_null());
+    assert!(global_certificate["region"].is_null());
+
+    // The regional parent is open at its far edge; the MPAS mesh delivered
+    // from it is the closed sphere's, number for number, on every cell, edge
+    // and vertex it holds -- matched by position, compared bit for bit.
+    let format = earthmesh_project::ModelFormat::Mpas;
+    let (global_mpas, _) = earthmesh_cli::mpas_gridfile_writers::write_mpas_from_final_gridfile(
+        global_dir.join(&global_grid),
+        &global_dir,
+        format,
+    )
+    .unwrap();
+    let mpas_dir = root.join("regional_mpas");
+    fs::create_dir_all(&mpas_dir).unwrap();
+    let (regional_mpas, _) =
+        earthmesh_cli::mpas_gridfile_writers::write_mpas_from_final_gridfile_with_parent(
+            regional_dir.join(&regional_grid),
+            regional_dir.join(format!("{stem}_regional_parent.nc4")),
+            &mpas_dir,
+            format,
+        )
+        .unwrap();
+    let (global_mpas, regional_mpas) = (
+        netcdf::open(&global_mpas).unwrap(),
+        netcdf::open(&regional_mpas).unwrap(),
+    );
+    // Each element's values, keyed by its position: the scalars, and the rows
+    // whose order follows the mesh's numbering (kites, weights), sorted. A row
+    // reaches past the delivered cells where the regional subset drops an
+    // edge, so rows are compared where every cell around is delivered.
+    type Keyed = BTreeMap<(u64, u64, u64), (Vec<u64>, Vec<u64>, bool)>;
+    let keyed = |file: &netcdf::File,
+                 element: &str,
+                 scalars: &[&str],
+                 rows: &[(&str, Option<&str>)],
+                 around: &str|
+     -> Keyed {
+        let at = |axis: &str| read_f64(file, &format!("{axis}{element}"));
+        let (x, y, z) = (at("x"), at("y"), at("z"));
+        let scalars = scalars
+            .iter()
+            .map(|name| read_f64(file, name))
+            .collect::<Vec<_>>();
+        let rows = rows
+            .iter()
+            .map(|(name, count)| {
+                let var = file.variable(name).unwrap();
+                let width = var.dimensions()[1].len();
+                let values = var.get_values::<f64, _>(..).unwrap();
+                let counts = count.map(|count| {
+                    file.variable(count)
+                        .unwrap()
+                        .get_values::<i32, _>(..)
+                        .unwrap()
+                });
+                (values, width, counts)
+            })
+            .collect::<Vec<_>>();
+        let around_var = file.variable(around).unwrap();
+        let around_width = around_var.dimensions()[1].len();
+        let around = around_var.get_values::<i32, _>(..).unwrap();
+        (0..x.len())
+            .map(|index| {
+                let scalar_values = scalars
+                    .iter()
+                    .map(|values| values[index].to_bits())
+                    .collect::<Vec<_>>();
+                let mut row_values = Vec::new();
+                for (values, width, counts) in &rows {
+                    let used = counts
+                        .as_ref()
+                        .map_or(*width, |counts| counts[index] as usize);
+                    let mut row = values[index * width..index * width + used].to_vec();
+                    row.sort_by(f64::total_cmp);
+                    row_values.extend(row.iter().map(|value| value.to_bits()));
+                }
+                let whole = around[index * around_width..(index + 1) * around_width]
+                    .iter()
+                    .all(|&cell| cell > 0);
+                (
+                    (x[index].to_bits(), y[index].to_bits(), z[index].to_bits()),
+                    (scalar_values, row_values, whole),
+                )
+            })
+            .collect()
+    };
+    for (element, scalars, rows, around) in [
+        ("Cell", vec!["areaCell"], vec![], "cellsOnCell"),
+        (
+            "Edge",
+            vec!["dcEdge", "dvEdge", "angleEdge"],
+            vec![("weightsOnEdge", Some("nEdgesOnEdge"))],
+            "cellsOnEdge",
+        ),
+        (
+            "Vertex",
+            vec!["areaTriangle"],
+            vec![("kiteAreasOnVertex", None)],
+            "cellsOnVertex",
+        ),
+    ] {
+        let global = keyed(&global_mpas, element, &scalars, &rows, around);
+        let regional = keyed(&regional_mpas, element, &scalars, &rows, around);
+        assert!(!regional.is_empty());
+        let mut whole_rows = 0;
+        for (position, (scalar_values, row_values, whole)) in &regional {
+            let (global_scalars, global_rows, _) = global
+                .get(position)
+                .unwrap_or_else(|| panic!("{element} at {position:?} is not the sphere's"));
+            assert_eq!(
+                scalar_values, global_scalars,
+                "{element} at {position:?} differs from the closed sphere's"
+            );
+            if *whole && element != "Cell" {
+                whole_rows += 1;
+                assert_eq!(
+                    row_values, global_rows,
+                    "{element} rows at {position:?} differ from the closed sphere's"
+                );
+            }
+        }
+        assert!(
+            element == "Cell" || whole_rows > 0,
+            "{element}: no whole rows"
+        );
+    }
+}
+
+/// A regional run whose region reaches round the sphere settles nothing: the
+/// region is the closed sphere, still built and published as the region --
+/// never handed to another route (guide 11.116).
+#[test]
+fn a_region_that_reaches_round_the_sphere_is_published_as_the_region() {
+    let root = temp_root("closed_region");
+    let sources = root.join("sources");
+    fs::create_dir_all(&sources).unwrap();
+    let prefix = sources.join("hotspot");
+    earthmesh_cli::circle_close_mask_io::write_circle_mask_netcdf(
+        sources.join("hotspot_001.nc4"),
+        &earthmesh_cli::circle_close_mask_io::CircleMask {
+            refine_degree: 2,
+            points: vec![earthmesh_cli::coordinate_types::LonLatPoint {
+                lon: 12.0,
+                lat: 8.0,
+            }],
+            radius_km: vec![1500.0],
+        },
+    )
+    .unwrap();
+    let path = root.join("cmrc.nml");
+    fs::write(
+        &path,
+        specified_circle_namelist(&root, "closed_region", &prefix)
+            .replace("RL%max_iter_spc=1", "RL%max_iter_spc=2")
+            .replace("NL%maximum_level=1", "NL%maximum_level=2")
+            .replace("NL%maximum_cells=1000", "NL%maximum_cells=100000")
+            .replace("safe_mother_only", "reverse_coarsening")
+            .replace(
+                "NL%mask_domain_global=.true.",
+                "NL%mask_domain_global=.false.\n  NL%mask_domain_type='bbox'\n  \
+                 NL%mask_domain_fprefix='inline:bbox:w=-60,e=80,s=-50,n=60'",
+            ),
+    )
+    .unwrap();
+    let certified = earthmesh_cli::run_refine_pipeline_namelist(&path, &root, 100_000, None)
+        .unwrap()
+        .certified_run
+        .unwrap();
+    let certificate: serde_json::Value =
+        serde_json::from_slice(&fs::read(&certified.certificate).unwrap()).unwrap();
+    assert_eq!(certificate["geometry_scope"], "pre_export_region");
+    let region = &certificate["region"];
+    assert_eq!(region["settled_base_faces"], 0, "{region}");
+    assert_eq!(region["scope"], "built_region_closed_sphere");
+    assert_eq!(region["outer_boundary_sites"], 0);
+    assert_eq!(
+        region["built_finest_mother_cells"],
+        region["whole_finest_mother_cells"]
+    );
+}
+
+/// What a region cannot be built from is refused, not built over the whole
+/// sphere (guide 11.116): the two modes that move a closed sphere's vertices,
+/// for a global ICON grid. The safe mother is the same lattice over the
+/// region alone, and is built so.
+#[test]
+fn a_regional_run_refuses_what_only_a_closed_sphere_can_take() {
+    let root = temp_root("regional_refusals");
+    let sources = root.join("sources");
+    fs::create_dir_all(&sources).unwrap();
+    let prefix = sources.join("hotspot");
+    earthmesh_cli::circle_close_mask_io::write_circle_mask_netcdf(
+        sources.join("hotspot_001.nc4"),
+        &earthmesh_cli::circle_close_mask_io::CircleMask {
+            refine_degree: 1,
+            points: vec![earthmesh_cli::coordinate_types::LonLatPoint {
+                lon: 12.0,
+                lat: 8.0,
+            }],
+            radius_km: vec![500.0],
+        },
+    )
+    .unwrap();
+    for mode in ["stretched_mother", "equidistributed_mother"] {
+        let base = root.join(mode);
+        fs::create_dir_all(&base).unwrap();
+        let path = base.join("cmrc.nml");
+        fs::write(
+            &path,
+            specified_circle_namelist(&base, "refused", &prefix)
+                .replace("NL%NXP=3", "NL%NXP=16")
+                .replace("NL%maximum_cells=1000", "NL%maximum_cells=100000")
+                .replace("safe_mother_only", mode)
+                .replace(
+                    "NL%mask_domain_global=.true.",
+                    "NL%mask_domain_global=.false.\n  NL%mask_domain_type='bbox'\n  \
+                     NL%mask_domain_fprefix='inline:bbox:w=0,e=25,s=-5,n=20'",
+                ),
+        )
+        .unwrap();
+        let error = earthmesh_cli::run_refine_pipeline_namelist(&path, &base, 100_000, None)
+            .expect_err("a closed-sphere mode on a region");
+        assert!(
+            error
+                .to_string()
+                .contains("moves the vertices of a closed sphere"),
+            "{mode}: {error}"
+        );
+        assert!(
+            !base.join("result").exists()
+                || fs::read_dir(base.join("result"))
+                    .unwrap()
+                    .all(|entry| !entry
+                        .unwrap()
+                        .file_name()
+                        .to_string_lossy()
+                        .starts_with("gridfile_")),
+            "{mode} published a grid"
+        );
+    }
 }
 
 #[test]
@@ -1767,18 +1969,6 @@ fn certified_close_ocean_publishes_regional_fvcom_after_global_certificate() {
             ),
         );
     fs::write(&path, regional_namelist).unwrap();
-    let global_path = root.join("global_tri.nml");
-    let global_contents = namelist(&root, "regional_ocean_global_ref", 3, 1_000)
-        .replace("NL%mode_grid='hex'", "NL%mode_grid='tri'")
-        .replace("NL%delivery='coupled'", "NL%delivery='tri'");
-    fs::write(&global_path, global_contents).unwrap();
-    let global_run =
-        earthmesh_cli::run_refine_pipeline_namelist(&global_path, &root, 1_000, None).unwrap();
-    let global_mesh = earthmesh_cli::unstructured_mesh_io::read_unstructured_mesh_netcdf(
-        &global_run.output.output,
-    )
-    .unwrap();
-
     let run = earthmesh_cli::run_refine_pipeline_namelist(&path, &root, 1_000, None).unwrap();
     let gridfile =
         earthmesh_cli::grid_quality_pipeline::read_gridfile_mesh_points(&run.output.output)
@@ -1809,7 +1999,11 @@ fn certified_close_ocean_publishes_regional_fvcom_after_global_certificate() {
     let regional_mesh =
         earthmesh_cli::unstructured_mesh_io::read_unstructured_mesh_netcdf(&run.output.output)
             .unwrap();
-    assert_regional_triangles_are_whole_global_subset(&regional_mesh, &lineages, &global_mesh);
+    assert_regional_triangles_are_whole_global_subset(
+        &regional_mesh,
+        &lineages,
+        &parent_mesh(&run),
+    );
     let certified = run.certified_run.unwrap();
     assert_eq!(certified.topology_errors, 0);
     assert!(certified.remap.is_none());
@@ -1826,11 +2020,11 @@ fn certified_close_ocean_publishes_regional_fvcom_after_global_certificate() {
     assert!(!root.join("regional_ocean/result/fvcom.2dm").exists());
     let certificate: serde_json::Value =
         serde_json::from_slice(&fs::read(certified.certificate).unwrap()).unwrap();
-    assert_eq!(certificate["geometry_scope"], "pre_export_closed_sphere");
+    assert_eq!(certificate["geometry_scope"], "pre_export_region");
     assert_eq!(certificate["published_grid_is_certified_face_subset"], true);
     assert_eq!(
         certificate["published_grid_lineage_scope"],
-        "pre_export_closed_sphere_canonical_ids"
+        "pre_export_region_canonical_ids"
     );
     assert!(
         certificate["published_domain_geometry"]["cells"]
@@ -1917,7 +2111,7 @@ fn certified_close_land_triangles_preserve_global_faces_and_publication_guards()
     let lineages =
         earthmesh_cli::grid_quality_pipeline::read_gridfile_cell_lineages(&run.output.output)
             .unwrap();
-    assert_regional_triangles_are_whole_global_subset(&regional, &lineages, &global);
+    assert_regional_triangles_are_whole_global_subset(&regional, &lineages, &parent_mesh(&run));
     assert!(regional.m_points.len() < global.m_points.len());
     for point in regional
         .m_points
@@ -1930,7 +2124,7 @@ fn certified_close_land_triangles_preserve_global_faces_and_publication_guards()
     let certified = run.certified_run.unwrap();
     let certificate: serde_json::Value =
         serde_json::from_slice(&fs::read(&certified.certificate).unwrap()).unwrap();
-    assert_eq!(certificate["geometry_scope"], "pre_export_closed_sphere");
+    assert_eq!(certificate["geometry_scope"], "pre_export_region");
     assert_eq!(certificate["published_grid_is_certified_face_subset"], true);
     assert_eq!(certificate["published_domain_geometry"]["cell_view"], "tri");
     assert_eq!(
@@ -1972,7 +2166,11 @@ fn certified_close_land_triangles_preserve_global_faces_and_publication_guards()
     let island_lineages =
         earthmesh_cli::grid_quality_pipeline::read_gridfile_cell_lineages(&island.output.output)
             .unwrap();
-    assert_regional_triangles_are_whole_global_subset(&island_mesh, &island_lineages, &global);
+    assert_regional_triangles_are_whole_global_subset(
+        &island_mesh,
+        &island_lineages,
+        &parent_mesh(&island),
+    );
     let island_resources: serde_json::Value =
         serde_json::from_slice(&fs::read(&island.certified_run.unwrap().resources).unwrap())
             .unwrap();
@@ -2070,7 +2268,7 @@ fn certified_regional_land_triangles_keep_vertex_touching_islands() {
     let lineages =
         earthmesh_cli::grid_quality_pipeline::read_gridfile_cell_lineages(&run.output.output)
             .unwrap();
-    assert_regional_triangles_are_whole_global_subset(&regional, &lineages, &global);
+    assert_regional_triangles_are_whole_global_subset(&regional, &lineages, &parent_mesh(&run));
     assert_eq!(regional.m_to_w.len() - 2, 2);
     assert!(lineages.w.iter().skip(2).collect::<BTreeSet<_>>().len() < lineages.w.len() - 2);
     let parent_path = run.refinement_parent_gridfile().to_path_buf();
@@ -2159,7 +2357,7 @@ fn certified_close_land_publishes_whole_dual_cells_independently_of_model_format
         let parent = run
             .raw_output
             .as_ref()
-            .expect("durable same-run global parent");
+            .expect("durable same-run regional parent");
         assert_eq!(run.refinement_parent_gridfile(), parent.output);
         let parent_path = parent.output.clone();
         let parent_points =
@@ -2170,18 +2368,16 @@ fn certified_close_land_publishes_whole_dual_cells_independently_of_model_format
                 &parent_points,
             )
             .unwrap();
+        // The parent is the built region, open at the frame's far edge.
+        assert!(earthmesh_quality::topology::boundary_topology(&parent_input).edge_count > 0);
         assert_eq!(
-            earthmesh_quality::topology::boundary_topology(&parent_input).edge_count,
-            0
-        );
-        assert_eq!(
-            earthmesh_quality::topology::euler_characteristic(&parent_input),
-            2
+            earthmesh_quality::topology::connected_component_count(&parent_input),
+            1
         );
         let run = run.certified_run.unwrap();
         let cert: serde_json::Value =
             serde_json::from_slice(&fs::read(run.certificate).unwrap()).unwrap();
-        assert_eq!(cert["geometry_scope"], "pre_export_closed_sphere");
+        assert_eq!(cert["geometry_scope"], "pre_export_region");
         assert_eq!(cert["published_grid_is_certified_face_subset"], false);
         assert_eq!(cert["published_grid_is_certified_dual_cell_subset"], true);
         assert_eq!(
@@ -2207,7 +2403,7 @@ fn certified_close_land_publishes_whole_dual_cells_independently_of_model_format
             serde_json::from_slice(&fs::read(run.manifest).unwrap()).unwrap();
         assert!(std::path::Path::new(manifest["ready"].as_str().unwrap()).exists());
         assert_eq!(
-            manifest["global_parent_gridfile"],
+            manifest["regional_parent_gridfile"],
             parent_path.display().to_string()
         );
         // A subsequent empty land selection must not damage the previous ready bundle.
@@ -2307,7 +2503,7 @@ fn certified_regional_land_bbox_circle_and_wrapped_bbox_publish_scoped_tri_hex()
                 .as_ref()
                 .expect("regional CMRC publication must retain a durable global parent");
             assert_eq!(run.refinement_parent_gridfile(), parent.output);
-            let parent_cell_count = assert_parent_gridfile_is_closed_sphere(
+            let parent_cell_count = assert_parent_gridfile_is_the_built_region(
                 &parent.output,
                 parent.lbx_points,
                 mode_grid,
@@ -2321,7 +2517,7 @@ fn certified_regional_land_bbox_circle_and_wrapped_bbox_publish_scoped_tri_hex()
                 .is_some_and(|path| path.exists()));
             let certificate: serde_json::Value =
                 serde_json::from_slice(&fs::read(&certified.certificate).unwrap()).unwrap();
-            assert_eq!(certificate["geometry_scope"], "pre_export_closed_sphere");
+            assert_eq!(certificate["geometry_scope"], "pre_export_region");
             assert_eq!(certificate["published_grid_remap_available"], false);
             assert_eq!(
                 certificate["published_domain_geometry"]["cell_view"],
@@ -2382,7 +2578,7 @@ fn certified_regional_land_bbox_circle_and_wrapped_bbox_publish_scoped_tri_hex()
                 assert_regional_triangles_are_whole_global_subset(
                     &regional,
                     &lineages,
-                    global_meshes.get(mode_grid).unwrap(),
+                    &parent_mesh(&run),
                 );
             } else {
                 assert_eq!(
@@ -2503,7 +2699,7 @@ fn certified_regional_unmasked_bbox_circle_close_publish_scoped_tri_hex() {
                 .as_ref()
                 .expect("regional CMRC publication must retain a durable global parent");
             assert_eq!(run.refinement_parent_gridfile(), parent.output);
-            let parent_cell_count = assert_parent_gridfile_is_closed_sphere(
+            let parent_cell_count = assert_parent_gridfile_is_the_built_region(
                 &parent.output,
                 parent.lbx_points,
                 mode_grid,
@@ -2517,7 +2713,7 @@ fn certified_regional_unmasked_bbox_circle_close_publish_scoped_tri_hex() {
                 .is_some_and(|path| path.exists()));
             let certificate: serde_json::Value =
                 serde_json::from_slice(&fs::read(&certified.certificate).unwrap()).unwrap();
-            assert_eq!(certificate["geometry_scope"], "pre_export_closed_sphere");
+            assert_eq!(certificate["geometry_scope"], "pre_export_region");
             assert_eq!(certificate["published_grid_remap_available"], false);
             assert_eq!(
                 certificate["published_domain_geometry"]["cell_view"],
@@ -2527,7 +2723,7 @@ fn certified_regional_unmasked_bbox_circle_close_publish_scoped_tri_hex() {
                 serde_json::from_slice(&fs::read(&certified.resources).unwrap()).unwrap();
             assert!(resources["landtype_masked_cells"].is_null());
             assert!(resources["landtype_kept_cells"].is_null());
-            assert_eq!(resources["remap_scope"], "pre_export_closed_sphere_voronoi");
+            assert_eq!(resources["remap_scope"], "pre_export_region_voronoi");
             assert_eq!(resources["published_grid_remap_available"], false);
             assert_eq!(
                 resources["published_domain_topology"]["violations"],
@@ -2550,7 +2746,7 @@ fn certified_regional_unmasked_bbox_circle_close_publish_scoped_tri_hex() {
             let manifest: serde_json::Value =
                 serde_json::from_slice(&fs::read(&certified.manifest).unwrap()).unwrap();
             assert_eq!(
-                manifest["global_parent_gridfile"],
+                manifest["regional_parent_gridfile"],
                 parent.output.display().to_string()
             );
             assert!(manifest["remap"].is_null());
@@ -2718,10 +2914,13 @@ fn certified_regional_any_bbox_unions_publish_deduped_whole_cells() {
                 run.certified_run.as_ref().unwrap().ready_marker.exists(),
                 "{case} missing ready marker"
             );
-            single_ids.insert(*name, published_lineage_ids(&run.output.output, mode_grid));
+            single_ids.insert(
+                *name,
+                published_cell_positions(&run.output.output, mode_grid),
+            );
         }
 
-        let mut disjoint_ids: Option<BTreeSet<i64>> = None;
+        let mut disjoint_ids: Option<BTreeSet<(u64, u64)>> = None;
         for (variant, members) in &union_specs {
             let case = format!("regional_any_{mesh_type}_{mode_grid}_{variant}");
             let domain = root.join(format!("{case}_bbox.nml"));
@@ -2739,8 +2938,8 @@ fn certified_regional_any_bbox_unions_publish_deduped_whole_cells() {
             let parent = run
                 .raw_output
                 .as_ref()
-                .expect("regional union must retain a durable global parent");
-            let parent_cell_count = assert_parent_gridfile_is_closed_sphere(
+                .expect("regional union must retain a durable regional parent");
+            let parent_cell_count = assert_parent_gridfile_is_the_built_region(
                 &parent.output,
                 parent.lbx_points,
                 mode_grid,
@@ -2756,8 +2955,8 @@ fn certified_regional_any_bbox_unions_publish_deduped_whole_cells() {
                 serde_json::from_slice(&fs::read(&certified.certificate).unwrap()).unwrap();
             let resources: serde_json::Value =
                 serde_json::from_slice(&fs::read(&certified.resources).unwrap()).unwrap();
-            assert_eq!(certificate["geometry_scope"], "pre_export_closed_sphere");
-            assert_eq!(resources["remap_scope"], "pre_export_closed_sphere_voronoi");
+            assert_eq!(certificate["geometry_scope"], "pre_export_region");
+            assert_eq!(resources["remap_scope"], "pre_export_region_voronoi");
             assert_eq!(
                 resources["published_domain_geometry"]["cell_view"],
                 mode_grid
@@ -2774,11 +2973,11 @@ fn certified_regional_any_bbox_unions_publish_deduped_whole_cells() {
                 .iter()
                 .flat_map(|name| single_ids.get(name).unwrap().iter().copied())
                 .collect::<BTreeSet<_>>();
-            let actual = published_lineage_ids(&run.output.output, mode_grid);
+            let actual = published_cell_positions(&run.output.output, mode_grid);
             assert_eq!(
                 actual.len() as u64,
                 selected_cells,
-                "{case} published duplicate physical lineage IDs"
+                "{case} published two cells at one place"
             );
             assert_eq!(
                 actual, expected,
