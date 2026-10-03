@@ -6,6 +6,11 @@
 //! south, `nlon / 360` per degree, as `dem.nc` is laid out), or a directory
 //! of 5-degree tiles named like MERIT-Hydro's (`n20e100.nc` holds latitudes
 //! 20 to 25 north, longitudes 100 to 105 east).
+//!
+//! Missing: a declared `_FillValue` or `missing_value`, a non-finite value or
+//! one of magnitude 1e30 or more, and -9999 -- MERIT-Hydro marks its ocean so
+//! without declaring it. Only that value: a bathymetry legitimately goes
+//! below -9990 m, where MERIT's own reader cuts.
 
 use std::io;
 use std::path::Path;
@@ -21,6 +26,9 @@ pub struct LonLatWindow {
     pub south: f64,
     pub north: f64,
 }
+
+/// MERIT-Hydro's ocean, undeclared in its files.
+const UNDECLARED_MISSING: f64 = -9999.0;
 
 fn invalid(message: String) -> io::Error {
     io::Error::new(io::ErrorKind::InvalidData, message)
@@ -214,7 +222,11 @@ fn read_file_window(
         let values = read_values(&variable, start, count)?;
         samples.reserve(values.len());
         for (index, value) in values.into_iter().enumerate() {
-            if !value.is_finite() || value.abs() >= 1.0e30 || missing.contains(&value) {
+            if !value.is_finite()
+                || value.abs() >= 1.0e30
+                || value == UNDECLARED_MISSING
+                || missing.contains(&value)
+            {
                 continue;
             }
             let (row, column) = (index / count[1], index % count[1]);
@@ -366,6 +378,42 @@ mod tests {
         assert!(west
             .iter()
             .all(|&(lon, _, value)| lon < 0.0 && value == lon + 360.0 - 0.5));
+        std::fs::remove_file(&path).unwrap();
+    }
+
+    /// MERIT-Hydro's undeclared ocean value is missing; a deeper sea floor
+    /// is not.
+    #[test]
+    fn an_undeclared_minus_9999_is_missing_and_a_deep_sea_floor_is_not() {
+        let path = temp("ocean.nc");
+        let mut file = crate::create_netcdf(&path).unwrap();
+        file.add_dimension("lat", 1).unwrap();
+        file.add_dimension("lon", 3).unwrap();
+        file.add_variable::<f64>("lat", &["lat"])
+            .unwrap()
+            .put_values(&[0.5], ..)
+            .unwrap();
+        file.add_variable::<f64>("lon", &["lon"])
+            .unwrap()
+            .put_values(&[0.5, 1.5, 2.5], ..)
+            .unwrap();
+        file.add_variable::<f32>("elv", &["lat", "lon"])
+            .unwrap()
+            .put_values(&[-9999.0f32, -10500.0, 12.0], (.., ..))
+            .unwrap();
+        drop(file);
+        let samples = read_window_samples(
+            &path,
+            "elv",
+            LonLatWindow {
+                west: 0.0,
+                east: 3.0,
+                south: 0.0,
+                north: 1.0,
+            },
+        )
+        .unwrap();
+        assert_eq!(samples, vec![(1.5, 0.5, -10500.0), (2.5, 0.5, 12.0)]);
         std::fs::remove_file(&path).unwrap();
     }
 
