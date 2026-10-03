@@ -28,9 +28,9 @@ pub struct SettledRegion {
     listed: Option<BTreeSet<TriangleAddress>>,
     block_faces: Vec<usize>,
     block_first_face: Vec<TriangleAddress>,
-    /// For each built base face, its three sides: the unit normal of the
-    /// side's great circle and the base face across it.
-    built_sides: BTreeMap<TriangleAddress, [([f64; 3], TriangleAddress); 3]>,
+    /// For each built base face, the base face across each side (side k
+    /// opposite corner k, corners in lattice order).
+    built_sides: BTreeMap<TriangleAddress, [TriangleAddress; 3]>,
     /// Counts of the settled faces' closure at the base level: faces, edges
     /// shared with built faces, Euler characteristic, and the excess of
     /// boundary vertices where the boundary pinches (`sum of b/2 - 1` over
@@ -39,27 +39,6 @@ pub struct SettledRegion {
     boundary_edges: usize,
     euler: isize,
     pinch_excess: usize,
-}
-
-/// A built face's sides: the unit normal of the great circle through the
-/// two corners opposite each corner, and the face across.
-fn sides_of(
-    corners: [[f64; 3]; 3],
-    across: [TriangleAddress; 3],
-) -> [([f64; 3], TriangleAddress); 3] {
-    std::array::from_fn(|corner| {
-        let (a, b) = (corners[(corner + 1) % 3], corners[(corner + 2) % 3]);
-        let normal = [
-            a[1] * b[2] - a[2] * b[1],
-            a[2] * b[0] - a[0] * b[2],
-            a[0] * b[1] - a[1] * b[0],
-        ];
-        let length = (normal[0] * normal[0] + normal[1] * normal[1] + normal[2] * normal[2]).sqrt();
-        (
-            [normal[0] / length, normal[1] / length, normal[2] / length],
-            across[corner],
-        )
-    })
 }
 
 /// Faces a settled region may flood before giving up: every block but the
@@ -178,10 +157,6 @@ impl SettledRegion {
             if !built.contains(&address) {
                 continue;
             }
-            let corners = base.mesh.triangles()[face].map(|site| {
-                let point = base.mesh.vertices()[site];
-                [point.x, point.y, point.z]
-            });
             // `neighbours()[face][k]` lies across the edge opposite corner k.
             let mut across = [address; 3];
             for (corner, slot) in across.iter_mut().enumerate() {
@@ -192,7 +167,7 @@ impl SettledRegion {
                     rim.insert(*slot, block);
                 }
             }
-            built_sides.insert(address, sides_of(corners, across));
+            built_sides.insert(address, across);
         }
         // Number the blocks by their smallest face.
         let mut order = (0..block_faces.len()).collect::<Vec<_>>();
@@ -232,7 +207,7 @@ impl SettledRegion {
     /// sphere -- is counted as what remains.
     pub fn by_address(base_n: usize, built: &BTreeSet<TriangleAddress>) -> Result<Self, String> {
         use crate::mother_grid::lattice::{face_corner_origins, faces_across, faces_at_vertex};
-        use crate::mother_grid::region::{origin_position, VertexOrigin};
+        use crate::mother_grid::region::VertexOrigin;
         use std::collections::HashMap;
 
         if base_n == 0 {
@@ -469,15 +444,7 @@ impl SettledRegion {
                 .ok_or_else(|| format!("rim face {face:?} has no block"))?;
             rim.insert(face, block);
         }
-        let mut built_sides = BTreeMap::new();
-        for (&face, corners) in &corners_of {
-            let mut points = [[0.0; 3]; 3];
-            for (point, &origin) in points.iter_mut().zip(corners) {
-                let position = origin_position(base_n, origin)?;
-                *point = [position.x, position.y, position.z];
-            }
-            built_sides.insert(face, sides_of(points, across_of[&face]));
-        }
+        let built_sides = across_of;
         Ok(Self {
             base_subdivision: base_n,
             rim,
@@ -519,19 +486,28 @@ impl SettledRegion {
         (all - (self.boundary_edges * ratio) as isize + self.pinch_excess as isize) as usize
     }
 
-    /// The settled block across the edge `(a, b)` of a built face whose base
-    /// face is `ancestor`: the edge lies on one side of the base face -- both
-    /// ends on that side's great circle -- and the block holds the base face
-    /// across it.
-    fn block_across(&self, ancestor: TriangleAddress, a: [f64; 3], b: [f64; 3]) -> Option<usize> {
-        let on = |normal: [f64; 3], point: [f64; 3]| {
-            (normal[0] * point[0] + normal[1] * point[1] + normal[2] * point[2]).abs() <= 1.0e-12
-        };
-        self.built_sides
-            .get(&ancestor)?
-            .iter()
-            .find(|(normal, _)| on(*normal, a) && on(*normal, b))
-            .and_then(|(_, across)| self.rim.get(across).copied())
+    /// The settled block across the edge between the level-`n` lattice
+    /// points `a` and `b` of a built face whose base face is `ancestor`: both
+    /// ends lie on one side of the base face -- decided exactly, in lattice
+    /// coordinates, so at any scale (a side's great circle through floating
+    /// corners is off by about epsilon over the base edge: 3e-12 on a base of
+    /// n = 30720) -- and the block holds the base face across it.
+    fn block_across(
+        &self,
+        ancestor: TriangleAddress,
+        n: usize,
+        a: crate::mother_grid::VertexOrigin,
+        b: crate::mother_grid::VertexOrigin,
+    ) -> Option<usize> {
+        use crate::mother_grid::lattice::sides_holding;
+        let (on_a, on_b) = (
+            sides_holding(ancestor, n, a).ok()?,
+            sides_holding(ancestor, n, b).ok()?,
+        );
+        let side = (0..3).find(|&side| on_a[side] && on_b[side])?;
+        self.rim
+            .get(&self.built_sides.get(&ancestor)?[side])
+            .copied()
     }
 
     pub fn blocks(&self) -> usize {
@@ -734,12 +710,17 @@ fn settled_block_across(
     let address = level_grid.triangle_addresses[face].expect("built faces have addresses");
     let ancestor = base_ancestor(address, settled.base_subdivision)
         .ok_or_else(|| format!("face {address:?} has no base face"))?;
-    let point = |site: usize| {
-        let point = level_grid.mesh.vertices()[site];
-        [point.x, point.y, point.z]
+    let index = level_grid
+        .region
+        .as_ref()
+        .ok_or_else(|| format!("face {address:?} has an open edge on a whole grid"))?;
+    let origin = |site: usize| {
+        index
+            .origin(site)
+            .ok_or_else(|| format!("site {site} of face {address:?} has no origin"))
     };
     settled
-        .block_across(ancestor, point(a), point(b))
+        .block_across(ancestor, level_grid.subdivision, origin(a)?, origin(b)?)
         .ok_or_else(|| format!("face {address:?} has an open edge that faces no settled face"))
 }
 

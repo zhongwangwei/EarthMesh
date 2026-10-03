@@ -1870,7 +1870,7 @@ fn finite_difference_degree_angle_gradient(
     patch: &ElasticPatch,
     initial_step: f64,
 ) -> Option<Vec<(usize, CartesianPoint)>> {
-    let epsilon = (initial_step * 1.0e-3).clamp(1.0e-7, 1.0e-5);
+    let epsilon = finite_difference_step(initial_step);
     let mut gradient = Vec::with_capacity(patch.movable_compact_vertices.len());
     for &site in &patch.movable_compact_vertices {
         let point = mesh.vertices()[site];
@@ -4096,7 +4096,7 @@ fn finite_difference_angle_margin_gradient(
     patch: &ElasticPatch,
     initial_step: f64,
 ) -> Option<Vec<(usize, CartesianPoint)>> {
-    let epsilon = (initial_step * 1.0e-3).clamp(1.0e-7, 1.0e-5);
+    let epsilon = finite_difference_step(initial_step);
     let mut gradient = Vec::with_capacity(patch.movable_compact_vertices.len());
     for &site in &patch.movable_compact_vertices {
         let point = mesh.vertices()[site];
@@ -4136,7 +4136,7 @@ fn finite_difference_gradient(
 ) -> Option<Vec<(usize, CartesianPoint)>> {
     // ponytail: finite differences keep PR29 auditable; replace with analytic
     // patch derivatives only if transition-local profiling shows this dominates.
-    let epsilon = (initial_step * 1.0e-3).clamp(1.0e-7, 1.0e-5);
+    let epsilon = finite_difference_step(initial_step);
     let crossing_index = if matches!(phase, ElasticBlockPhase::Untangle) {
         Some(EdgeCrossingIndex::new(mesh, &context.guard_edges)?)
     } else {
@@ -4184,6 +4184,15 @@ fn finite_difference_gradient(
         ));
     }
     Some(gradient)
+}
+
+/// The finite-difference step for a relocation step window: a thousandth of
+/// the initial step, at most 1e-5 rad. Relative at every scale: the former
+/// floor of 1e-7 rad was 2% of a 29 m edge and steered where the solver went
+/// (guide 11.110). Coordinates near 1 round at 1e-16, so even a 30 m step's
+/// thousandth (5e-12) moves a point a million roundings.
+fn finite_difference_step(initial_step: f64) -> f64 {
+    (initial_step * 1.0e-3).min(1.0e-5)
 }
 
 fn synchronous_updates(
@@ -5689,7 +5698,7 @@ mod tests {
         initial_step: f64,
         context: &EnergyContext,
     ) -> Option<Vec<(usize, CartesianPoint)>> {
-        let epsilon = (initial_step * 1.0e-3).clamp(1.0e-7, 1.0e-5);
+        let epsilon = finite_difference_step(initial_step);
         patch
             .movable_compact_vertices
             .iter()

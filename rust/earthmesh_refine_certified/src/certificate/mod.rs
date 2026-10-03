@@ -1077,12 +1077,7 @@ fn verify_dual_sites(
                 reciprocal_errors += 1;
             }
             let corners = mesh.triangles()[triangle].map(|p| mesh.vertices()[p]);
-            let ds = corners.map(|p| chord(center, p));
-            let scale = ds[0].abs().max(ds[1].abs()).max(ds[2].abs()).max(1.0);
-            if (ds[0] - ds[1]).abs() > 1.0e-10 * scale
-                || (ds[0] - ds[2]).abs() > 1.0e-10 * scale
-                || ds[0] <= 0.0
-            {
+            if !circumcentre_is_equidistant(center, corners) {
                 reciprocal_errors += 1;
             }
         }
@@ -1225,12 +1220,7 @@ fn dual_report_for_range(
                 report.reciprocal_errors += 1;
             }
             let corners = mesh.triangles()[triangle].map(|v| mesh.vertices()[v]);
-            let ds = corners.map(|p| chord(center, p));
-            let scale = ds[0].abs().max(ds[1].abs()).max(ds[2].abs()).max(1.0);
-            if (ds[0] - ds[1]).abs() > 1.0e-10 * scale
-                || (ds[0] - ds[2]).abs() > 1.0e-10 * scale
-                || ds[0] <= 0.0
-            {
+            if !circumcentre_is_equidistant(center, corners) {
                 report.reciprocal_errors += 1;
             }
         }
@@ -1277,6 +1267,25 @@ pub(crate) fn voronoi_cell_is_convex_and_contains_site(
         }
     }
     true
+}
+
+/// Whether a Voronoi corner is its triangle's circumcentre: equidistant
+/// from the corners to 1e-10, or -- what a small cell allows -- to the
+/// rounding of its stored corners. Their radii are off by about epsilon,
+/// which moves squared chords by a few epsilon at any scale but chords by
+/// epsilon over the chord: 4e-11 at 29 m, where the fixed 1e-10 failed
+/// thirty of 718,208 cells (guide 11.110).
+fn circumcentre_is_equidistant(
+    center: earthmesh_mesh::CartesianPoint,
+    corners: [earthmesh_mesh::CartesianPoint; 3],
+) -> bool {
+    let ds = corners.map(|p| chord(center, p));
+    let scale = ds[0].abs().max(ds[1].abs()).max(ds[2].abs()).max(1.0);
+    let equal = |left: f64, right: f64| {
+        (left - right).abs() <= 1.0e-10 * scale
+            || (left * left - right * right).abs() <= 64.0 * f64::EPSILON
+    };
+    ds[0] > 0.0 && equal(ds[0], ds[1]) && equal(ds[0], ds[2])
 }
 
 fn chord(a: earthmesh_mesh::CartesianPoint, b: earthmesh_mesh::CartesianPoint) -> f64 {

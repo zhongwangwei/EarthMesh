@@ -124,6 +124,42 @@ pub fn faces_across(address: TriangleAddress) -> Result<[TriangleAddress; 3], St
     Ok([first, second, third])
 }
 
+/// Which sides of `face` -- a face of a level dividing `n` by a power of two
+/// -- hold the level-`n` lattice point `origin`; side k lies opposite corner
+/// k, corners in lattice order. Exact: integer arithmetic in the face's own
+/// frame, whatever the scale.
+pub fn sides_holding(
+    face: TriangleAddress,
+    n: usize,
+    origin: VertexOrigin,
+) -> Result<[bool; 3], String> {
+    if face.n == 0 || n < face.n || !n.is_multiple_of(face.n) {
+        return Err(format!("level {n} does not refine face {face:?}"));
+    }
+    let ratio = (n / face.n) as i64;
+    let corners = super::region::face_lattice_corners(face)
+        .map(|(i, j)| (i as i64 * ratio, j as i64 * ratio));
+    let mut held = [false; 3];
+    for (frame, i, j) in frames(n, origin) {
+        if frame != face.base_face {
+            continue;
+        }
+        let point = (i as i64, j as i64);
+        for (side, slot) in held.iter_mut().enumerate() {
+            let (start, end) = (corners[(side + 1) % 3], corners[(side + 2) % 3]);
+            let direction = (end.0 - start.0, end.1 - start.1);
+            let offset = (point.0 - start.0, point.1 - start.1);
+            let cross = direction.0 * offset.1 - direction.1 * offset.0;
+            let along = direction.0 * offset.0 + direction.1 * offset.1;
+            let length = direction.0 * direction.0 + direction.1 * direction.1;
+            if cross == 0 && (0..=length).contains(&along) {
+                *slot = true;
+            }
+        }
+    }
+    Ok(held)
+}
+
 /// Faces sharing an edge with `address`: the three that share two corners.
 pub fn edge_neighbours(address: TriangleAddress) -> Result<Vec<TriangleAddress>, String> {
     let corners = face_corner_origins(address)?;
@@ -407,6 +443,54 @@ mod tests {
                 sampled >= scanned && sampled <= scanned * (1.0 + 2.0e-6),
                 "n {n}: sampled {sampled} scanned {scanned}"
             );
+        }
+    }
+
+    /// A lattice point lies on a coarser face's side exactly when it is one
+    /// of that side's lattice points: every point of every side, seen from
+    /// every face that has it, and no other point of the face.
+    #[test]
+    fn sides_hold_their_lattice_points() {
+        for (coarse, levels) in [(1, 2), (2, 1), (3, 2)] {
+            let n = coarse << levels;
+            let ratio = n / coarse;
+            let grid = MotherGrid::generate(coarse).unwrap();
+            for face in grid.triangle_addresses.iter().flatten().copied() {
+                let corners = super::super::region::face_lattice_corners(face)
+                    .map(|(i, j)| (i * ratio, j * ratio));
+                for side in 0..3 {
+                    let (start, end) = (corners[(side + 1) % 3], corners[(side + 2) % 3]);
+                    for step in 0..=ratio {
+                        let i = (start.0 * (ratio - step) + end.0 * step) / ratio;
+                        let j = (start.1 * (ratio - step) + end.1 * step) / ratio;
+                        let origin = vertex_origin(n, face.base_face, i, j).unwrap();
+                        assert!(
+                            sides_holding(face, n, origin).unwrap()[side],
+                            "{face:?} side {side} step {step}"
+                        );
+                    }
+                }
+                // Points strictly inside hold no side.
+                for i in 0..=n {
+                    for j in 0..=n - i {
+                        let (a, b) = (corners[0], corners[1]);
+                        let c = corners[2];
+                        let inside = {
+                            let area = |p: (usize, usize), q: (usize, usize), r: (usize, usize)| {
+                                (q.0 as i64 - p.0 as i64) * (r.1 as i64 - p.1 as i64)
+                                    - (q.1 as i64 - p.1 as i64) * (r.0 as i64 - p.0 as i64)
+                            };
+                            let total = area(a, b, c);
+                            let w = [area((i, j), b, c), area(a, (i, j), c), area(a, b, (i, j))];
+                            w.iter().all(|&w| w.signum() == total.signum() && w != 0)
+                        };
+                        if inside {
+                            let origin = vertex_origin(n, face.base_face, i, j).unwrap();
+                            assert_eq!(sides_holding(face, n, origin).unwrap(), [false; 3]);
+                        }
+                    }
+                }
+            }
         }
     }
 }

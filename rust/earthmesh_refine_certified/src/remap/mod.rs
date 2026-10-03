@@ -266,8 +266,11 @@ impl ConservativeRemap {
     /// `spherical_overlap` with rows for some target cells only: `target_ids`
     /// gives each ring's number among all target cells, and `whole_cells` the
     /// cell count the tolerances scale with (see `PartialCoverage`).
+    /// `source_ids`, when the sources are some of a field's cells, gives each
+    /// one's number in the field (ascending).
     pub(crate) fn spherical_overlap_partial(
         source_cells: &[Vec<(f64, f64)>],
+        source_ids: Option<&[usize]>,
         target_cells: &[Vec<(f64, f64)>],
         target_ids: Vec<usize>,
         whole_cells: usize,
@@ -283,7 +286,7 @@ impl ConservativeRemap {
         let mut remap = Self::overlap_prepared(
             source_cells,
             &sources,
-            None,
+            source_ids,
             &index,
             target_cells,
             targets,
@@ -654,7 +657,7 @@ pub(crate) fn voronoi_rings(mesh: &MeshState) -> Result<Vec<Vec<(f64, f64)>>, St
 }
 
 /// Lon-lat rings, one per cell.
-type Rings = Vec<Vec<(f64, f64)>>;
+pub(crate) type Rings = Vec<Vec<(f64, f64)>>;
 
 /// Voronoi rings of the sites `select` picks, with each one's number among
 /// all the mesh's active sites.

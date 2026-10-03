@@ -74,6 +74,69 @@ impl RasterLevelField {
             .collect()
     }
 
+    /// The raster cells that may overlap `rings`, as polygons, with their
+    /// numbers in ascending order: those whose latitude-longitude box meets
+    /// the box of the rings' joint cap, widened by a cell for the bulge of a
+    /// cell's great-circle edges. A projection onto a region needs only
+    /// these, however fine the raster covering the globe; in ascending order
+    /// they keep the overlaps' order, so the projection is the same float
+    /// for float.
+    pub(crate) fn spherical_cells_near(
+        &self,
+        rings: &[Vec<(f64, f64)>],
+    ) -> Result<(crate::remap::Rings, Vec<usize>), String> {
+        let points = rings
+            .iter()
+            .map(|ring| {
+                ring.iter()
+                    .map(|&(lon, lat)| earthmesh_geometry::Point::new(lon, lat))
+                    .collect::<Vec<_>>()
+            })
+            .collect::<Vec<_>>();
+        let cap = earthmesh_boundary::SphericalCap::for_rings(&points)
+            .ok_or("the projected cells have no spherical cap")?;
+        let (lon, lat) = cap.center_lon_lat_degrees();
+        let radius = cap.radius_radians();
+        let dlon = 360.0 / self.nlon as f64;
+        let dlat = 180.0 / self.nlat as f64;
+        let (south, north) = (
+            lat - radius.to_degrees() - dlat,
+            lat + radius.to_degrees() + dlat,
+        );
+        let row = |lat: f64| (((lat + 90.0) / dlat).floor().max(0.0) as usize).min(self.nlat - 1);
+        let rows = row(south)..=row(north);
+        // Tangent meridians bound a cap clear of the poles.
+        let half_width = if south <= -90.0 || north >= 90.0 || radius >= std::f64::consts::FRAC_PI_2
+        {
+            None
+        } else {
+            let sine = radius.sin() / lat.to_radians().cos();
+            (sine < 1.0).then(|| sine.asin().to_degrees() + dlon)
+        };
+        let columns = match half_width.filter(|&half| 2.0 * half + dlon < 360.0) {
+            None => (0..self.nlon).collect::<Vec<_>>(),
+            Some(half) => {
+                let first = ((lon - half + 180.0) / dlon).floor() as isize;
+                let last = ((lon + half + 180.0) / dlon).floor() as isize;
+                (first..=last)
+                    .map(|column| column.rem_euclid(self.nlon as isize) as usize)
+                    .collect::<std::collections::BTreeSet<_>>()
+                    .into_iter()
+                    .collect()
+            }
+        };
+        let mut cells = Vec::new();
+        let mut ids = Vec::new();
+        for row in rows {
+            for &column in &columns {
+                let cell = row * self.nlon + column;
+                cells.push(self.spherical_cell(cell, dlon, dlat));
+                ids.push(cell);
+            }
+        }
+        Ok((cells, ids))
+    }
+
     /// Raster cell `cell` (row-major from the south-west) as a spherical
     /// polygon; the polar rows are triangles meeting at the pole.
     pub(crate) fn spherical_cell(&self, cell: usize, dlon: f64, dlat: f64) -> Vec<(f64, f64)> {
@@ -383,8 +446,10 @@ fn region_required_levels_with_sources(
     let (rings, ids) =
         crate::remap::voronoi_rings_selected(mesh, |site| !cellless.contains(&site))?;
     let cells = mesh.active_vertex_slots().count();
+    let (sources, source_ids) = raster.spherical_cells_near(&rings)?;
     let remap = ConservativeRemap::spherical_overlap_partial(
-        &raster.spherical_cells(),
+        &sources,
+        Some(&source_ids),
         &rings,
         ids,
         whole_cells,
@@ -791,5 +856,80 @@ mod tests {
             graded_envelope(&adjacency, &required, 2),
             vec![4, 4, 3, 4, 4]
         );
+    }
+
+    /// Projected from the raster cells near a region, the region's levels
+    /// are those projected from every raster cell, float for float -- at the
+    /// poles and across the dateline too -- and far fewer cells are used.
+    #[test]
+    fn a_region_projects_from_the_nearby_raster_cells_alone() {
+        use crate::mother_grid::lattice::{faces_around, locate};
+        let n = 8;
+        let (nlon, nlat) = (72, 36);
+        let mut seed = 0x2545_f491_4f6c_dd1du64;
+        let mut next = move || {
+            seed ^= seed << 13;
+            seed ^= seed >> 7;
+            seed ^= seed << 17;
+            seed
+        };
+        let levels = (0..nlon * nlat)
+            .map(|_| {
+                if next() % 5 == 0 {
+                    1 + (next() % 3) as usize
+                } else {
+                    0
+                }
+            })
+            .collect::<Vec<_>>();
+        let raster = RasterLevelField::new(nlon, nlat, levels).unwrap();
+        let unit = |lon: f64, lat: f64| {
+            let (lon, lat) = (lon.to_radians(), lat.to_radians());
+            [lat.cos() * lon.cos(), lat.cos() * lon.sin(), lat.sin()]
+        };
+        for (lon, lat) in [
+            (0.0, 90.0),
+            (10.0, -88.0),
+            (180.0, 0.0),
+            (-179.0, 40.0),
+            (101.0, 25.0),
+        ] {
+            let mut built = BTreeSet::from([locate(n, unit(lon, lat)).unwrap()]);
+            for _ in 0..2 {
+                for face in built.clone() {
+                    built.extend(faces_around(face).unwrap());
+                }
+            }
+            let region = MotherGrid::generate_faces(n, built).unwrap();
+            let outer = region.region.as_ref().unwrap().outer_boundary().clone();
+            let whole_cells = 10 * n * n + 2;
+            let near =
+                region_required_levels_with_sources(&raster, &region.mesh, &outer, whole_cells)
+                    .unwrap();
+            let (rings, ids) =
+                crate::remap::voronoi_rings_selected(&region.mesh, |site| !outer.contains(&site))
+                    .unwrap();
+            let remap = ConservativeRemap::spherical_overlap_partial(
+                &raster.spherical_cells(),
+                None,
+                &rings,
+                ids,
+                whole_cells,
+            )
+            .unwrap();
+            let cells = region.mesh.active_vertex_slots().count();
+            let every = maximum_overlapping_levels(&remap, raster.levels(), cells).unwrap();
+            assert_eq!(near, every, "region at ({lon}, {lat})");
+            assert!(
+                near.0.iter().any(|&level| level > 0),
+                "({lon}, {lat}) sees nothing"
+            );
+            let (used, _) = raster.spherical_cells_near(&rings).unwrap();
+            assert!(
+                used.len() < nlon * nlat / 4,
+                "({lon}, {lat}) used {}",
+                used.len()
+            );
+        }
     }
 }

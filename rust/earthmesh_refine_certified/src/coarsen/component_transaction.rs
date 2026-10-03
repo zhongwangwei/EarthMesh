@@ -658,6 +658,14 @@ pub(super) fn solve_component_transaction_at_level(
                 return ComponentTransactionOutcome::Certified(Box::new(report));
             }
             Err(failure) => {
+                // Why a candidate failed -- what tells a hard search from a
+                // broken one (guide 11.110).
+                if timing_enabled {
+                    eprintln!(
+                        "earthmesh_cli: cmrc_detail phase=candidate_failure component={} stage={:?} reason={}",
+                        component.id, failure.stage, failure.reason
+                    );
+                }
                 // certify_candidate uses this same timer for completed phases;
                 // only the unlogged tail since its last phase boundary is charged here.
                 log_failed_candidate_tail(
