@@ -899,11 +899,18 @@ pub fn delivery_base_faces_by_address(
     Ok(faces)
 }
 
+/// The widest transition a component's search may grow to, in parent rings:
+/// the initial ring and five halo expansions (guide 11.123). The width is
+/// reached only where a failed candidate's promotions ask for it. With four
+/// rings the 20 km 30 m trial stuck at its third level, where one component
+/// needed five.
+const MAXIMUM_TRANSITION_RINGS: usize = 6;
+
 /// Parent rings at every level that a transaction may touch beyond a parent
-/// that cannot coarsen: the widest transition ring (`maximum_transition_rings`,
-/// 4), the elastic domain around it (two ordinary rings) and the certificates'
-/// neighbourhood of what moved (one).
-const REGION_PARENT_RINGS: usize = 7;
+/// that cannot coarsen: the widest transition ring
+/// (`MAXIMUM_TRANSITION_RINGS`), the elastic domain around it (two ordinary
+/// rings) and the certificates' neighbourhood of what moved (one).
+const REGION_PARENT_RINGS: usize = MAXIMUM_TRANSITION_RINGS + 2 + 1;
 
 /// A regional run (guide 11.116): reverse coarsening with the finest mother
 /// built only where the requirement reaches and the domain delivers (design
@@ -1112,7 +1119,7 @@ fn build_region_certified_construction<R>(
                 max_level: chosen_level,
                 max_adjacent_level_delta: 1,
                 initial_transition_rings: 1,
-                maximum_transition_rings: 4,
+                maximum_transition_rings: MAXIMUM_TRANSITION_RINGS,
                 topology_states_per_component: options.search_budget.clamp(1, 10_000),
                 elastic_iterations_per_topology: 256,
                 interval_boxes_per_component: whole_faces.saturating_mul(3),
@@ -1467,7 +1474,7 @@ pub fn build_mixed_certified_construction<R>(
             max_level: chosen_level,
             max_adjacent_level_delta: 1,
             initial_transition_rings: 1,
-            maximum_transition_rings: 4,
+            maximum_transition_rings: MAXIMUM_TRANSITION_RINGS,
             topology_states_per_component: options.search_budget.clamp(1, 10_000),
             elastic_iterations_per_topology: 256,
             interval_boxes_per_component: initial_faces.saturating_mul(3),
