@@ -10,7 +10,8 @@ use crate::mother_grid::{MotherGrid, TriangleAddress, VertexAddress};
 use earthmesh_mesh::{
     orientation_on_sphere, MeshState, RetirementPostconditionOutcome, RetirementSearchOutcome, Sign,
 };
-use std::collections::{BTreeMap, BTreeSet, HashSet};
+use std::cmp::Reverse;
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct TransitionTopologyLimits {
@@ -1624,29 +1625,66 @@ fn search_variables(
             });
         }
     }
-    let mut ordered = Vec::with_capacity(pending.len());
-    let mut frontier = fixed_touched.clone();
-    while !pending.is_empty() {
-        let best = pending
-            .iter()
-            .enumerate()
-            .max_by(|(_, left), (_, right)| {
-                let left_shared = shared_count(&left.touched, &frontier);
-                let right_shared = shared_count(&right.touched, &frontier);
-                left_shared
-                    .cmp(&right_shared)
-                    .then_with(|| left.touched.len().cmp(&right.touched.len()))
-                    .then_with(|| {
-                        parents[right.original_position].cmp(&parents[left.original_position])
-                    })
-            })
-            .map(|(index, _)| index)
-            .unwrap();
-        let variable = pending.remove(best);
-        frontier.extend(variable.touched.iter().copied());
-        ordered.push(variable);
-    }
+    let order = greedy_order(&pending, parents, &fixed_touched);
+    let mut slots = pending.into_iter().map(Some).collect::<Vec<_>>();
+    let ordered = order
+        .into_iter()
+        .map(|index| slots[index].take().expect("each variable is ordered once"))
+        .collect();
     (ordered, fixed_touched.into_iter().collect())
+}
+
+/// The order the search sets its variables in: again and again the one with
+/// the most vertices already touched, then the most vertices, then the lowest
+/// parent. A variable's count changes only when one of its vertices joins the
+/// touched set, so the counts are kept per vertex and the best is the last of
+/// an ordered set: n log n, where rescanning every pending variable for each
+/// pick cost a 40 km component 110 s a search (guide 11.125).
+fn greedy_order(
+    pending: &[SearchVariable],
+    parents: &[TriangleAddress],
+    fixed_touched: &BTreeSet<usize>,
+) -> Vec<usize> {
+    let mut touching = HashMap::<usize, Vec<usize>>::new();
+    for (index, variable) in pending.iter().enumerate() {
+        for &vertex in &variable.touched {
+            touching.entry(vertex).or_default().push(index);
+        }
+    }
+    let key = |index: usize, shared: usize| {
+        let variable = &pending[index];
+        (
+            shared,
+            variable.touched.len(),
+            Reverse(parents[variable.original_position]),
+            index,
+        )
+    };
+    let mut shared = pending
+        .iter()
+        .map(|variable| shared_count(&variable.touched, fixed_touched))
+        .collect::<Vec<_>>();
+    let mut queue = (0..pending.len())
+        .map(|index| key(index, shared[index]))
+        .collect::<BTreeSet<_>>();
+    let mut frontier = fixed_touched.clone();
+    let mut order = Vec::with_capacity(pending.len());
+    while let Some((_, _, _, index)) = queue.pop_last() {
+        order.push(index);
+        for &vertex in &pending[index].touched {
+            if !frontier.insert(vertex) {
+                continue;
+            }
+            for &other in touching.get(&vertex).map_or(&[][..], Vec::as_slice) {
+                // A variable already ordered is no longer queued.
+                if queue.remove(&key(other, shared[other])) {
+                    shared[other] += 1;
+                    queue.insert(key(other, shared[other]));
+                }
+            }
+        }
+    }
+    order
 }
 
 fn shared_count(vertices: &[usize], frontier: &BTreeSet<usize>) -> usize {
@@ -2703,6 +2741,88 @@ mod tests {
                 vec![1, 2],
             ]
         );
+    }
+
+    /// The order rescanning every pending variable per pick gave -- the
+    /// implementation `greedy_order` replaced, kept as its oracle.
+    fn rescanned_order(
+        pending: &[SearchVariable],
+        parents: &[TriangleAddress],
+        fixed_touched: &BTreeSet<usize>,
+    ) -> Vec<usize> {
+        let mut left_over = (0..pending.len()).collect::<Vec<_>>();
+        let mut frontier = fixed_touched.clone();
+        let mut order = Vec::new();
+        while !left_over.is_empty() {
+            let best = left_over
+                .iter()
+                .enumerate()
+                .max_by(|(_, &left), (_, &right)| {
+                    let (left, right) = (&pending[left], &pending[right]);
+                    shared_count(&left.touched, &frontier)
+                        .cmp(&shared_count(&right.touched, &frontier))
+                        .then_with(|| left.touched.len().cmp(&right.touched.len()))
+                        .then_with(|| {
+                            parents[right.original_position].cmp(&parents[left.original_position])
+                        })
+                })
+                .map(|(position, _)| position)
+                .unwrap();
+            let index = left_over.remove(best);
+            frontier.extend(pending[index].touched.iter().copied());
+            order.push(index);
+        }
+        order
+    }
+
+    /// The incremental order is the rescanning one, variable for variable,
+    /// on random variables with many ties in their counts.
+    #[test]
+    fn variables_are_ordered_as_rescanning_ordered_them() {
+        let mut state = 0x9e37_79b9_7f4a_7c15u64;
+        let mut next = move |bound: u64| {
+            state ^= state << 13;
+            state ^= state >> 7;
+            state ^= state << 17;
+            state % bound
+        };
+        for round in 0..200 {
+            let count = next(60) as usize + usize::from(round % 7 == 0) * 300;
+            let vertices = 4 + next(40);
+            let mut positions = (0..count).collect::<Vec<_>>();
+            for i in (1..positions.len()).rev() {
+                positions.swap(i, next(i as u64 + 1) as usize);
+            }
+            let parents = positions
+                .iter()
+                .map(|&position| TriangleAddress {
+                    base_face: (position % 20) as u8,
+                    i: position / 20,
+                    j: 0,
+                    n: 1 << 10,
+                    orientation: crate::mother_grid::TriangleOrientation::Up,
+                })
+                .collect::<Vec<_>>();
+            let pending = (0..count)
+                .map(|position| SearchVariable {
+                    original_position: position,
+                    variants: Vec::new(),
+                    touched: (0..1 + next(6))
+                        .map(|_| next(vertices) as usize)
+                        .collect::<BTreeSet<_>>()
+                        .into_iter()
+                        .collect(),
+                })
+                .collect::<Vec<_>>();
+            let fixed = (0..next(5))
+                .map(|_| next(vertices) as usize)
+                .collect::<BTreeSet<_>>();
+            assert_eq!(
+                greedy_order(&pending, &parents, &fixed),
+                rescanned_order(&pending, &parents, &fixed),
+                "round {round}"
+            );
+        }
     }
 
     #[test]
