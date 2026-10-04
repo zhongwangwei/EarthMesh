@@ -1118,6 +1118,7 @@ fn build_region_certified_construction<R>(
                 interval_boxes_per_component: whole_faces.saturating_mul(3),
                 total_transition_states: options.search_budget,
                 allow_safe_fallback: false,
+                retry_at_failure: true,
             },
             &coarsen::RegionEpochs {
                 built_bases: built,
@@ -1472,6 +1473,7 @@ pub fn build_mixed_certified_construction<R>(
             interval_boxes_per_component: initial_faces.saturating_mul(3),
             total_transition_states: options.search_budget,
             allow_safe_fallback: false,
+            retry_at_failure: true,
         },
     );
     log_cmrc_phase(

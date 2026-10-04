@@ -39,8 +39,15 @@ enum Pattern {
 type Account = (usize, usize, usize, usize, String);
 
 /// Coarsens `pattern` at level `levels` around base face 0's lattice vertex
-/// nearest its centre; returns each component's account.
-fn coarsen(base_n: usize, levels: usize, pattern: Pattern, rings: usize) -> Vec<Account> {
+/// nearest its centre; returns each component's account. `retry_at_failure`
+/// is `ElasticCmrcConfig::retry_at_failure`.
+fn coarsen(
+    base_n: usize,
+    levels: usize,
+    pattern: Pattern,
+    rings: usize,
+    retry_at_failure: bool,
+) -> Vec<Account> {
     let fine_n = base_n << levels;
     let centre = (base_n / 3, base_n / 3);
     let (ci, cj) = ((centre.0 << levels) as f64, (centre.1 << levels) as f64);
@@ -124,6 +131,7 @@ fn coarsen(base_n: usize, levels: usize, pattern: Pattern, rings: usize) -> Vec<
         interval_boxes_per_component: 1_000_000,
         total_transition_states: 100_000,
         allow_safe_fallback: false,
+        retry_at_failure,
     };
     let outcome = run_region_component_epochs(
         region.clone(),
@@ -157,15 +165,29 @@ fn coarsen(base_n: usize, levels: usize, pattern: Pattern, rings: usize) -> Vec<
 }
 
 /// From 3.7 km cells to 29 m (bases 480 and 61440) the lattice is flat
-/// enough that one pattern is one problem: the coarsening takes the same
-/// topology states, and elastic iterations within a few. A fixed
-/// finite-difference floor once made it 8 states at 3.7 km and 5 at 29 m
-/// (guide 11.110).
+/// enough that one pattern is one problem: in the search's own order the
+/// coarsening takes the same topology states, and elastic iterations within
+/// a few. A fixed finite-difference floor once made it 8 states at 3.7 km and
+/// 5 at 29 m (guide 11.110). With retries drawn to the failed face (guide
+/// 11.122) the next candidate depends on which face failed, and the elastic
+/// solutions at the two scales differ by a tenth of a degree, enough to fail
+/// first at different faces; there both scales must still certify.
 #[test]
 fn one_pattern_coarsens_alike_from_kilometres_to_thirty_metres() {
     let pattern = Pattern::BaseRings { rings: 1 };
-    let coarse = coarsen(480, 2, pattern, 14);
-    let fine = coarsen(61440, 2, pattern, 14);
+    let coarse = coarsen(480, 2, pattern, 14, false);
+    let fine = coarsen(61440, 2, pattern, 14, false);
+    for base_n in [480, 61440] {
+        let drawn = coarsen(base_n, 2, pattern, 14, true);
+        assert_eq!(drawn.len(), coarse.len(), "base {base_n}");
+        for (drawn, alike) in drawn.iter().zip(&coarse) {
+            assert_eq!(
+                (drawn.0, drawn.1, &drawn.4),
+                (alike.0, alike.1, &alike.4),
+                "base {base_n}: {drawn:?}"
+            );
+        }
+    }
     assert_eq!(coarse.len(), fine.len());
     for (coarse, fine) in coarse.iter().zip(&fine) {
         assert_eq!(
@@ -200,7 +222,7 @@ fn probe_one_pattern_at_finer_bases() {
             },
             Err(_) => Pattern::BaseRings { rings: 1 },
         };
-        let components = coarsen(base_n, 2, pattern, 14);
+        let components = coarsen(base_n, 2, pattern, 14, true);
         println!(
             "base {base_n:5} ({:.1} s): {}",
             started.elapsed().as_secs_f64(),

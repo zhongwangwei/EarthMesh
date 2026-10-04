@@ -29,6 +29,7 @@ fn config(max_level: usize) -> ElasticCmrcConfig {
         interval_boxes_per_component: 1_000_000,
         total_transition_states: 100_000,
         allow_safe_fallback: false,
+        retry_at_failure: true,
     }
 }
 

@@ -88,6 +88,11 @@ pub struct ElasticCmrcConfig {
     pub interval_boxes_per_component: usize,
     pub total_transition_states: usize,
     pub allow_safe_fallback: bool,
+    /// After a candidate fails at a face, widen the transition there before
+    /// the search goes on (guide 11.122). Off, the search goes on in its own
+    /// order, which does not depend on where a candidate failed -- what the
+    /// scale-invariance test compares across scales.
+    pub retry_at_failure: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -661,6 +666,7 @@ fn run_elastic_component_epochs_impl(
                 halo_expansions: config
                     .maximum_transition_rings
                     .saturating_sub(config.initial_transition_rings),
+                retry_at_failure: config.retry_at_failure,
             };
             let before_quality_state = quality_gate.is_some().then(|| state.clone());
             let outcome = solve_component_transaction_at_level(
@@ -1449,6 +1455,7 @@ mod tests {
             interval_boxes_per_component: 100_000,
             total_transition_states: 2,
             allow_safe_fallback: false,
+            retry_at_failure: true,
         };
 
         let state = ComponentTransactionState::new(&source, config.max_level).unwrap();
@@ -1531,6 +1538,7 @@ mod tests {
             interval_boxes_per_component: 100_000,
             total_transition_states: 1,
             allow_safe_fallback: false,
+            retry_at_failure: true,
         };
 
         let outcome = run_elastic_component_epochs_with_quality_context(

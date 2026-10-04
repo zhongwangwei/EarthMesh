@@ -158,6 +158,8 @@ pub struct ComponentTransactionLimits {
     pub elastic_iterations: usize,
     pub interval_boxes: usize,
     pub halo_expansions: usize,
+    /// `ElasticCmrcConfig::retry_at_failure`.
+    pub retry_at_failure: bool,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -506,6 +508,7 @@ pub(super) fn solve_component_transaction_at_level(
             &search_component,
             topology_cursor,
             preferred_promotion_with_cost,
+            limits.retry_at_failure,
         );
         log_component_phase(
             timing_enabled,
@@ -1790,7 +1793,13 @@ mod tests {
         let mut stale_after_layout_shrink = search_component.clone();
         stale_after_layout_shrink.transition_parents.clear();
         assert!(matches!(
-            limits.solve_from_cursor_with_promotion(&source, &stale_after_layout_shrink, 0, None),
+            limits.solve_from_cursor_with_promotion(
+                &source,
+                &stale_after_layout_shrink,
+                0,
+                None,
+                true
+            ),
             TransitionTopologyOutcome::InvalidBoundary { reason, .. }
                 if reason == "component parents must equal core union transition parents"
         ));
@@ -1798,7 +1807,7 @@ mod tests {
         sync_search_component_partition(&mut search_component, vec![core], Vec::new());
         assert_eq!(search_component.parents, vec![core]);
         assert!(matches!(
-            limits.solve_from_cursor_with_promotion(&source, &search_component, 0, None),
+            limits.solve_from_cursor_with_promotion(&source, &search_component, 0, None, true),
             TransitionTopologyOutcome::RequiresWiderHalo {
                 states_examined: 0,
                 halo_expansions: 0,

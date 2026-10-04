@@ -34,6 +34,7 @@ impl TransitionTopologyLimits {
         component: &HierarchyComponent,
         topology_states_cursor: usize,
         preferred_core_promotion: Option<(TriangleAddress, usize)>,
+        promote_first: bool,
     ) -> TransitionTopologyOutcome {
         solve_transition_topology_from_cursor_with_promotion(
             source,
@@ -41,6 +42,7 @@ impl TransitionTopologyLimits {
             self,
             topology_states_cursor,
             preferred_core_promotion,
+            promote_first,
         )
     }
 }
@@ -160,6 +162,7 @@ pub fn solve_transition_topology_from_cursor(
         limits,
         topology_states_cursor,
         None,
+        false,
     )
 }
 
@@ -169,6 +172,7 @@ fn solve_transition_topology_from_cursor_with_promotion(
     limits: TransitionTopologyLimits,
     topology_states_cursor: usize,
     mut preferred_core_promotion: Option<(TriangleAddress, usize)>,
+    promote_first: bool,
 ) -> TransitionTopologyOutcome {
     // A search asks for the same parent's patch from its preflight, its
     // core forecast, its boundary and every halo expansion: each once.
@@ -184,14 +188,65 @@ fn solve_transition_topology_from_cursor_with_promotion(
     }
     let mut halo_expansions = 0usize;
     let mut states_examined = 0usize;
+    // A candidate that failed at a face asks for the transition to widen
+    // there first (guide 11.122): its nearest core parent's boundary segment
+    // is promoted and the new layout is enumerated from its first state, the
+    // old layout's `topology_states_cursor` states counted as examined.
+    // Going on with the old layout's enumeration changes the transition
+    // wherever the search order happens to be, which in a component the
+    // size of a region is far from the failure. A parent off the core
+    // boundary, or `promote_first` off, keeps the old behaviour: the
+    // promotion waits until the layout's states are spent.
+    //
+    // The old layout is kept (`unpromoted`) until the search returns: a
+    // promotion that ends without a candidate -- an invalid boundary the
+    // search cannot repair, a core pinched at a vertex once the halo budget
+    // is spent as in the 20 km 30 m trial, or no topology at all -- falls
+    // back to it, once, and the search goes on as it would have without
+    // the promotion. Only a spent state budget ends it either way.
+    let mut unpromoted = None;
+    if let Some(preferred) = preferred_core_promotion.filter(|_| promote_first) {
+        let kept = (core.clone(), transition.clone());
+        if let Some(cost) = promote_preferred_segment(
+            patches,
+            &mut core,
+            &mut transition,
+            preferred,
+            limits.maximum_halo_expansions,
+        ) {
+            unpromoted = Some(kept);
+            halo_expansions += cost;
+            states_examined = topology_states_cursor;
+            preferred_core_promotion = None;
+        }
+    }
+    macro_rules! end_or_fall_back {
+        ($outcome:expr) => {{
+            let outcome = $outcome;
+            if let Some((kept_core, kept_transition)) = unpromoted.take() {
+                if crate::construction::cmrc_timing_enabled() {
+                    eprintln!(
+                        "earthmesh_cli: cmrc_detail phase=promotion_fallback component={} \
+                         after={outcome:?}",
+                        component.id
+                    );
+                }
+                (core, transition) = (kept_core, kept_transition);
+                halo_expansions = 0;
+                states_examined = 0;
+                continue;
+            }
+            return outcome;
+        }};
+    }
 
     loop {
         if core.is_empty() {
-            return TransitionTopologyOutcome::ProvenInfeasible {
+            end_or_fall_back!(TransitionTopologyOutcome::ProvenInfeasible {
                 states_examined,
                 halo_expansions,
                 reason: "halo expansion leaves no coarse core".into(),
-            };
+            });
         }
 
         let uncovered = core
@@ -209,17 +264,11 @@ fn solve_transition_topology_from_cursor_with_promotion(
             return pure_core(patches, component.id, &core, halo_expansions);
         }
         if !uncovered.is_empty() {
-            if uncovered.len() == core.len() {
-                return TransitionTopologyOutcome::RequiresWiderHalo {
+            if uncovered.len() == core.len() || halo_expansions == limits.maximum_halo_expansions {
+                end_or_fall_back!(TransitionTopologyOutcome::RequiresWiderHalo {
                     states_examined,
                     halo_expansions,
-                };
-            }
-            if halo_expansions == limits.maximum_halo_expansions {
-                return TransitionTopologyOutcome::RequiresWiderHalo {
-                    states_examined,
-                    halo_expansions,
-                };
+                });
             }
             promote_to_transition(&mut core, &mut transition, uncovered);
             halo_expansions += 1;
@@ -279,10 +328,10 @@ fn solve_transition_topology_from_cursor_with_promotion(
                     preferred_core_promotion.take(),
                     limits.maximum_halo_expansions - halo_expansions,
                 ) else {
-                    return TransitionTopologyOutcome::SearchBudgetExhausted {
+                    end_or_fall_back!(TransitionTopologyOutcome::SearchBudgetExhausted {
                         states_examined,
                         halo_expansions,
-                    };
+                    });
                 };
                 halo_expansions += expansion_cost;
             }
@@ -297,7 +346,11 @@ fn solve_transition_topology_from_cursor_with_promotion(
                         }
                         Ok(false) => {}
                         Err(repair_reason) => {
-                            return invalid(states_examined, halo_expansions, repair_reason)
+                            end_or_fall_back!(invalid(
+                                states_examined,
+                                halo_expansions,
+                                repair_reason
+                            ))
                         }
                     }
                 }
@@ -311,11 +364,15 @@ fn solve_transition_topology_from_cursor_with_promotion(
                         }
                         Ok(false) => {}
                         Err(repair_reason) => {
-                            return invalid(states_examined, halo_expansions, repair_reason)
+                            end_or_fall_back!(invalid(
+                                states_examined,
+                                halo_expansions,
+                                repair_reason
+                            ))
                         }
                     }
                 }
-                return invalid(states_examined, halo_expansions, reason);
+                end_or_fall_back!(invalid(states_examined, halo_expansions, reason));
             }
             TransitionTopologyOutcome::ProvenInfeasible {
                 states_examined: local,
@@ -331,11 +388,11 @@ fn solve_transition_topology_from_cursor_with_promotion(
                 }
                 let peel = core_boundary(patches, &core);
                 if peel.is_empty() || peel.len() == core.len() {
-                    return TransitionTopologyOutcome::ProvenInfeasible {
+                    end_or_fall_back!(TransitionTopologyOutcome::ProvenInfeasible {
                         states_examined,
                         halo_expansions,
                         reason,
-                    };
+                    });
                 }
                 let Some(expansion_cost) = promote_core_boundary(
                     patches,
@@ -344,10 +401,10 @@ fn solve_transition_topology_from_cursor_with_promotion(
                     preferred_core_promotion.take(),
                     limits.maximum_halo_expansions - halo_expansions,
                 ) else {
-                    return TransitionTopologyOutcome::RequiresWiderHalo {
+                    end_or_fall_back!(TransitionTopologyOutcome::RequiresWiderHalo {
                         states_examined,
                         halo_expansions,
-                    };
+                    });
                 };
                 halo_expansions += expansion_cost;
             }
@@ -471,6 +528,29 @@ fn promote_core_boundary(
     }
     promote_to_transition(core, transition, promoted);
     Some(expansion_cost)
+}
+
+/// A failure's promotion alone: the preferred parent's boundary segment
+/// (`preferred_boundary_segment`), when the parent lies on the core boundary
+/// and its cost fits the halo budget -- never the whole boundary, which is
+/// `promote_core_boundary`'s answer for a layout whose states are spent.
+fn promote_preferred_segment(
+    patches: &Patches<'_>,
+    core: &mut BTreeSet<TriangleAddress>,
+    transition: &mut BTreeSet<TriangleAddress>,
+    (preferred, cost): (TriangleAddress, usize),
+    remaining_halo_expansions: usize,
+) -> Option<usize> {
+    if cost > remaining_halo_expansions {
+        return None;
+    }
+    let peel = core_boundary(patches, core);
+    if !peel.contains(&preferred) || peel.len() == core.len() {
+        return None;
+    }
+    let segment = preferred_boundary_segment(patches, &peel, transition, preferred)?;
+    promote_to_transition(core, transition, segment);
+    Some(cost)
 }
 
 fn preferred_boundary_segment(
@@ -2874,6 +2954,157 @@ mod tests {
             ),
             "unexpected outcome: {outcome:?}, block={block}"
         );
+    }
+
+    /// A failed candidate's promotion comes before the search goes on: the
+    /// preferred parent's segment leaves the core, the new layout is
+    /// enumerated from its first state, and the old layout's cursor counts as
+    /// examined. A parent off the core boundary, or past the halo budget,
+    /// leaves the old layout to go on from the cursor.
+    #[test]
+    fn a_failure_widens_the_transition_at_its_face_before_enumerating() {
+        let fine = MotherGrid::generate(64).unwrap();
+        let coarse = MotherGrid::generate(32).unwrap();
+        let core = coarse
+            .triangle_addresses
+            .iter()
+            .flatten()
+            .copied()
+            .filter(|parent| {
+                parent.base_face == 0 && parent.i >= 8 && parent.j >= 8 && parent.i + parent.j < 24
+            })
+            .collect::<BTreeSet<_>>();
+        let patches = Patches::new(&fine);
+        let transition = core
+            .iter()
+            .flat_map(|&parent| patches.get(parent).unwrap().neighbours)
+            .filter(|parent| !core.contains(parent))
+            .collect::<BTreeSet<_>>();
+        let component = HierarchyComponent {
+            id: 12,
+            parents: core.union(&transition).copied().collect(),
+            boundary_edges: Vec::new(),
+            core_parents: core.iter().copied().collect(),
+            transition_parents: transition.iter().copied().collect(),
+        };
+        let limits = TransitionTopologyLimits {
+            topology_states: 1_000,
+            maximum_halo_expansions: 1,
+        };
+        let peel = core_boundary(&patches, &core);
+        let preferred = *peel.first().unwrap();
+        let segment = preferred_boundary_segment(&patches, &peel, &transition, preferred).unwrap();
+        let interior = core
+            .iter()
+            .copied()
+            .find(|parent| !peel.contains(parent))
+            .unwrap();
+        let cursor = 1;
+        let search = |promotion| match solve_transition_topology_from_cursor_with_promotion(
+            &fine, &component, limits, cursor, promotion, true,
+        ) {
+            TransitionTopologyOutcome::Closed(trial) => trial,
+            other => panic!("the fixture's topology must close: {other:?}"),
+        };
+
+        let widened = search(Some((preferred, 1)));
+        assert_eq!(
+            widened.candidate.core_parents,
+            core.difference(&segment).copied().collect::<Vec<_>>()
+        );
+        assert_eq!(widened.report.halo_expansions, 1);
+        assert_eq!(
+            widened.report.topology_states,
+            cursor + widened.report.layout_topology_states
+        );
+        assert_eq!(
+            widened.candidate.topology_id + 1,
+            widened.report.topology_states
+        );
+
+        let plain = search(None);
+        assert_eq!(plain.candidate.core_parents, component.core_parents);
+        for promotion in [(interior, 1), (preferred, 2)] {
+            let kept = search(Some(promotion));
+            assert_eq!(kept.candidate.core_parents, component.core_parents);
+            assert_eq!(kept.candidate.topology_id, plain.candidate.topology_id);
+            assert_eq!(kept.report.halo_expansions, 0);
+        }
+    }
+
+    /// A failure's promotion whose layout has an invalid boundary the
+    /// search cannot repair -- here a core pinched at a vertex, the halo
+    /// budget spent on the promotion -- falls back to the old layout: the
+    /// search goes on as if no promotion had been asked for.
+    #[test]
+    fn a_promotion_that_pinches_the_core_falls_back_to_the_old_layout() {
+        let fine = MotherGrid::generate(64).unwrap();
+        let coarse = MotherGrid::generate(32).unwrap();
+        let patches = Patches::new(&fine);
+        let whole = coarse
+            .triangle_addresses
+            .iter()
+            .flatten()
+            .copied()
+            .filter(|parent| {
+                parent.base_face == 0 && parent.i >= 8 && parent.j >= 8 && parent.i + parent.j < 24
+            })
+            .collect::<BTreeSet<_>>();
+        let around = |core: &BTreeSet<TriangleAddress>| {
+            core.iter()
+                .flat_map(|&parent| patches.get(parent).unwrap().neighbours)
+                .filter(|parent| !core.contains(parent))
+                .collect::<BTreeSet<_>>()
+        };
+        // A core with an interior parent left out, and a boundary parent
+        // whose promotion makes the core touch itself at a vertex.
+        let whole_peel = core_boundary(&patches, &whole);
+        let (core, transition, preferred) = whole
+            .iter()
+            .filter(|parent| !whole_peel.contains(parent))
+            .find_map(|&hole| {
+                let mut core = whole.clone();
+                core.remove(&hole);
+                let transition = around(&core);
+                boundary(&patches, &core, &transition).ok()?;
+                let peel = core_boundary(&patches, &core);
+                let preferred = peel.iter().copied().find(|&preferred| {
+                    preferred_boundary_segment(&patches, &peel, &transition, preferred).is_some_and(
+                        |segment| {
+                            boundary(
+                                &patches,
+                                &core.difference(&segment).copied().collect(),
+                                &transition.union(&segment).copied().collect(),
+                            )
+                            .is_err_and(|reason| reason.starts_with("coarse inner boundary:"))
+                        },
+                    )
+                })?;
+                Some((core, transition, preferred))
+            })
+            .unwrap();
+        let component = HierarchyComponent {
+            id: 12,
+            parents: core.union(&transition).copied().collect(),
+            boundary_edges: Vec::new(),
+            core_parents: core.iter().copied().collect(),
+            transition_parents: transition.iter().copied().collect(),
+        };
+        let limits = TransitionTopologyLimits {
+            topology_states: 1_000,
+            maximum_halo_expansions: 1,
+        };
+        let search = |promotion| {
+            format!(
+                "{:?}",
+                solve_transition_topology_from_cursor_with_promotion(
+                    &fine, &component, limits, 1, promotion, true,
+                )
+            )
+        };
+        let plain = search(None);
+        assert!(!plain.starts_with("InvalidBoundary"), "{plain}");
+        assert_eq!(search(Some((preferred, 1))), plain);
     }
 
     #[test]

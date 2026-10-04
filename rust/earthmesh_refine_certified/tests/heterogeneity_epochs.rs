@@ -170,6 +170,7 @@ fn a_heterogeneity_field_drives_the_region_epochs() {
             interval_boxes_per_component: 1_000_000,
             total_transition_states: 100_000,
             allow_safe_fallback: false,
+            retry_at_failure: true,
         },
         &RegionEpochs {
             built_bases: built,

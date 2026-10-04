@@ -14,6 +14,7 @@ const FULL_LIMITS: ComponentTransactionLimits = ComponentTransactionLimits {
     elastic_iterations: 256,
     interval_boxes: 100_000,
     halo_expansions: 0,
+    retry_at_failure: true,
 };
 
 fn source_levels(grid: &MotherGrid, level: usize) -> SourceLevelField {
