@@ -1468,6 +1468,7 @@ fn solve_elastic_patch_impl(
 
     let mut energy = initial_energy;
     let mut trust_radius = initial_step;
+    let mut curvature = CurvatureMemory::default();
     for iteration in 1..=limits.elastic_iterations {
         let phase = energy_phase(&certificate, &current.mesh, &guard_faces, &context);
         let Some(phase_energy) = elastic_energy(&current.mesh, &patch, phase, &context) else {
@@ -1536,10 +1537,32 @@ fn solve_elastic_patch_impl(
             } else {
                 minimum_step
             };
-            let mut step = initial_step;
+            // The elastic solver steps along quasi-Newton directions (guide
+            // 11.127); the gradient's own when it has no curvature to go on.
+            let gradient_vectors = gradient
+                .iter()
+                .map(|&(_, vector)| vector)
+                .collect::<Vec<_>>();
+            let quasi_newton = if solver_mode == ElasticSolverMode::FiniteDifferenceElastic {
+                curvature.observe(phase, &gradient_vectors);
+                curvature.direction(&gradient_vectors)
+            } else {
+                None
+            };
+            let (search, search_norm, sign, mut step) = match quasi_newton {
+                Some((direction, norm)) => {
+                    let search = gradient
+                        .iter()
+                        .zip(direction)
+                        .map(|(&(site, _), vector)| (site, vector))
+                        .collect::<Vec<_>>();
+                    (search, norm, 1.0, norm.min(initial_step))
+                }
+                None => (gradient.clone(), maximum_norm, -1.0, initial_step),
+            };
             let accepted = loop {
-                let scale = -step / maximum_norm;
-                let Some(updates) = synchronous_updates(&current.mesh, &gradient, scale) else {
+                let scale = sign * step / search_norm;
+                let Some(updates) = synchronous_updates(&current.mesh, &search, scale) else {
                     if step <= phase_minimum_step {
                         break None;
                     }
@@ -1572,7 +1595,7 @@ fn solve_elastic_patch_impl(
                         candidate_energy < phase_energy - 1.0e-12 * phase_energy.abs().max(1.0)
                     };
                     if accepted {
-                        break Some(candidate_energy);
+                        break Some((candidate_energy, scale));
                     }
                 }
                 for &(site, point, _) in &updates {
@@ -1584,10 +1607,20 @@ fn solve_elastic_patch_impl(
                 step = (step * 0.5).max(phase_minimum_step);
             };
 
-            let Some(candidate_energy) = accepted else {
+            let Some((candidate_energy, accepted_scale)) = accepted else {
                 return no_step(&current, iteration, energy);
             };
             energy = candidate_energy;
+            if solver_mode == ElasticSolverMode::FiniteDifferenceElastic {
+                curvature.accepted(
+                    phase,
+                    gradient_vectors,
+                    search
+                        .iter()
+                        .map(|&(_, vector)| scale_point(vector, accepted_scale))
+                        .collect(),
+                );
+            }
         }
 
         if certificate.geometry_region_passes(&current.mesh, &guard_faces) {
@@ -4230,6 +4263,109 @@ fn finite_difference_gradient(
 /// thousandth (5e-12) moves a point a million roundings.
 fn finite_difference_step(initial_step: f64) -> f64 {
     (initial_step * 1.0e-3).min(1.0e-5)
+}
+
+/// Pairs of a step and the gradient change it caused, the last few the
+/// elastic solve accepted in one phase (guide 11.127).
+const CURVATURE_PAIRS: usize = 8;
+
+/// The elastic solve's quasi-Newton (L-BFGS) memory. Steepest descent scaled
+/// to its largest gradient crawls on a patch of thousands of vertices: the
+/// stiffest few set the step for all, and the coarse levels of the 30 m
+/// trials ran out of their 256 iterations again and again. The pairs give an
+/// inverse-Hessian estimate whose direction the same backtracking search
+/// takes, each vertex still moving at most the initial step. Tangent vectors
+/// are compared in space; the steps are small enough that the planes they
+/// lie in barely turn.
+#[derive(Default)]
+struct CurvatureMemory {
+    /// (step, gradient change, 1 / their inner product), oldest first.
+    pairs: std::collections::VecDeque<(Vec<CartesianPoint>, Vec<CartesianPoint>, f64)>,
+    /// The phase, gradient and step of the last accepted step.
+    last: Option<(ElasticBlockPhase, Vec<CartesianPoint>, Vec<CartesianPoint>)>,
+}
+
+impl CurvatureMemory {
+    /// The gradient at the start of an iteration: with the last step it
+    /// makes a pair, kept when it curves upward. A new phase is a new
+    /// energy, and forgets every pair.
+    fn observe(&mut self, phase: ElasticBlockPhase, gradient: &[CartesianPoint]) {
+        let Some((last_phase, last_gradient, step)) = self.last.take() else {
+            return;
+        };
+        if last_phase != phase || last_gradient.len() != gradient.len() {
+            self.pairs.clear();
+            return;
+        }
+        let change = gradient
+            .iter()
+            .zip(&last_gradient)
+            .map(|(now, before)| subtract_points(*now, *before))
+            .collect::<Vec<_>>();
+        let product = dot_all(&step, &change);
+        if product.is_finite() && product > 0.0 {
+            self.pairs.push_back((step, change, 1.0 / product));
+            while self.pairs.len() > CURVATURE_PAIRS {
+                self.pairs.pop_front();
+            }
+        }
+    }
+
+    /// The direction -H g and its largest vertex length, H the pairs'
+    /// inverse-Hessian estimate (the two-loop recursion). None when there is
+    /// no pair, or the estimate fails to descend -- which also forgets the
+    /// pairs.
+    fn direction(&mut self, gradient: &[CartesianPoint]) -> Option<(Vec<CartesianPoint>, f64)> {
+        let (newest_step, newest_change, _) = self.pairs.back()?;
+        let scale = dot_all(newest_step, newest_change) / dot_all(newest_change, newest_change);
+        let mut q = gradient.to_vec();
+        let mut alphas = Vec::with_capacity(self.pairs.len());
+        for (step, change, rho) in self.pairs.iter().rev() {
+            let alpha = rho * dot_all(step, &q);
+            for (value, delta) in q.iter_mut().zip(change) {
+                *value = subtract_points(*value, scale_point(*delta, alpha));
+            }
+            alphas.push(alpha);
+        }
+        let mut r = q
+            .into_iter()
+            .map(|value| scale_point(value, scale))
+            .collect::<Vec<_>>();
+        for ((step, change, rho), alpha) in self.pairs.iter().zip(alphas.iter().rev()) {
+            let beta = rho * dot_all(change, &r);
+            for (value, delta) in r.iter_mut().zip(step) {
+                *value = add_points(*value, scale_point(*delta, alpha - beta));
+            }
+        }
+        // -r descends when r . g > 0.
+        let descent = dot_all(&r, gradient);
+        let norm = r.iter().map(|value| magnitude(*value)).fold(0.0, f64::max);
+        if !(scale.is_finite() && scale > 0.0 && descent.is_finite() && descent > 0.0)
+            || !(norm.is_finite() && norm > 0.0)
+        {
+            self.pairs.clear();
+            return None;
+        }
+        Some((
+            r.into_iter()
+                .map(|value| scale_point(value, -1.0))
+                .collect(),
+            norm,
+        ))
+    }
+
+    fn accepted(
+        &mut self,
+        phase: ElasticBlockPhase,
+        gradient: Vec<CartesianPoint>,
+        step: Vec<CartesianPoint>,
+    ) {
+        self.last = Some((phase, gradient, step));
+    }
+}
+
+fn dot_all(left: &[CartesianPoint], right: &[CartesianPoint]) -> f64 {
+    left.iter().zip(right).map(|(a, b)| dot(*a, *b)).sum()
 }
 
 fn synchronous_updates(
