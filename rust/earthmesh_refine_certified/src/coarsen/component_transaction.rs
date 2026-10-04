@@ -4,7 +4,7 @@
 //! only transition coordinates, then the normal geometry/final-cell/remap gates
 //! decide whether the cloned state is committed.
 
-use super::elastic_block::{solve_elastic_patch_scoped, GeometryScope};
+use super::elastic_block::{solve_elastic_clusters_scoped, GeometryScope};
 use super::transition_topology::hierarchy_parent_neighbours;
 use super::{
     core_condensation::rebuild_from_leaf_set_with_custom_triangles,
@@ -835,7 +835,7 @@ fn certify_candidate(
                 CandidateAttemptFailure::retry(ComponentTransactionStage::Elastic, reason)
             })?;
         log_component_phase(timing_enabled, component.id, "prepare_patch", phase_started);
-        let outcome = solve_elastic_patch_scoped(
+        let outcome = solve_elastic_clusters_scoped(
             &state.mesh,
             patch,
             ElasticBlockLimits {

@@ -331,6 +331,116 @@ struct DualEnergy {
 }
 
 impl ElasticPatch {
+    /// The patch split into clusters that share no energy term (guide
+    /// 11.123): its movable vertices grouped so that two in different groups
+    /// are more than four edges apart. A face, edge, Voronoi cell or dual
+    /// edge of the energy involves only sites within three edges of one
+    /// another, so each cluster can be solved on its own. Each movable vertex
+    /// claims the sites within two edges of it, and claims that meet join
+    /// their claimants. Clusters come in order of their first guard face.
+    pub(crate) fn independent_clusters(&self, mesh: &MeshState) -> Vec<PatchCluster> {
+        let unclaimed = usize::MAX;
+        let mut guard_site = vec![false; mesh.vertices().len()];
+        for &face in &self.guard_faces {
+            for site in mesh.triangles()[face] {
+                guard_site[site] = true;
+            }
+        }
+        // The neighbours of the guard faces' sites: the movable vertices and
+        // the sites one edge from them, whose own neighbours are the second
+        // ring.
+        let mut neighbours = HashMap::<usize, Vec<usize>>::new();
+        for face in mesh.active_triangle_slots() {
+            let corners = mesh.triangles()[face];
+            for &site in corners.iter().filter(|&&site| guard_site[site]) {
+                let around = neighbours.entry(site).or_default();
+                for &other in corners.iter().filter(|&&other| other != site) {
+                    if !around.contains(&other) {
+                        around.push(other);
+                    }
+                }
+            }
+        }
+        fn find(root: &mut [usize], mut item: usize) -> usize {
+            while root[item] != item {
+                root[item] = root[root[item]];
+                item = root[item];
+            }
+            item
+        }
+        let movable = &self.movable_compact_vertices;
+        let mut root = (0..movable.len()).collect::<Vec<_>>();
+        let mut owner = vec![unclaimed; mesh.vertices().len()];
+        for (index, &site) in movable.iter().enumerate() {
+            owner[site] = index;
+        }
+        let mut ring = movable.clone();
+        for _ in 0..2 {
+            let mut next = Vec::new();
+            for &site in &ring {
+                let claimant = owner[site];
+                for &neighbour in neighbours.get(&site).map_or(&[][..], Vec::as_slice) {
+                    if owner[neighbour] == unclaimed {
+                        owner[neighbour] = claimant;
+                        next.push(neighbour);
+                    } else {
+                        let (left, right) =
+                            (find(&mut root, owner[neighbour]), find(&mut root, claimant));
+                        root[left.max(right)] = left.min(right);
+                    }
+                }
+            }
+            ring = next;
+        }
+        let mut members = BTreeMap::<usize, Vec<usize>>::new();
+        for (index, &site) in movable.iter().enumerate() {
+            members
+                .entry(find(&mut root, index))
+                .or_default()
+                .push(site);
+        }
+        let mut cluster_of = vec![unclaimed; mesh.vertices().len()];
+        for (cluster, sites) in members.values().enumerate() {
+            for &site in sites {
+                cluster_of[site] = cluster;
+            }
+        }
+        let mut faces = vec![Vec::new(); members.len()];
+        for &face in &self.guard_faces {
+            if let Some(cluster) = mesh.triangles()[face]
+                .iter()
+                .map(|&site| cluster_of[site])
+                .find(|&cluster| cluster != unclaimed)
+            {
+                faces[cluster].push(face);
+            }
+        }
+        let mut clusters = members
+            .into_values()
+            .zip(faces)
+            .map(|(movable_compact_vertices, guard_faces)| {
+                let moving = movable_compact_vertices
+                    .iter()
+                    .copied()
+                    .collect::<BTreeSet<_>>();
+                let fixed_compact_vertices = guard_faces
+                    .iter()
+                    .flat_map(|&face| mesh.triangles()[face])
+                    .filter(|site| !moving.contains(site))
+                    .collect::<BTreeSet<_>>()
+                    .into_iter()
+                    .collect();
+                PatchCluster {
+                    movable_compact_vertices,
+                    guard_faces,
+                    fixed_compact_vertices,
+                }
+            })
+            .collect::<Vec<_>>();
+        clusters.sort_by_key(|cluster| cluster.guard_faces.first().copied());
+        clusters
+    }
+
     pub fn from_transition(trial: &TransitionTopologyTrial) -> Result<Self, String> {
         Self::from_transition_with_domain(trial, GeometryDomainId::CurrentAnnulus)
     }
@@ -1375,68 +1485,306 @@ fn solve_elastic_patch_impl(
     angle_contract: AngleContractId,
     scope: Option<&GeometryScope>,
 ) -> ElasticBlockOutcome {
+    let mut current = source.clone();
+    match elastic_solve(
+        &mut current,
+        patch,
+        limits,
+        start_id,
+        solver_mode,
+        trust_fraction,
+        angle_contract,
+        ElasticGoal::Whole(scope),
+    ) {
+        Ok(reached) => certified(
+            current,
+            reached.patch,
+            reached
+                .geometry
+                .expect("a whole-mesh goal is reached with its certificate"),
+            reached.elastic_iterations,
+            reached.initial_energy,
+            reached.final_energy,
+            source.mesh.vertices(),
+        ),
+        Err(outcome) => outcome,
+    }
+}
+
+/// `solve_elastic_patch_scoped` cluster by cluster (guide 11.123). A
+/// component the size of a region has transition rings round every patch of
+/// fine requirement, far apart; solved as one patch they share one step, one
+/// phase and one iteration budget, and the hardest ring fails all of them.
+/// Here each independent cluster (`ElasticPatch::independent_clusters`) is
+/// solved in turn on the same mesh until its own guard faces pass, and the
+/// whole mesh is certified once all have moved. A patch of one cluster is
+/// the joint solve, unchanged.
+pub(super) fn solve_elastic_clusters_scoped(
+    source: &HierarchyLeafMesh,
+    mut patch: ElasticPatch,
+    limits: ElasticBlockLimits,
+    angle_contract: AngleContractId,
+    scope: Option<&GeometryScope>,
+) -> ElasticBlockOutcome {
+    let clusters = patch.independent_clusters(&source.mesh);
+    if clusters.len() <= 1 {
+        return solve_elastic_patch_scoped(source, patch, limits, angle_contract, scope);
+    }
+    let certificate = Certificate::internal_for(angle_contract);
+    let mut current = source.clone();
+    let (mut iterations, mut initial_energy, mut final_energy) = (0usize, 0.0, 0.0);
+    for cluster in clusters {
+        // The reference positions are lent to the cluster and returned; its
+        // topology carries only the ids its report needs.
+        let cluster_patch = ElasticPatch {
+            domain_id: patch.domain_id,
+            topology: TransitionTopologyCandidate {
+                component_id: patch.topology.component_id,
+                topology_id: patch.topology.topology_id,
+                core_parents: Vec::new(),
+                custom_transition_triangles: BTreeMap::new(),
+                source_triangles: Vec::new(),
+                source_active_vertices: Vec::new(),
+                source_degree_forecast: BTreeMap::new(),
+            },
+            reference_positions: std::mem::take(&mut patch.reference_positions),
+            fixed_compact_vertices: cluster.fixed_compact_vertices,
+            movable_compact_vertices: cluster.movable_compact_vertices,
+            guard_faces: cluster.guard_faces,
+            target_mode: patch.target_mode,
+            target_field: patch.target_field.clone(),
+        };
+        match elastic_solve(
+            &mut current,
+            cluster_patch,
+            limits,
+            GeometryStartId::MaterializedSource,
+            ElasticSolverMode::FiniteDifferenceElastic,
+            1.0,
+            angle_contract,
+            ElasticGoal::Cluster,
+        ) {
+            Ok(reached) => {
+                patch.reference_positions = reached.patch.reference_positions;
+                iterations += reached.elastic_iterations;
+                initial_energy += reached.initial_energy;
+                final_energy += reached.final_energy;
+            }
+            Err(outcome) => return with_earlier_iterations(outcome, iterations),
+        }
+    }
+    match verify_scoped(&certificate, &current.mesh, scope) {
+        Ok(geometry) => certified(
+            current,
+            patch,
+            geometry,
+            iterations,
+            initial_energy,
+            final_energy,
+            source.mesh.vertices(),
+        ),
+        // Clusters that share no energy term cannot break each other; if the
+        // whole mesh still fails, the candidate fails as a joint solve would.
+        Err(error) => {
+            let context = match EnergyContext::new(&current.mesh, &patch) {
+                Ok(context) => context,
+                Err(reason) => return ElasticBlockOutcome::InvalidPatch { reason },
+            };
+            let guard_faces = patch.guard_faces.iter().copied().collect::<BTreeSet<_>>();
+            ElasticBlockOutcome::ElasticNoImprovement {
+                elastic_iterations: iterations,
+                initial_energy,
+                final_energy,
+                final_phase: energy_phase(&certificate, &current.mesh, &guard_faces, &context),
+                reason: format!("{error:?}"),
+                failed_guard_face: failed_guard_face(&certificate, &current.mesh, &patch),
+                global_angle_degrees: angle_range(
+                    &current.mesh,
+                    current.mesh.active_triangle_slots(),
+                ),
+                guard_angle_degrees: angle_range(&current.mesh, guard_faces.iter().copied()),
+                diagnostics: geometry_failure_diagnostics(&current.mesh, &patch, &context),
+                witness: geometry_failure_witness(&current, &patch),
+            }
+        }
+    }
+}
+
+/// A cluster's failure with the iterations of the clusters solved before it.
+fn with_earlier_iterations(
+    mut outcome: ElasticBlockOutcome,
+    earlier: usize,
+) -> ElasticBlockOutcome {
+    if let ElasticBlockOutcome::ElasticNoImprovement {
+        elastic_iterations, ..
+    }
+    | ElasticBlockOutcome::RequiresDifferentTopology {
+        elastic_iterations, ..
+    }
+    | ElasticBlockOutcome::SearchBudgetExhausted {
+        elastic_iterations, ..
+    } = &mut outcome
+    {
+        *elastic_iterations += earlier;
+    }
+    outcome
+}
+
+/// One independent cluster of a patch: its movable vertices, the guard faces
+/// they move, and those faces' other vertices.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct PatchCluster {
+    pub movable_compact_vertices: Vec<usize>,
+    pub guard_faces: Vec<usize>,
+    pub fixed_compact_vertices: Vec<usize>,
+}
+
+/// Where an elastic solve is done.
+#[derive(Clone, Copy)]
+enum ElasticGoal<'a> {
+    /// The whole mesh passes its geometry certificate -- its region's on a
+    /// built region.
+    Whole(Option<&'a GeometryScope>),
+    /// The patch's own guard faces pass theirs (`verify_geometry_region`):
+    /// one of several independent clusters solved in turn, which the whole
+    /// mesh cannot pass until the last of them is solved (guide 11.123).
+    Cluster,
+}
+
+impl ElasticGoal<'_> {
+    /// The goal's certificate: the whole mesh's report, or the cluster's
+    /// guard faces' (which leaves no whole-mesh report).
+    fn reached(
+        self,
+        certificate: &Certificate,
+        mesh: &MeshState,
+        guard_faces: &BTreeSet<usize>,
+    ) -> Result<Option<GeometryCertificateReport>, CertificateError> {
+        match self {
+            Self::Whole(scope) => verify_scoped(certificate, mesh, scope).map(Some),
+            Self::Cluster => certificate
+                .verify_geometry_region(mesh, guard_faces)
+                .map(|_| None),
+        }
+    }
+
+    /// Why a solve stopped short of the goal, from its certificate.
+    fn failure_reason(
+        self,
+        certificate: &Certificate,
+        mesh: &MeshState,
+        guard_faces: &BTreeSet<usize>,
+    ) -> String {
+        match self.reached(certificate, mesh, guard_faces) {
+            Ok(_) => "geometry passed but the elastic objective had no descent step".into(),
+            Err(error) => format!("{error:?}"),
+        }
+    }
+
+    /// Whether the goal's certificate fails on Delaunay or dual grounds,
+    /// which moving vertices cannot fix.
+    fn requires_different_topology(
+        self,
+        certificate: &Certificate,
+        mesh: &MeshState,
+        guard_faces: &BTreeSet<usize>,
+    ) -> bool {
+        matches!(
+            self.reached(certificate, mesh, guard_faces),
+            Err(CertificateError::Delaunay(_) | CertificateError::Dual(_))
+        )
+    }
+}
+
+/// What an elastic solve reached, its mesh moved in place: the patch, the
+/// whole mesh's report for a whole-mesh goal, and the solve's counts.
+struct ElasticReached {
+    patch: ElasticPatch,
+    geometry: Option<GeometryCertificateReport>,
+    elastic_iterations: usize,
+    initial_energy: f64,
+    final_energy: f64,
+}
+
+/// The elastic solve, moving `current`'s vertices in place until `goal` is
+/// reached.
+#[allow(clippy::too_many_arguments)]
+fn elastic_solve(
+    current: &mut HierarchyLeafMesh,
+    patch: ElasticPatch,
+    limits: ElasticBlockLimits,
+    start_id: GeometryStartId,
+    solver_mode: ElasticSolverMode,
+    trust_fraction: f64,
+    angle_contract: AngleContractId,
+    goal: ElasticGoal<'_>,
+) -> Result<ElasticReached, ElasticBlockOutcome> {
     if !trust_fraction.is_finite()
         || !(0.0..=1.0).contains(&trust_fraction)
         || trust_fraction == 0.0
     {
-        return ElasticBlockOutcome::InvalidPatch {
+        return Err(ElasticBlockOutcome::InvalidPatch {
             reason: "elastic trust fraction must be finite and in (0, 1]".into(),
-        };
+        });
     }
-    if let Err(reason) = validate_patch(source, &patch) {
-        return ElasticBlockOutcome::InvalidPatch { reason };
+    if let Err(reason) = validate_patch(current, &patch) {
+        return Err(ElasticBlockOutcome::InvalidPatch { reason });
     }
     let certificate = Certificate::internal_for(angle_contract);
-    let mut current = source.clone();
     if let Err(reason) = apply_geometry_start(&mut current.mesh, &patch, start_id) {
-        return ElasticBlockOutcome::InvalidPatch { reason };
+        return Err(ElasticBlockOutcome::InvalidPatch { reason });
     }
-    let input_positions = source.mesh.vertices().to_vec();
-    if let Ok(geometry) = verify_scoped(&certificate, &current.mesh, scope) {
-        return certified(current, patch, geometry, 0, 0.0, 0.0, &input_positions);
+    let guard_faces = patch.guard_faces.iter().copied().collect::<BTreeSet<_>>();
+    if let Ok(geometry) = goal.reached(&certificate, &current.mesh, &guard_faces) {
+        return Ok(ElasticReached {
+            patch,
+            geometry,
+            elastic_iterations: 0,
+            initial_energy: 0.0,
+            final_energy: 0.0,
+        });
     }
 
-    let guard_faces = patch.guard_faces.iter().copied().collect::<BTreeSet<_>>();
     let Some((initial_step, minimum_step)) = relocation_step_window(&current.mesh, &guard_faces)
     else {
-        return ElasticBlockOutcome::InvalidPatch {
+        return Err(ElasticBlockOutcome::InvalidPatch {
             reason: "transition guard has no positive finite edge length".into(),
-        };
+        });
     };
     let initial_step = initial_step * trust_fraction;
     let minimum_step = minimum_step * trust_fraction;
     let context = match EnergyContext::new(&current.mesh, &patch) {
         Ok(context) => context,
-        Err(reason) => return ElasticBlockOutcome::InvalidPatch { reason },
+        Err(reason) => return Err(ElasticBlockOutcome::InvalidPatch { reason }),
     };
     let phase = energy_phase(&certificate, &current.mesh, &guard_faces, &context);
     let Some(initial_energy) = elastic_energy(&current.mesh, &patch, phase, &context) else {
-        return ElasticBlockOutcome::InvalidPatch {
+        return Err(ElasticBlockOutcome::InvalidPatch {
             reason: "initial transition geometry has undefined elastic energy".into(),
-        };
+        });
     };
     if limits.elastic_iterations == 0 {
-        return ElasticBlockOutcome::SearchBudgetExhausted {
+        return Err(ElasticBlockOutcome::SearchBudgetExhausted {
             elastic_iterations: 0,
             initial_energy,
             final_energy: initial_energy,
             final_phase: phase,
-            reason: geometry_failure_reason(&certificate, &current.mesh, scope),
+            reason: goal.failure_reason(&certificate, &current.mesh, &guard_faces),
             failed_guard_face: failed_guard_face(&certificate, &current.mesh, &patch),
             global_angle_degrees: angle_range(&current.mesh, current.mesh.active_triangle_slots()),
             guard_angle_degrees: angle_range(&current.mesh, guard_faces.iter().copied()),
             diagnostics: geometry_failure_diagnostics(&current.mesh, &patch, &context),
             witness: geometry_failure_witness(&current, &patch),
-        };
+        });
     }
 
     let no_step = |current: &HierarchyLeafMesh, iteration: usize, final_energy: f64| {
         let mesh = &current.mesh;
         let final_phase = energy_phase(&certificate, mesh, &guard_faces, &context);
-        let reason = geometry_failure_reason(&certificate, mesh, scope);
+        let reason = goal.failure_reason(&certificate, mesh, &guard_faces);
         let failed_guard_face = failed_guard_face(&certificate, mesh, &patch);
         if matches!(final_phase, ElasticBlockPhase::DelaunayVoronoiFeasibility)
-            || geometry_failure_requires_different_topology(&certificate, mesh, scope)
+            || goal.requires_different_topology(&certificate, mesh, &guard_faces)
         {
             ElasticBlockOutcome::RequiresDifferentTopology {
                 elastic_iterations: iteration,
@@ -1471,7 +1819,7 @@ fn solve_elastic_patch_impl(
     for iteration in 1..=limits.elastic_iterations {
         let phase = energy_phase(&certificate, &current.mesh, &guard_faces, &context);
         let Some(phase_energy) = elastic_energy(&current.mesh, &patch, phase, &context) else {
-            return no_step(&current, iteration, energy);
+            return Err(no_step(&current, iteration, energy));
         };
         energy = phase_energy;
 
@@ -1489,7 +1837,7 @@ fn solve_elastic_patch_impl(
                 trust_radius,
                 solver_mode,
             ) else {
-                return no_step(&current, iteration, energy);
+                return Err(no_step(&current, iteration, energy));
             };
             let trust_update = apply_active_trust_step(
                 &mut current.mesh,
@@ -1506,7 +1854,7 @@ fn solve_elastic_patch_impl(
             trust_radius = trust_update.next_radius;
             if !trust_update.accepted {
                 if trust_radius <= minimum_step {
-                    return no_step(&current, iteration, energy);
+                    return Err(no_step(&current, iteration, energy));
                 }
                 continue;
             }
@@ -1520,7 +1868,7 @@ fn solve_elastic_patch_impl(
             } else {
                 finite_difference_gradient(&mut current.mesh, &patch, phase, initial_step, &context)
             }) else {
-                return no_step(&current, iteration, energy);
+                return Err(no_step(&current, iteration, energy));
             };
             let maximum_norm = gradient
                 .iter()
@@ -1528,7 +1876,7 @@ fn solve_elastic_patch_impl(
                 .max_by(f64::total_cmp)
                 .unwrap_or(0.0);
             if !maximum_norm.is_finite() || maximum_norm <= 1.0e-14 {
-                return no_step(&current, iteration, energy);
+                return Err(no_step(&current, iteration, energy));
             }
 
             let phase_minimum_step = if matches!(phase, ElasticBlockPhase::Untangle) {
@@ -1585,38 +1933,36 @@ fn solve_elastic_patch_impl(
             };
 
             let Some(candidate_energy) = accepted else {
-                return no_step(&current, iteration, energy);
+                return Err(no_step(&current, iteration, energy));
             };
             energy = candidate_energy;
         }
 
         if certificate.geometry_region_passes(&current.mesh, &guard_faces) {
-            if let Ok(geometry) = verify_scoped(&certificate, &current.mesh, scope) {
-                return certified(
-                    current,
+            if let Ok(geometry) = goal.reached(&certificate, &current.mesh, &guard_faces) {
+                return Ok(ElasticReached {
                     patch,
                     geometry,
-                    iteration,
+                    elastic_iterations: iteration,
                     initial_energy,
-                    energy,
-                    &input_positions,
-                );
+                    final_energy: energy,
+                });
             }
         }
     }
 
-    ElasticBlockOutcome::SearchBudgetExhausted {
+    Err(ElasticBlockOutcome::SearchBudgetExhausted {
         elastic_iterations: limits.elastic_iterations,
         initial_energy,
         final_energy: energy,
         final_phase: energy_phase(&certificate, &current.mesh, &guard_faces, &context),
-        reason: geometry_failure_reason(&certificate, &current.mesh, scope),
+        reason: goal.failure_reason(&certificate, &current.mesh, &guard_faces),
         failed_guard_face: failed_guard_face(&certificate, &current.mesh, &patch),
         global_angle_degrees: angle_range(&current.mesh, current.mesh.active_triangle_slots()),
         guard_angle_degrees: angle_range(&current.mesh, guard_faces.iter().copied()),
         diagnostics: geometry_failure_diagnostics(&current.mesh, &patch, &context),
         witness: geometry_failure_witness(&current, &patch),
-    }
+    })
 }
 
 fn geometry_failure_witness(
@@ -2367,28 +2713,6 @@ fn failed_guard_face(
             .verify_geometry_region(mesh, &BTreeSet::from([*face]))
             .is_err()
     })
-}
-
-fn geometry_failure_reason(
-    certificate: &Certificate,
-    mesh: &MeshState,
-    scope: Option<&GeometryScope>,
-) -> String {
-    match verify_scoped(certificate, mesh, scope) {
-        Ok(_) => "geometry passed but the elastic objective had no descent step".into(),
-        Err(error) => format!("{error:?}"),
-    }
-}
-
-fn geometry_failure_requires_different_topology(
-    certificate: &Certificate,
-    mesh: &MeshState,
-    scope: Option<&GeometryScope>,
-) -> bool {
-    matches!(
-        verify_scoped(certificate, mesh, scope),
-        Err(CertificateError::Delaunay(_) | CertificateError::Dual(_))
-    )
 }
 
 fn source_set_to_compact(
