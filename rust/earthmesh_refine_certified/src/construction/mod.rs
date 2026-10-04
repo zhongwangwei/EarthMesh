@@ -4,7 +4,7 @@
 //! algorithm only: the CLI composes the requirement from the inputs and
 //! publishes what this returns.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::io;
 use std::time::Instant;
 
@@ -624,10 +624,25 @@ fn arc_between(a: [f64; 3], b: [f64; 3]) -> f64 {
 /// Whether a base face with these corners delivers cells: a corner, the
 /// centroid or an edge midpoint inside the domain, or a point of the domain
 /// within the face's cap.
+#[cfg(test)]
 fn face_meets_domain(
     corners: [[f64; 3]; 3],
     prepared: &earthmesh_geometry::PreparedGridRegion<'_>,
     own: &[[f64; 3]],
+) -> bool {
+    face_meets_domain_by(corners, prepared, |centroid, radius| {
+        own.iter()
+            .any(|&point| arc_between(point, centroid) <= radius)
+    })
+}
+
+/// `face_meets_domain` with the domain's own points behind `own_within`:
+/// whether one of them lies within the radius of the (unnormalized)
+/// centroid, by `arc_between`.
+fn face_meets_domain_by(
+    corners: [[f64; 3]; 3],
+    prepared: &earthmesh_geometry::PreparedGridRegion<'_>,
+    own_within: impl Fn([f64; 3], f64) -> bool,
 ) -> bool {
     let lon_lat = |point: [f64; 3]| {
         let length = (point[0] * point[0] + point[1] * point[1] + point[2] * point[2]).sqrt();
@@ -654,9 +669,119 @@ fn face_meets_domain(
     samples.iter().any(|&sample| {
         let (lon, lat) = lon_lat(sample);
         prepared.contains(lon, lat)
-    }) || own
-        .iter()
-        .any(|&point| arc_between(point, centroid) <= radius)
+    }) || own_within(centroid, radius)
+}
+
+/// The domain's own points binned on a latitude-longitude grid of tiles, so
+/// that a face asks only the points that may lie in its cap. A polygon of a
+/// hundred thousand vertices made every face outside it scan them all: the
+/// Heihe basin's 130,000 took 345 s on a 2 km base (guide 11.119).
+struct OwnPoints<'a> {
+    points: &'a [[f64; 3]],
+    tile: f64,
+    rows: i64,
+    columns: i64,
+    /// The occupied tiles, by row and then column: a query walks only
+    /// these, never the empty tiles of a band.
+    bins: BTreeMap<i64, BTreeMap<i64, Vec<usize>>>,
+}
+
+impl<'a> OwnPoints<'a> {
+    /// Tiles `tile` degrees wide, about the faces' size.
+    fn new(points: &'a [[f64; 3]], tile: f64) -> Self {
+        let tile = if tile.is_finite() {
+            tile.clamp(1.0e-6, 90.0)
+        } else {
+            90.0
+        };
+        let rows = (180.0 / tile).ceil() as i64;
+        let columns = (360.0 / tile).ceil() as i64;
+        let mut index = Self {
+            points,
+            tile,
+            rows,
+            columns,
+            bins: Default::default(),
+        };
+        for (slot, &point) in points.iter().enumerate() {
+            let (lon, lat) = lon_lat_degrees(point);
+            let (row, column) = (index.row(lat), index.column(lon));
+            index
+                .bins
+                .entry(row)
+                .or_default()
+                .entry(column)
+                .or_default()
+                .push(slot);
+        }
+        index
+    }
+
+    fn row(&self, lat: f64) -> i64 {
+        (((lat + 90.0) / self.tile).floor() as i64).clamp(0, self.rows - 1)
+    }
+
+    fn column(&self, lon: f64) -> i64 {
+        (((lon + 180.0) / self.tile).floor() as i64).rem_euclid(self.columns)
+    }
+
+    /// Whether a point lies within `radius` of `centre`, which need not be
+    /// of unit length: the test `arc_between(point, centre) <= radius`,
+    /// asked of the points in the tiles a cap that wide can reach -- the
+    /// rows of its latitude band and, clear of the poles by a tile, the
+    /// columns within `asin(sin r / cos lat)` of its centre's longitude;
+    /// every column nearer a pole. A tile more each way covers the rounding
+    /// of the points' own coordinates.
+    fn any_within(&self, centre: [f64; 3], radius: f64) -> bool {
+        let (lon, lat) = lon_lat_degrees(centre);
+        let reach = (radius + 1.0e-9).to_degrees();
+        let (south, north) = (lat - reach, lat + reach);
+        let span = (south - self.tile > -90.0 && north + self.tile < 90.0)
+            .then(|| {
+                (reach.to_radians().sin() / lat.to_radians().cos())
+                    .asin()
+                    .to_degrees()
+            })
+            .filter(|half| half.is_finite())
+            .map(|half| (half / self.tile).ceil() as i64 + 2)
+            .filter(|&span| 2 * span + 1 < self.columns);
+        // The column window, split where it crosses the dateline column.
+        let windows = match span {
+            Some(span) => {
+                let (first, last) = (self.column(lon) - span, self.column(lon) + span);
+                if first < 0 {
+                    [(0, last), (first + self.columns, self.columns - 1)]
+                } else if last >= self.columns {
+                    [(first, self.columns - 1), (0, last - self.columns)]
+                } else {
+                    [(first, last), (1, 0)]
+                }
+            }
+            None => [(0, self.columns - 1), (1, 0)],
+        };
+        let near = |slots: &Vec<usize>| {
+            slots
+                .iter()
+                .any(|&slot| arc_between(self.points[slot], centre) <= radius)
+        };
+        self.bins
+            .range(self.row(south) - 1..=self.row(north) + 1)
+            .any(|(_, columns)| {
+                windows
+                    .iter()
+                    .filter(|(first, last)| first <= last)
+                    .any(|&(first, last)| columns.range(first..=last).any(|(_, slots)| near(slots)))
+            })
+    }
+}
+
+/// Longitude and latitude in degrees of a point of any length.
+fn lon_lat_degrees(point: [f64; 3]) -> (f64, f64) {
+    let length = (point[0] * point[0] + point[1] * point[1] + point[2] * point[2]).sqrt();
+    (
+        point[1].atan2(point[0]).to_degrees(),
+        (point[2] / length).clamp(-1.0, 1.0).asin().to_degrees(),
+    )
 }
 
 /// A cap -- centre and angular radius -- holding every point of `domain`
@@ -761,10 +886,13 @@ pub fn delivery_base_faces_by_address(
     }
     let prepared = domain.prepared();
     let own = domain_points(domain);
+    let own = OwnPoints::new(&own, (2.0 * longest).to_degrees());
     let mut faces = BTreeSet::new();
     for face in candidates {
         let corners = lattice::face_corner_points(face).map_err(invalid_data)?;
-        if face_meets_domain(corners, &prepared, &own) {
+        if face_meets_domain_by(corners, &prepared, |centroid, radius| {
+            own.any_within(centroid, radius)
+        }) {
             faces.insert(face);
         }
     }
@@ -1682,6 +1810,109 @@ mod tests {
                 let by_address = delivery_base_faces_by_address(domain, n).unwrap();
                 assert!(!whole.is_empty(), "n {n} {domain:?}");
                 assert_eq!(by_address, whole, "n {n} {domain:?}");
+            }
+        }
+    }
+
+    /// A deterministic stream of numbers in [0, 1) (splitmix64).
+    fn uniform(state: &mut u64) -> f64 {
+        *state = state.wrapping_add(0x9E37_79B9_7F4A_7C15);
+        let mut z = *state;
+        z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
+        z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
+        ((z ^ (z >> 31)) >> 11) as f64 / (1u64 << 53) as f64
+    }
+
+    /// Points clustered where tiles are odd -- the poles, the dateline, the
+    /// meridian of a tile edge -- and scattered over the sphere, each with
+    /// its scale of jitter in degrees.
+    fn awkward_points(state: &mut u64, count: usize) -> Vec<[f64; 3]> {
+        let seeds = [
+            (0.0, 90.0),
+            (77.0, -90.0),
+            (180.0, 10.0),
+            (-180.0, -45.0),
+            (179.99, 89.9),
+            (-0.5, 0.0),
+            (100.0, 38.0),
+        ];
+        (0..count)
+            .map(|slot| {
+                let (lon, lat, jitter) = match slot % 3 {
+                    0 => {
+                        let (lon, lat) = seeds[(uniform(state) * seeds.len() as f64) as usize];
+                        (lon, lat, 10f64.powf(-6.0 + 6.0 * uniform(state)))
+                    }
+                    1 => (
+                        360.0 * uniform(state) - 180.0,
+                        (2.0 * uniform(state) - 1.0).asin().to_degrees(),
+                        0.0,
+                    ),
+                    _ => (100.0, 38.0, 3.0),
+                };
+                let lon = lon + jitter * (2.0 * uniform(state) - 1.0);
+                let lat = (lat + jitter * (2.0 * uniform(state) - 1.0)).clamp(-90.0, 90.0);
+                unit_lon_lat(lon, lat)
+            })
+            .collect()
+    }
+
+    #[test]
+    fn the_tiled_own_points_find_what_the_scan_finds() {
+        let mut state = 7;
+        let points = awkward_points(&mut state, 3000);
+        let centres = awkward_points(&mut state, 3000);
+        let mut found = 0;
+        for tile in [1.0e-4, 0.01, 0.4, 7.0, 90.0] {
+            let index = OwnPoints::new(&points, tile);
+            for (slot, &centre) in centres.iter().enumerate() {
+                // An unnormalized centre, as a face's corner sum is.
+                let centre = centre.map(|value| value * (0.4 + 2.0 * uniform(&mut state)));
+                // Radii about the tile and far from it, and exactly at the
+                // distance of a point, where the test is `<=`.
+                let radius = match slot % 4 {
+                    0 => (tile * 10f64.powf(2.0 * uniform(&mut state) - 1.5)).to_radians(),
+                    1 => 10f64.powf(-7.0 + 7.5 * uniform(&mut state)),
+                    2 => arc_between(points[slot % points.len()], centre),
+                    _ => std::f64::consts::PI * uniform(&mut state),
+                };
+                let scan = points
+                    .iter()
+                    .any(|&point| arc_between(point, centre) <= radius);
+                assert_eq!(
+                    index.any_within(centre, radius),
+                    scan,
+                    "tile {tile} centre {centre:?} radius {radius}"
+                );
+                found += usize::from(scan);
+            }
+        }
+        // Both answers occur.
+        assert!(found > 1000 && found < 14000, "{found}");
+    }
+
+    #[test]
+    fn a_dense_polygon_delivers_by_address_what_the_whole_base_does() {
+        // A ring of thousands of vertices -- what a basin outline is --
+        // round a point near the dateline and one near a pole.
+        let ring = |lon: f64, lat: f64, radius: f64, count: usize| GridRegion::Close {
+            points: (0..count)
+                .map(|step| {
+                    let angle = std::f64::consts::TAU * step as f64 / count as f64;
+                    let wobble = 1.0 + 0.3 * (7.0 * angle).sin();
+                    LonLatPoint {
+                        lon: lon + radius * wobble * angle.cos() / lat.to_radians().cos(),
+                        lat: lat + radius * wobble * angle.sin(),
+                    }
+                })
+                .collect(),
+        };
+        for domain in [ring(179.0, -20.0, 1.5, 4000), ring(40.0, 84.0, 1.0, 4000)] {
+            for n in [12, 40] {
+                let base = crate::MotherGrid::generate(n).unwrap();
+                let whole = delivery_base_faces(&domain, &base);
+                assert!(!whole.is_empty(), "n {n}");
+                assert_eq!(delivery_base_faces_by_address(&domain, n).unwrap(), whole);
             }
         }
     }
