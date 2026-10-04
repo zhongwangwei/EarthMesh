@@ -108,6 +108,98 @@ pub enum TransitionTopologyOutcome {
     },
 }
 
+/// What one topology search did, as against the states its cursor counts
+/// (guide 11.124). The cursor counts states as positions to resume from: a
+/// layout whose prefix work runs out reports its whole state budget, a
+/// fallback starts the count again, and the states a resumed search replays
+/// to reach its cursor count as new. These count the work itself, for the
+/// timing log; nothing reads them to decide anything.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+struct SearchWork {
+    /// Layouts enumerated: one per core/transition split the search tried.
+    layouts: usize,
+    /// Variant choices tried while extending a prefix.
+    prefix_tries: usize,
+    /// Prefixes that reached the last variable.
+    complete_assignments: usize,
+    /// Feasible states passed over to reach the cursor.
+    replayed: usize,
+    /// Meshes rebuilt for a feasible state, and those the rebuild or the
+    /// hard gate rejected.
+    rebuilds: usize,
+    rebuild_failures: usize,
+    gate_failures: usize,
+    /// Layouts whose prefix work ran out before their state budget.
+    prefix_work_spent: usize,
+    /// Enumerations that chose a retirement substrate, and the retirement
+    /// states tried on one.
+    substrate_searches: usize,
+    retirement_states: usize,
+    /// Core parents promoted: whole boundaries or failed-face segments, the
+    /// parents left uncovered by a promotion, and pinch repairs.
+    promotions: usize,
+    cover_promotions: usize,
+    repairs: usize,
+    /// Promoted layouts abandoned for the layout before the promotion.
+    fallbacks: usize,
+}
+
+impl std::fmt::Display for SearchWork {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "layouts={} prefix_tries={} complete={} replayed={} rebuilds={} \
+             rebuild_failures={} gate_failures={} prefix_work_spent={} \
+             substrate_searches={} retirement_states={} promotions={} \
+             cover_promotions={} repairs={} fallbacks={}",
+            self.layouts,
+            self.prefix_tries,
+            self.complete_assignments,
+            self.replayed,
+            self.rebuilds,
+            self.rebuild_failures,
+            self.gate_failures,
+            self.prefix_work_spent,
+            self.substrate_searches,
+            self.retirement_states,
+            self.promotions,
+            self.cover_promotions,
+            self.repairs,
+            self.fallbacks,
+        )
+    }
+}
+
+impl TransitionTopologyOutcome {
+    fn summary(&self) -> (&'static str, usize, usize) {
+        match self {
+            Self::Closed(trial) => (
+                "Closed",
+                trial.report.topology_states,
+                trial.report.halo_expansions,
+            ),
+            Self::RequiresWiderHalo {
+                states_examined,
+                halo_expansions,
+            } => ("RequiresWiderHalo", *states_examined, *halo_expansions),
+            Self::ProvenInfeasible {
+                states_examined,
+                halo_expansions,
+                ..
+            } => ("ProvenInfeasible", *states_examined, *halo_expansions),
+            Self::SearchBudgetExhausted {
+                states_examined,
+                halo_expansions,
+            } => ("SearchBudgetExhausted", *states_examined, *halo_expansions),
+            Self::InvalidBoundary {
+                states_examined,
+                halo_expansions,
+                ..
+            } => ("InvalidBoundary", *states_examined, *halo_expansions),
+        }
+    }
+}
+
 /// Parent patches of one source mother, each worked out once. A patch is a
 /// function of the source and the parent alone, so a search keeps them for
 /// its whole run.
@@ -171,8 +263,40 @@ fn solve_transition_topology_from_cursor_with_promotion(
     component: &HierarchyComponent,
     limits: TransitionTopologyLimits,
     topology_states_cursor: usize,
+    preferred_core_promotion: Option<(TriangleAddress, usize)>,
+    promote_first: bool,
+) -> TransitionTopologyOutcome {
+    let mut work = SearchWork::default();
+    let outcome = search_from_cursor_with_promotion(
+        source,
+        component,
+        limits,
+        topology_states_cursor,
+        preferred_core_promotion,
+        promote_first,
+        &mut work,
+    );
+    if crate::construction::cmrc_timing_enabled() {
+        let (kind, states, halo_expansions) = outcome.summary();
+        eprintln!(
+            "earthmesh_cli: cmrc_detail phase=topology_work component={} \
+             cursor={topology_states_cursor} promotion={} outcome={kind} states={states} \
+             halo_expansions={halo_expansions} {work}",
+            component.id,
+            preferred_core_promotion.is_some() && promote_first,
+        );
+    }
+    outcome
+}
+
+fn search_from_cursor_with_promotion(
+    source: &MotherGrid,
+    component: &HierarchyComponent,
+    limits: TransitionTopologyLimits,
+    topology_states_cursor: usize,
     mut preferred_core_promotion: Option<(TriangleAddress, usize)>,
     promote_first: bool,
+    work: &mut SearchWork,
 ) -> TransitionTopologyOutcome {
     // A search asks for the same parent's patch from its preflight, its
     // core forecast, its boundary and every halo expansion: each once.
@@ -215,6 +339,7 @@ fn solve_transition_topology_from_cursor_with_promotion(
             limits.maximum_halo_expansions,
         ) {
             unpromoted = Some(kept);
+            work.promotions += 1;
             halo_expansions += cost;
             states_examined = topology_states_cursor;
             preferred_core_promotion = None;
@@ -232,6 +357,7 @@ fn solve_transition_topology_from_cursor_with_promotion(
                     );
                 }
                 (core, transition) = (kept_core, kept_transition);
+                work.fallbacks += 1;
                 halo_expansions = 0;
                 states_examined = 0;
                 continue;
@@ -271,6 +397,7 @@ fn solve_transition_topology_from_cursor_with_promotion(
                 });
             }
             promote_to_transition(&mut core, &mut transition, uncovered);
+            work.cover_promotions += 1;
             halo_expansions += 1;
             continue;
         }
@@ -292,6 +419,7 @@ fn solve_transition_topology_from_cursor_with_promotion(
         let remaining_halos = limits.maximum_halo_expansions - halo_expansions + 1;
         let local_limit = remaining_states.div_ceil(remaining_halos);
         let local_cursor = topology_states_cursor.saturating_sub(states_examined);
+        work.layouts += 1;
         match solve_once(
             patches,
             component.id,
@@ -300,6 +428,7 @@ fn solve_transition_topology_from_cursor_with_promotion(
             halo_expansions,
             local_cursor,
             local_limit,
+            work,
         ) {
             TransitionTopologyOutcome::Closed(mut trial) => {
                 let layout_topology_states = trial.report.topology_states;
@@ -333,6 +462,7 @@ fn solve_transition_topology_from_cursor_with_promotion(
                         halo_expansions,
                     });
                 };
+                work.promotions += 1;
                 halo_expansions += expansion_cost;
             }
             TransitionTopologyOutcome::InvalidBoundary { reason, .. } => {
@@ -341,6 +471,7 @@ fn solve_transition_topology_from_cursor_with_promotion(
                 {
                     match promote_pinched_core(patches, &mut core, &mut transition) {
                         Ok(true) => {
+                            work.repairs += 1;
                             halo_expansions += 1;
                             continue;
                         }
@@ -359,6 +490,7 @@ fn solve_transition_topology_from_cursor_with_promotion(
                 {
                     match retain_fine_at_pinches(patches, &core, &mut transition) {
                         Ok(true) => {
+                            work.repairs += 1;
                             halo_expansions += 1;
                             continue;
                         }
@@ -406,6 +538,7 @@ fn solve_transition_topology_from_cursor_with_promotion(
                         halo_expansions,
                     });
                 };
+                work.promotions += 1;
                 halo_expansions += expansion_cost;
             }
             TransitionTopologyOutcome::RequiresWiderHalo { .. } => unreachable!(),
@@ -720,6 +853,7 @@ fn pure_core(
     }))
 }
 
+#[allow(clippy::too_many_arguments)]
 fn solve_once(
     patches: &Patches<'_>,
     component_id: u64,
@@ -728,6 +862,7 @@ fn solve_once(
     halo_expansions: usize,
     start_index: usize,
     budget: usize,
+    work: &mut SearchWork,
 ) -> TransitionTopologyOutcome {
     let source = patches.source;
     let mut states = 0usize;
@@ -818,6 +953,7 @@ fn solve_once(
         closed: &mut closed,
         substrate_selection: None,
         enumeration_exhausted: &mut enumeration_exhausted,
+        work,
     }
     .run();
     if let Some(hit) = closed {
@@ -847,6 +983,7 @@ fn solve_once(
         &forecast,
         &fixed_sources,
         states,
+        work,
     ) else {
         return TransitionTopologyOutcome::ProvenInfeasible {
             states_examined: states,
@@ -866,6 +1003,7 @@ fn solve_once(
         start_index.saturating_sub(states),
         budget.saturating_sub(states),
         halo_expansions,
+        work,
     ) {
         Some(outcome) => outcome,
         None => TransitionTopologyOutcome::ProvenInfeasible {
@@ -927,6 +1065,7 @@ fn solve_retirement_family(
     start_index: usize,
     budget: usize,
     halo_expansions: usize,
+    work: &mut SearchWork,
 ) -> Option<TransitionTopologyOutcome> {
     if start_index >= budget {
         return Some(TransitionTopologyOutcome::SearchBudgetExhausted {
@@ -973,6 +1112,7 @@ fn solve_retirement_family(
             },
         ) {
             RetirementSearchOutcome::Committed { attempted, .. } => {
+                work.retirement_states += attempted;
                 return Some(closed_trial(
                     component_id,
                     core,
@@ -989,12 +1129,14 @@ fn solve_retirement_family(
                 ));
             }
             RetirementSearchOutcome::SearchBudgetExhausted { attempted } => {
+                work.retirement_states += attempted;
                 return Some(TransitionTopologyOutcome::SearchBudgetExhausted {
                     states_examined: base_states + offset + attempted,
                     halo_expansions,
                 });
             }
             RetirementSearchOutcome::ProvenInfeasible { attempted, .. } => {
+                work.retirement_states += attempted;
                 offset += attempted;
             }
             RetirementSearchOutcome::InvalidBoundary(error) => {
@@ -1020,6 +1162,7 @@ fn solve_retirement_family(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn select_retirement_substrate(
     source: &MotherGrid,
     leaf_set: &HierarchyLeafSet,
@@ -1028,7 +1171,9 @@ fn select_retirement_substrate(
     forecast: &BTreeMap<usize, isize>,
     fixed_sources: &BTreeSet<usize>,
     base_states: usize,
+    work: &mut SearchWork,
 ) -> Option<SearchHit> {
+    work.substrate_searches += 1;
     let mut states = 0;
     let mut closed = None;
     let mut substrate = None;
@@ -1048,6 +1193,7 @@ fn select_retirement_substrate(
             substrate: &mut substrate,
         }),
         enumeration_exhausted: &mut exhausted,
+        work,
     }
     .run();
     substrate
@@ -1285,6 +1431,7 @@ struct ProductSearch<'a> {
     closed: &'a mut Option<SearchHit>,
     substrate_selection: Option<SubstrateSelection<'a>>,
     enumeration_exhausted: &'a mut bool,
+    work: &'a mut SearchWork,
 }
 
 struct SubstrateSelection<'a> {
@@ -1351,6 +1498,7 @@ impl ProductSearch<'_> {
 
         loop {
             if position == variables.len() {
+                self.work.complete_assignments += 1;
                 let touched = touched_vertices(&variables, &preassigned_touched);
                 if forecast.can_finish_all(&touched, &[]) {
                     if feasible_ordinal >= self.budget {
@@ -1358,6 +1506,7 @@ impl ProductSearch<'_> {
                         return;
                     }
                     if self.substrate_selection.is_none() && feasible_ordinal < self.start_index {
+                        self.work.replayed += 1;
                         feasible_ordinal = feasible_ordinal.saturating_add(1);
                         if !backtrack(&mut position, &mut forecast, &mut chosen, &variables) {
                             *self.states = feasible_ordinal;
@@ -1368,15 +1517,23 @@ impl ProductSearch<'_> {
                     }
                     let chosen_by_parent = self.chosen_by_parent(&chosen);
                     let chosen_triangles = flatten_custom_triangles(&chosen_by_parent);
-                    if let Ok(mesh) =
+                    self.work.rebuilds += 1;
+                    let rebuilt =
                         super::core_condensation::rebuild_from_leaf_set_with_custom_triangles(
                             self.source,
                             self.leaf_set,
                             self.transition,
                             &chosen_triangles,
-                        )
-                    {
-                        if let Ok(()) = hard_gate(self.source, &mesh) {
+                        );
+                    if rebuilt.is_err() {
+                        self.work.rebuild_failures += 1;
+                    }
+                    if let Ok(mesh) = rebuilt {
+                        let gate = hard_gate(self.source, &mesh);
+                        if gate.is_err() {
+                            self.work.gate_failures += 1;
+                        }
+                        if let Ok(()) = gate {
                             let hit = SearchHit {
                                 mesh,
                                 triangles_by_parent: chosen_by_parent,
@@ -1434,10 +1591,12 @@ impl ProductSearch<'_> {
             let choice_index = indices[position];
             indices[position] += 1;
             if remaining_work == 0 {
+                self.work.prefix_work_spent += 1;
                 *self.states = self.budget;
                 return;
             }
             remaining_work -= 1;
+            self.work.prefix_tries += 1;
             let variable = &variables[position];
             let choice = &variable.variants[choice_index];
             forecast.apply_delta(&choice.delta, 1);
@@ -2847,6 +3006,7 @@ mod tests {
             0,
             42,
             0,
+            &mut SearchWork::default(),
         ) else {
             panic!("synthetic transition halo must enter retirement family");
         };
@@ -2899,6 +3059,7 @@ mod tests {
                 0,
                 0,
                 0,
+                &mut SearchWork::default(),
             ),
             Some(TransitionTopologyOutcome::SearchBudgetExhausted { .. })
         ));
@@ -2915,6 +3076,7 @@ mod tests {
             trial.candidate.topology_id + 1 - base_states,
             42,
             0,
+            &mut SearchWork::default(),
         ) {
             assert!(next.candidate.topology_id > trial.candidate.topology_id);
         }
@@ -2943,6 +3105,7 @@ mod tests {
             0,
             block + 1,
             0,
+            &mut SearchWork::default(),
         );
         assert!(
             matches!(
@@ -3030,6 +3193,37 @@ mod tests {
             assert_eq!(kept.candidate.topology_id, plain.candidate.topology_id);
             assert_eq!(kept.report.halo_expansions, 0);
         }
+
+        // The work counts say what the search did, apart from the states its
+        // cursor counts: the promoted layout starts from its first state and
+        // replays nothing, the old layout replays the cursor's states.
+        let work_of = |promotion| {
+            let mut work = SearchWork::default();
+            search_from_cursor_with_promotion(
+                &fine, &component, limits, cursor, promotion, true, &mut work,
+            );
+            work
+        };
+        let promoted = work_of(Some((preferred, 1)));
+        let unpromoted = work_of(None);
+        assert_eq!(
+            (promoted.layouts, promoted.promotions, promoted.replayed),
+            (1, 1, 0)
+        );
+        assert_eq!(
+            (
+                unpromoted.layouts,
+                unpromoted.promotions,
+                unpromoted.replayed
+            ),
+            (1, 0, cursor)
+        );
+        for work in [promoted, unpromoted] {
+            assert_eq!(work.fallbacks, 0);
+            assert!(work.rebuilds >= 1);
+            assert!(work.complete_assignments >= work.rebuilds + work.replayed);
+            assert!(work.prefix_tries >= work.complete_assignments);
+        }
     }
 
     /// A failure's promotion whose layout has an invalid boundary the
@@ -3105,6 +3299,17 @@ mod tests {
         let plain = search(None);
         assert!(!plain.starts_with("InvalidBoundary"), "{plain}");
         assert_eq!(search(Some((preferred, 1))), plain);
+
+        let work_of = |promotion| {
+            let mut work = SearchWork::default();
+            search_from_cursor_with_promotion(
+                &fine, &component, limits, 1, promotion, true, &mut work,
+            );
+            work
+        };
+        let (fell_back, unpromoted) = (work_of(Some((preferred, 1))), work_of(None));
+        assert_eq!((fell_back.fallbacks, unpromoted.fallbacks), (1, 0));
+        assert_eq!(fell_back.promotions, unpromoted.promotions + 1);
     }
 
     #[test]

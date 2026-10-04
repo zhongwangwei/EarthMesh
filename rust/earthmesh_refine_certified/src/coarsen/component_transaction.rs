@@ -482,6 +482,11 @@ pub(super) fn solve_component_transaction_at_level(
     let mut last_retry: Option<(ComponentTransactionStage, String)> = None;
     let mut last_elastic_budget_failure: Option<String> = None;
     let mut preferred_core_promotion = None;
+    // Core parents whose promotion a search was asked for and did not make
+    // (it fell back, or the parent was off the core boundary): the next
+    // failure near them asks for the nearest other one instead of paying
+    // for the same search again.
+    let mut tried_promotions = BTreeSet::<TriangleAddress>::new();
     let mut topology_state_offset = 0usize;
     let mut halo_expansion_offset = 0usize;
     let mut search_component = component.clone();
@@ -518,6 +523,11 @@ pub(super) fn solve_component_transaction_at_level(
         );
         let transition = match outcome {
             TransitionTopologyOutcome::Closed(trial) => {
+                if let Some((parent, _)) = preferred_promotion_with_cost {
+                    if trial.candidate.core_parents.contains(&parent) {
+                        tried_promotions.insert(parent);
+                    }
+                }
                 counters.topology_states =
                     topology_state_offset.saturating_add(trial.report.topology_states);
                 counters.halo_expansions =
@@ -683,7 +693,12 @@ pub(super) fn solve_component_transaction_at_level(
                 counters.elastic_iterations += failure.elastic_iterations;
                 counters.interval_boxes += failure.interval_boxes;
                 preferred_core_promotion = failure.failed_guard_face.and_then(|face| {
-                    preferred_core_promotion_for_face(&candidate_state.mesh, &transition, face)
+                    preferred_core_promotion_for_face(
+                        &candidate_state.mesh,
+                        &transition,
+                        face,
+                        &tried_promotions,
+                    )
                 });
                 match failure.disposition {
                     CandidateFailureDisposition::InvalidInput => {
@@ -1263,10 +1278,13 @@ fn failed_face_place(mesh: &HierarchyLeafMesh, face: Option<usize>) -> String {
     )
 }
 
+/// The core parent nearest a failed face, by face adjacency, but for those
+/// already `tried`: the walk goes on through them to the next.
 fn preferred_core_promotion_for_face(
     mesh: &HierarchyLeafMesh,
     transition: &super::TransitionTopologyTrial,
     failed_face: usize,
+    tried: &BTreeSet<TriangleAddress>,
 ) -> Option<TriangleAddress> {
     if !mesh.mesh.is_triangle_live(failed_face) {
         return None;
@@ -1287,8 +1305,10 @@ fn preferred_core_promotion_for_face(
             if let Some(parent) =
                 mesh.triangle_addresses[face].filter(|parent| core.contains(parent))
             {
-                nearest.insert(parent);
-                continue;
+                if !tried.contains(&parent) {
+                    nearest.insert(parent);
+                    continue;
+                }
             }
             for neighbour in mesh.mesh.neighbours()[face] {
                 if neighbour != 0 && mesh.mesh.is_triangle_live(neighbour) && !seen[neighbour] {
@@ -1854,8 +1874,55 @@ mod tests {
         };
 
         assert_eq!(
-            preferred_core_promotion_for_face(&mesh, &transition, failed_face),
+            preferred_core_promotion_for_face(&mesh, &transition, failed_face, &BTreeSet::new()),
             Some(core_parent)
+        );
+
+        // A promotion already tried is passed over for the next nearest; with
+        // every core parent tried there is none.
+        let mut distance = vec![usize::MAX; grid.mesh.triangles().len()];
+        distance[failed_face] = 0;
+        let mut queue = VecDeque::from([failed_face]);
+        while let Some(face) = queue.pop_front() {
+            for neighbour in grid.mesh.neighbours()[face] {
+                if neighbour != 0
+                    && grid.mesh.is_triangle_live(neighbour)
+                    && distance[neighbour] == usize::MAX
+                {
+                    distance[neighbour] = distance[face] + 1;
+                    queue.push_back(neighbour);
+                }
+            }
+        }
+        let far_face = grid
+            .mesh
+            .active_triangle_slots()
+            .find(|&face| distance[face] != usize::MAX && distance[face] > distance[core_face])
+            .unwrap();
+        let far_parent = grid.triangle_addresses[far_face].unwrap();
+        let mut both = transition;
+        both.candidate.core_parents = vec![core_parent, far_parent];
+        assert_eq!(
+            preferred_core_promotion_for_face(&mesh, &both, failed_face, &BTreeSet::new()),
+            Some(core_parent)
+        );
+        assert_eq!(
+            preferred_core_promotion_for_face(
+                &mesh,
+                &both,
+                failed_face,
+                &BTreeSet::from([core_parent])
+            ),
+            Some(far_parent)
+        );
+        assert_eq!(
+            preferred_core_promotion_for_face(
+                &mesh,
+                &both,
+                failed_face,
+                &BTreeSet::from([core_parent, far_parent])
+            ),
+            None
         );
     }
 }

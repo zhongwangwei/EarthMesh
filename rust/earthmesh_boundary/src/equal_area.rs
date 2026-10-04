@@ -82,6 +82,15 @@ impl SphericalCap {
     pub fn radius_radians(self) -> f64 {
         self.radius
     }
+
+    /// The cap with its radius grown by `margin` radians, at most the
+    /// whole sphere.
+    pub fn grown(self, margin: f64) -> Self {
+        Self {
+            center: self.center,
+            radius: (self.radius + margin.max(0.0)).min(std::f64::consts::PI),
+        }
+    }
 }
 
 /// Cell-local Lambert azimuthal equal-area projection on a unit sphere.
