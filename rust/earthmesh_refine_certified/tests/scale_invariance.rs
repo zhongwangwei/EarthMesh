@@ -134,7 +134,7 @@ fn coarsen(
         retry_at_failure,
     };
     let outcome = run_region_component_epochs(
-        region.clone(),
+        &region,
         &region.mesh,
         &SourceLevelField::from_active_voronoi_cells(&region.mesh, projected).unwrap(),
         &graded_by_slot,

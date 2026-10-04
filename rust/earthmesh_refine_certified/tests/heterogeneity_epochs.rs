@@ -155,7 +155,7 @@ fn a_heterogeneity_field_drives_the_region_epochs() {
         graded_by_slot[site] = level;
     }
     let outcome = run_region_component_epochs(
-        region.clone(),
+        &region,
         &region.mesh,
         &SourceLevelField::from_active_voronoi_cells(&region.mesh, projected.clone()).unwrap(),
         &graded_by_slot,

@@ -375,7 +375,7 @@ pub fn run_elastic_component_epochs(
     config: &ElasticCmrcConfig,
 ) -> ElasticCmrcOutcome {
     run_elastic_component_epochs_impl(
-        grid,
+        &grid,
         source_mesh,
         source_levels,
         required_levels,
@@ -401,7 +401,7 @@ pub struct RegionEpochs {
 /// `required_levels` describe its cells. Counts, histograms and component
 /// records include the settled region as the whole sphere's would.
 pub fn run_region_component_epochs(
-    grid: MotherGrid,
+    grid: &MotherGrid,
     source_mesh: &MeshState,
     source_levels: &SourceLevelField,
     required_levels: &[usize],
@@ -433,7 +433,7 @@ where
     F: FnMut(&HierarchyComponent, &ComponentTransactionState) -> Option<DomainQualityRejectReason>,
 {
     run_elastic_component_epochs_impl(
-        grid,
+        &grid,
         source_mesh,
         source_levels,
         required_levels,
@@ -446,7 +446,7 @@ where
 
 #[allow(clippy::too_many_arguments)]
 fn run_elastic_component_epochs_impl(
-    grid: MotherGrid,
+    grid: &MotherGrid,
     source_mesh: &MeshState,
     source_levels: &SourceLevelField,
     required_levels: &[usize],
@@ -455,7 +455,7 @@ fn run_elastic_component_epochs_impl(
     config: &ElasticCmrcConfig,
     region: Option<&RegionEpochs>,
 ) -> ElasticCmrcOutcome {
-    if let Err(reason) = validate_inputs(&grid, source_mesh, source_levels, required_levels, config)
+    if let Err(reason) = validate_inputs(grid, source_mesh, source_levels, required_levels, config)
     {
         return ElasticCmrcOutcome::InvalidInput { reason };
     }
@@ -464,7 +464,7 @@ fn run_elastic_component_epochs_impl(
             reason: "a region run needs a built region and no spatial context".into(),
         };
     }
-    let mut state = match ComponentTransactionState::new(&grid, config.max_level) {
+    let mut state = match ComponentTransactionState::new(grid, config.max_level) {
         Ok(state) => state,
         Err(reason) => return ElasticCmrcOutcome::InvalidInput { reason },
     };
@@ -528,7 +528,7 @@ fn run_elastic_component_epochs_impl(
         let fine_n = grid.subdivision >> shift;
         let owned_level_grid;
         let level_grid = if fine_n == grid.subdivision {
-            &grid
+            grid
         } else {
             let generated = match region {
                 None => MotherGrid::generate(fine_n),
@@ -556,13 +556,13 @@ fn run_elastic_component_epochs_impl(
                 ),
             };
         }
-        let level_source_slots = match state.level_source_slots(&grid, level_grid) {
+        let level_source_slots = match state.level_source_slots(grid, level_grid) {
             Ok(slots) => slots,
             Err(reason) => return ElasticCmrcOutcome::InvalidInput { reason },
         };
         let requirements = match region {
-            None => explicit_parent_requirements(&grid, &state, level_grid, required_levels),
-            Some(_) => region_parent_requirements(&grid, &state, level_grid, required_levels),
+            None => explicit_parent_requirements(grid, &state, level_grid, required_levels),
+            Some(_) => region_parent_requirements(grid, &state, level_grid, required_levels),
         };
         let requirements = match requirements {
             Ok(requirements) => requirements,
@@ -581,7 +581,7 @@ fn run_elastic_component_epochs_impl(
                 };
                 if let Some(face_context) = face_context {
                     if let Err(reason) =
-                        sort_components_outside_in(&grid, &mut plan.components, face_context)
+                        sort_components_outside_in(grid, &mut plan.components, face_context)
                     {
                         return ElasticCmrcOutcome::InvalidInput { reason };
                     }
@@ -670,7 +670,7 @@ fn run_elastic_component_epochs_impl(
             };
             let before_quality_state = quality_gate.is_some().then(|| state.clone());
             let outcome = solve_component_transaction_at_level(
-                &grid,
+                grid,
                 &source_remap,
                 source_levels,
                 &mut state,
@@ -823,7 +823,7 @@ fn run_elastic_component_epochs_impl(
         let reused_component_certificate = certified_state_fingerprint == Some(state.fingerprint());
         if !reused_component_certificate {
             if let Err(reason) = certify_stage(
-                &grid,
+                grid,
                 &source_remap,
                 source_levels,
                 &state,

@@ -184,7 +184,7 @@ fn compare(base_n: usize, levels: usize, disks: &[(f64, f64, f64, usize)], rings
         panic!("the whole sphere must complete");
     };
     let outcome = run_region_component_epochs(
-        region.clone(),
+        &region,
         &region.mesh,
         &SourceLevelField::from_active_voronoi_cells(&region.mesh, by_site(&region, &projected_at))
             .unwrap(),

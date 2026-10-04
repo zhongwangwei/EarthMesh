@@ -1027,7 +1027,7 @@ fn build_region_certified_construction<R>(
         "initial_geometry_certificate",
         &mut phase_started,
     );
-    let initial_mesh = fine.mesh.clone();
+    let initial_mesh = &fine.mesh;
     let active_sites = initial_mesh.active_vertex_slots().collect::<Vec<_>>();
     let (coarsened, source_levels) = if let RegionRequirement::Uniform = requirement {
         // The safe mother: every site keeps itself, at the chosen level.
@@ -1053,7 +1053,7 @@ fn build_region_certified_construction<R>(
         let projected = match requirement {
             RegionRequirement::Raster(raster) => crate::region_required_levels_from_raster(
                 raster,
-                &initial_mesh,
+                initial_mesh,
                 &outer,
                 whole_vertices,
             )
@@ -1083,24 +1083,28 @@ fn build_region_certified_construction<R>(
             &mut phase_started,
         );
         let source_levels =
-            crate::SourceLevelField::from_active_voronoi_cells(&initial_mesh, projected.clone())
+            crate::SourceLevelField::from_active_voronoi_cells(initial_mesh, projected.clone())
                 .map_err(invalid_data)?;
-        let mut cell_by_site = vec![usize::MAX; initial_mesh.vertices().len()];
-        for (cell, &site) in active_sites.iter().enumerate() {
-            cell_by_site[site] = cell;
-        }
-        let mut adjacency = vec![Vec::new(); active_sites.len()];
-        for (left, right) in crate::requirement::target_site_edges(&initial_mesh) {
-            let left = cell_by_site[left];
-            let right = cell_by_site[right];
-            adjacency[left].push(right);
-            adjacency[right].push(left);
-        }
-        let graded = crate::requirement::graded_envelope(
-            &adjacency,
-            &projected,
-            options.gradation_rings_per_level,
-        );
+        // The adjacency serves the envelope alone: it is dropped before the
+        // epochs, which hold their own copies of the mesh at their peak.
+        let graded = {
+            let mut cell_by_site = vec![usize::MAX; initial_mesh.vertices().len()];
+            for (cell, &site) in active_sites.iter().enumerate() {
+                cell_by_site[site] = cell;
+            }
+            let mut adjacency = vec![Vec::new(); active_sites.len()];
+            for (left, right) in crate::requirement::target_site_edges(initial_mesh) {
+                let left = cell_by_site[left];
+                let right = cell_by_site[right];
+                adjacency[left].push(right);
+                adjacency[right].push(left);
+            }
+            crate::requirement::graded_envelope(
+                &adjacency,
+                &projected,
+                options.gradation_rings_per_level,
+            )
+        };
         let mut graded_by_site = vec![usize::MAX; initial_mesh.vertices().len()];
         for (&site, level) in active_sites.iter().zip(graded) {
             graded_by_site[site] = level;
@@ -1110,8 +1114,8 @@ fn build_region_certified_construction<R>(
         let scope =
             coarsen::RegionScope::new(&fine, &extent.region, base_nxp).map_err(invalid_data)?;
         let epoch = coarsen::run_region_component_epochs(
-            fine.clone(),
-            &initial_mesh,
+            &fine,
+            initial_mesh,
             &source_levels,
             &graded_by_site,
             &coarsen::ElasticCmrcConfig {
@@ -1239,7 +1243,7 @@ fn build_region_certified_construction<R>(
             // cells it overlaps.
             (RegionRequirement::Lattice(_), Some(source_levels)) => {
                 crate::certify_final_cell_requirements_with_remap(
-                    &initial_mesh,
+                    initial_mesh,
                     source_levels,
                     &mesh,
                     &final_levels,
