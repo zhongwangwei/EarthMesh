@@ -2982,6 +2982,8 @@ struct EdgeCrossingQuery {
     seen: Vec<u32>,
     generation: u32,
     candidates: Vec<usize>,
+    /// The nonzero crossing strengths of one edge, by the edge crossed.
+    crossings: Vec<(usize, f64)>,
 }
 
 impl EdgeCrossingIndex {
@@ -3019,23 +3021,42 @@ impl EdgeCrossingIndex {
                 |query, (left, &(a, b))| {
                     let query = query.as_mut().unwrap();
                     query.fill(index, caps[left]);
-                    query
-                        .candidates
-                        .iter()
-                        .copied()
-                        .filter(|&right| right > left && caps[left].overlaps(caps[right]))
-                        .filter_map(|right| {
-                            let (c, d) = edges[right];
-                            (a != c && a != d && b != c && b != d).then(|| {
-                                minor_arc_crossing_strength(
-                                    mesh.vertices()[a],
-                                    mesh.vertices()[b],
-                                    mesh.vertices()[c],
-                                    mesh.vertices()[d],
-                                )
-                            })
-                        })
-                        .sum::<f64>()
+                    let EdgeCrossingQuery {
+                        candidates,
+                        crossings,
+                        ..
+                    } = query;
+                    crossings.clear();
+                    let mut counted = false;
+                    for &right in candidates.iter() {
+                        let (c, d) = edges[right];
+                        if right <= left
+                            || !caps[left].overlaps(caps[right])
+                            || a == c
+                            || a == d
+                            || b == c
+                            || b == d
+                        {
+                            continue;
+                        }
+                        counted = true;
+                        let strength = minor_arc_crossing_strength(
+                            mesh.vertices()[a],
+                            mesh.vertices()[b],
+                            mesh.vertices()[c],
+                            mesh.vertices()[d],
+                        );
+                        if strength != 0.0 {
+                            crossings.push((right, strength));
+                        }
+                    }
+                    // The sum `.sum::<f64>()` over the counted strengths gives,
+                    // in ascending order of the edges crossed.
+                    if crossings.is_empty() {
+                        return if counted { 0.0 } else { -0.0 };
+                    }
+                    crossings.sort_unstable_by_key(|&(right, _)| right);
+                    crossings.iter().map(|&(_, strength)| strength).sum::<f64>()
                 },
             )
             .sum()
@@ -3054,7 +3075,13 @@ impl EdgeCrossingIndex {
                 return edge_crossing_penalty_against_quadratic(mesh, moving_edges, all_edges);
             };
             query.fill(&self.index, cap);
-            for &right in &query.candidates {
+            let EdgeCrossingQuery {
+                candidates,
+                crossings,
+                ..
+            } = &mut *query;
+            crossings.clear();
+            for &right in candidates.iter() {
                 if !cap.overlaps(self.caps[right]) {
                     continue;
                 }
@@ -3062,12 +3089,21 @@ impl EdgeCrossingIndex {
                 if a == c || a == d || b == c || b == d {
                     continue;
                 }
-                penalty += minor_arc_crossing_strength(
+                let strength = minor_arc_crossing_strength(
                     mesh.vertices()[a],
                     mesh.vertices()[b],
                     mesh.vertices()[c],
                     mesh.vertices()[d],
                 );
+                if strength != 0.0 {
+                    crossings.push((right, strength));
+                }
+            }
+            // Added in ascending order of the edges crossed, whatever order
+            // the index lists them in (zero strengths change no sum).
+            crossings.sort_unstable_by_key(|&(right, _)| right);
+            for &(_, strength) in crossings.iter() {
+                penalty += strength;
             }
         }
         penalty
@@ -3080,6 +3116,7 @@ impl EdgeCrossingQuery {
             seen: vec![0; item_count],
             generation: 0,
             candidates: Vec::new(),
+            crossings: Vec::new(),
         }
     }
 

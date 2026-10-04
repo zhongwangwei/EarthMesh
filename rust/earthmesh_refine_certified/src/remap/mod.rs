@@ -746,11 +746,124 @@ pub(crate) fn voronoi_rings_selected(
     Ok((rings, ids))
 }
 
+/// Caps binned for overlap queries (guide 11.120). Each cap lies on the level
+/// whose latitude-longitude tiles, 2^k degrees on a side, are at least as wide
+/// as the cap, so it occupies a tile or two whatever the caps' sizes, number or
+/// place; only occupied tiles are kept, sorted. A query reads, on every level,
+/// the tiles its own cap reaches. The grid this replaces was sized by the
+/// number of caps alone, as if they covered the sphere: a region's caps
+/// crowded into a few of its tiles and every query read thousands of them.
 pub(crate) struct SphericalCapIndex {
-    nlon: usize,
-    nlat: usize,
-    bins: Vec<Vec<usize>>,
+    /// Occupied tiles in ascending (level, row, column) order. Column -1
+    /// holds the caps that occupy their rows whole: within a tile of a pole,
+    /// or reaching round the sphere.
+    tiles: Vec<(i32, i64, i64)>,
+    /// `members[starts[i]..starts[i + 1]]` are the caps on `tiles[i]`,
+    /// ascending.
+    starts: Vec<usize>,
+    members: Vec<usize>,
+    /// The levels holding caps, ascending.
+    levels: Vec<i32>,
     caps: Vec<SphericalCap>,
+}
+
+/// How far, in radians, the index reaches beyond a cap's radius: well past
+/// the rounding of `SphericalCap::overlaps` (its `acos` errs by up to about
+/// 1.5e-8 for nearly coincident centres) and of the tiles' coordinates, so
+/// two caps it calls overlapping share an open set, and with it a tile.
+const CAP_INDEX_SLACK: f64 = 1.0e-7;
+
+/// Tile levels: 2^k degrees, from about 0.1 m to 64 degrees.
+const CAP_LEVEL_MIN: i32 = -20;
+const CAP_LEVEL_MAX: i32 = 6;
+
+/// The tiles of one level: `tile` degrees on a side, `rows` by `columns`
+/// (the last row and column narrower where the tile does not divide the
+/// sphere).
+#[derive(Clone, Copy)]
+struct CapTiling {
+    level: i32,
+    tile: f64,
+    rows: i64,
+    columns: i64,
+}
+
+impl CapTiling {
+    fn new(level: i32) -> Self {
+        let tile = 2f64.powi(level);
+        Self {
+            level,
+            tile,
+            rows: (180.0 / tile).ceil() as i64,
+            columns: (360.0 / tile).ceil() as i64,
+        }
+    }
+
+    /// The level a cap is stored on: tiles at least its reach's diameter.
+    fn for_cap(cap: SphericalCap) -> Self {
+        let reach = (cap.radius_radians() + CAP_INDEX_SLACK)
+            .min(std::f64::consts::PI)
+            .to_degrees();
+        Self::new(((2.0 * reach).log2().ceil() as i32).clamp(CAP_LEVEL_MIN, CAP_LEVEL_MAX))
+    }
+
+    fn row(self, lat: f64) -> i64 {
+        (((lat + 90.0) / self.tile).floor() as i64).clamp(0, self.rows - 1)
+    }
+
+    fn column(self, lon: f64) -> i64 {
+        (((lon + 180.0) / self.tile).floor() as i64).clamp(0, self.columns - 1)
+    }
+
+    /// The rows a cap reaches, its radius grown by `CAP_INDEX_SLACK`, and,
+    /// clear of the poles by a tile, its columns: those within
+    /// `asin(sin r / cos lat)` of its centre's longitude, split at the
+    /// antimeridian (the second range empty when it is not crossed);
+    /// `None` -- every column -- nearer a pole or when they go round. Band
+    /// ends map to rows and columns by `floor`, which is monotone, so caps
+    /// whose grown bands meet have a row and a column in common.
+    fn span(self, cap: SphericalCap) -> (std::ops::RangeInclusive<i64>, Option<[(i64, i64); 2]>) {
+        let (lon, lat) = cap.center_lon_lat_degrees();
+        let reach = (cap.radius_radians() + CAP_INDEX_SLACK).min(std::f64::consts::PI);
+        let (south, north) = (lat - reach.to_degrees(), lat + reach.to_degrees());
+        let rows = self.row(south)..=self.row(north);
+        let columns = (south - self.tile > -90.0 && north + self.tile < 90.0)
+            .then(|| (reach.sin() / lat.to_radians().cos()).asin().to_degrees())
+            .filter(|half| half.is_finite() && 2.0 * (half + self.tile) < 360.0)
+            .map(|half| {
+                let (west, east) = (lon - half, lon + half);
+                if west < -180.0 {
+                    [
+                        (self.column(west + 360.0), self.columns - 1),
+                        (0, self.column(east)),
+                    ]
+                } else if east > 180.0 {
+                    [
+                        (self.column(west), self.columns - 1),
+                        (0, self.column(east - 360.0)),
+                    ]
+                } else {
+                    [(self.column(west), self.column(east)), (1, 0)]
+                }
+            });
+        (rows, columns)
+    }
+
+    /// The tiles a cap occupies on this level.
+    fn tiles(self, cap: SphericalCap) -> Vec<(i32, i64, i64)> {
+        let (rows, columns) = self.span(cap);
+        match columns {
+            None => rows.map(|row| (self.level, row, -1)).collect(),
+            Some(ranges) => rows
+                .flat_map(|row| {
+                    ranges
+                        .into_iter()
+                        .flat_map(move |(first, last)| first..=last)
+                        .map(move |column| (self.level, row, column))
+                })
+                .collect(),
+        }
+    }
 }
 
 impl SphericalCapIndex {
@@ -767,32 +880,106 @@ impl SphericalCapIndex {
     }
 
     pub(crate) fn from_caps(caps: Vec<SphericalCap>) -> Self {
-        let nlat = ((caps.len() as f64).sqrt() / 2.0).ceil().clamp(4.0, 2048.0) as usize;
-        let nlon = nlat * 2;
-        let mut bins = vec![Vec::new(); nlon * nlat];
-        for (source, &cap) in caps.iter().enumerate() {
-            for bin in cap_bins(cap, nlon, nlat) {
-                bins[bin].push(source);
+        let mut entries = caps
+            .par_iter()
+            .enumerate()
+            .flat_map_iter(|(member, &cap)| {
+                CapTiling::for_cap(cap)
+                    .tiles(cap)
+                    .into_iter()
+                    .map(move |tile| (tile, member))
+            })
+            .collect::<Vec<_>>();
+        entries.par_sort_unstable();
+        let mut tiles = Vec::new();
+        let mut starts = Vec::new();
+        let mut members = Vec::with_capacity(entries.len());
+        for (tile, member) in entries {
+            if tiles.last() != Some(&tile) {
+                tiles.push(tile);
+                starts.push(members.len());
             }
+            members.push(member);
         }
+        starts.push(members.len());
+        let mut levels = tiles.iter().map(|&(level, _, _)| level).collect::<Vec<_>>();
+        levels.dedup();
         Self {
-            nlon,
-            nlat,
-            bins,
+            tiles,
+            starts,
+            members,
+            levels,
             caps,
         }
     }
 
+    /// Calls `visit` with every cap on a tile `cap` reaches, on every level --
+    /// all the caps it overlaps among them, some more than once.
+    fn visit_reached(&self, cap: SphericalCap, mut visit: impl FnMut(usize)) {
+        for &level in &self.levels {
+            let tiling = CapTiling::new(level);
+            let (rows, columns) = tiling.span(cap);
+            let (first_row, last_row) = (*rows.start(), *rows.end());
+            let lower = self
+                .tiles
+                .partition_point(|&tile| tile < (level, first_row, -1));
+            let upper = self
+                .tiles
+                .partition_point(|&tile| tile <= (level, last_row, i64::MAX));
+            let mut members = |index: usize| {
+                for &member in &self.members[self.starts[index]..self.starts[index + 1]] {
+                    visit(member);
+                }
+            };
+            let wanted = |column: i64| {
+                column == -1
+                    || columns.is_none_or(|ranges| {
+                        ranges
+                            .iter()
+                            .any(|&(first, last)| (first..=last).contains(&column))
+                    })
+            };
+            if (last_row - first_row) as usize >= upper - lower {
+                // More rows than occupied tiles in the band: walk the tiles.
+                for index in lower..upper {
+                    if wanted(self.tiles[index].2) {
+                        members(index);
+                    }
+                }
+                continue;
+            }
+            let band = &self.tiles[lower..upper];
+            let seek = |key: (i32, i64, i64)| lower + band.partition_point(|&tile| tile < key);
+            for row in rows {
+                let whole = seek((level, row, -1));
+                if whole < upper && self.tiles[whole] == (level, row, -1) {
+                    members(whole);
+                }
+                let ranges = columns.unwrap_or([(0, tiling.columns - 1), (1, 0)]);
+                for (first, last) in ranges.into_iter().filter(|(first, last)| first <= last) {
+                    let mut index = seek((level, row, first));
+                    while index < upper && self.tiles[index] <= (level, row, last) {
+                        members(index);
+                        index += 1;
+                    }
+                }
+            }
+        }
+    }
+
+    /// The caps on the tiles `cap` reaches, ascending: every cap it overlaps
+    /// among them.
     pub(crate) fn candidates(&self, cap: SphericalCap) -> Vec<usize> {
-        let mut candidates = cap_bins(cap, self.nlon, self.nlat)
-            .into_iter()
-            .flat_map(|bin| self.bins[bin].iter().copied())
-            .collect::<Vec<_>>();
+        let mut candidates = Vec::new();
+        self.visit_reached(cap, |member| candidates.push(member));
         candidates.sort_unstable();
         candidates.dedup();
         candidates
     }
 
+    /// `candidates` without its sort, deduplicated through `seen`, which
+    /// marks the caps listed for `generation`: in the index's order, so a
+    /// sum over them should not depend on it.
     pub(crate) fn candidates_into(
         &self,
         cap: SphericalCap,
@@ -801,60 +988,13 @@ impl SphericalCapIndex {
         candidates: &mut Vec<usize>,
     ) {
         candidates.clear();
-        for source in cap_bins(cap, self.nlon, self.nlat)
-            .into_iter()
-            .flat_map(|bin| self.bins[bin].iter().copied())
-        {
-            if seen[source] != generation {
-                seen[source] = generation;
-                candidates.push(source);
+        self.visit_reached(cap, |member| {
+            if seen[member] != generation {
+                seen[member] = generation;
+                candidates.push(member);
             }
-        }
+        });
     }
-}
-
-fn cap_bins(cap: SphericalCap, nlon: usize, nlat: usize) -> Vec<usize> {
-    let (lon, lat) = cap.center_lon_lat_degrees();
-    let radius = cap.radius_radians().min(std::f64::consts::PI);
-    let radius_degrees = radius.to_degrees();
-    let lat_min = (lat - radius_degrees).max(-90.0);
-    let lat_max = (lat + radius_degrees).min(90.0);
-    let lat_bin = |value: f64| {
-        (((value + 90.0) / 180.0) * nlat as f64)
-            .floor()
-            .clamp(0.0, (nlat - 1) as f64) as usize
-    };
-    let lon_extent = if radius >= std::f64::consts::FRAC_PI_2 || lat_min <= -90.0 || lat_max >= 90.0
-    {
-        180.0
-    } else {
-        (radius.sin() / lat.to_radians().cos().abs())
-            .clamp(-1.0, 1.0)
-            .asin()
-            .abs()
-            .to_degrees()
-    };
-    let lon_bin = |value: f64| {
-        ((value.rem_euclid(360.0) / 360.0) * nlon as f64)
-            .floor()
-            .clamp(0.0, (nlon - 1) as f64) as usize
-    };
-    let lon_bins = if lon_extent >= 180.0 {
-        (0..nlon).collect::<Vec<_>>()
-    } else {
-        let start = lon_bin(lon - lon_extent);
-        let end = lon_bin(lon + lon_extent);
-        if start <= end {
-            (start..=end).collect()
-        } else {
-            (start..nlon).chain(0..=end).collect()
-        }
-    };
-    let mut bins = Vec::new();
-    for j in lat_bin(lat_min)..=lat_bin(lat_max) {
-        bins.extend(lon_bins.iter().map(|&i| j * nlon + i));
-    }
-    bins
 }
 
 fn active_faces(grid: &MotherGrid) -> Option<Vec<(usize, TriangleAddress, f64)>> {
@@ -877,6 +1017,124 @@ fn active_faces(grid: &MotherGrid) -> Option<Vec<(usize, TriangleAddress, f64)>>
 mod tests {
     use super::*;
     use earthmesh_geometry::{try_spherical_polygon_excess, SphericalAreaBranch};
+
+    /// A deterministic stream of numbers in [0, 1) (splitmix64).
+    fn uniform(state: &mut u64) -> f64 {
+        *state = state.wrapping_add(0x9E37_79B9_7F4A_7C15);
+        let mut z = *state;
+        z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
+        z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
+        ((z ^ (z >> 31)) >> 11) as f64 / (1u64 << 53) as f64
+    }
+
+    /// The cap of a triangle `size` degrees about a centre.
+    fn cap_around(lon: f64, lat: f64, size: f64, turn: f64) -> SphericalCap {
+        let ring = (0..3)
+            .map(|corner| {
+                let angle = turn + std::f64::consts::TAU * corner as f64 / 3.0;
+                let lat = (lat + size * angle.sin()).clamp(-90.0, 90.0);
+                let lon = lon + size * angle.cos() / lat.to_radians().cos().max(0.05);
+                Point::new(lon, lat)
+            })
+            .collect::<Vec<_>>();
+        SphericalCap::for_rings(&[ring]).unwrap()
+    }
+
+    /// Caps where tiles are awkward -- about the poles, the antimeridian and
+    /// a tile edge -- and scattered, from a decimetre to a hemisphere.
+    fn awkward_caps(state: &mut u64, count: usize) -> Vec<SphericalCap> {
+        let centres = [
+            (0.0, 90.0),
+            (40.0, -89.99),
+            (180.0, 12.0),
+            (-179.999, -40.0),
+            (0.0, 0.0),
+            (100.0, 38.0),
+        ];
+        (0..count)
+            .map(|slot| {
+                let (lon, lat) = if slot % 2 == 0 {
+                    let (lon, lat) = centres[(uniform(state) * centres.len() as f64) as usize];
+                    let jitter = 10f64.powf(-5.0 + 6.0 * uniform(state));
+                    (
+                        lon + jitter * (2.0 * uniform(state) - 1.0),
+                        (lat + jitter * (2.0 * uniform(state) - 1.0)).clamp(-90.0, 90.0),
+                    )
+                } else {
+                    (
+                        360.0 * uniform(state) - 180.0,
+                        (2.0 * uniform(state) - 1.0).asin().to_degrees(),
+                    )
+                };
+                let size = match slot % 7 {
+                    6 => 20.0 + 50.0 * uniform(state),
+                    _ => 10f64.powf(-6.0 + 6.5 * uniform(state)),
+                };
+                cap_around(lon, lat, size, std::f64::consts::TAU * uniform(state))
+            })
+            .collect()
+    }
+
+    #[test]
+    fn the_tiled_cap_index_finds_every_overlap() {
+        let mut state = 11;
+        let caps = awkward_caps(&mut state, 3000);
+        let queries = awkward_caps(&mut state, 1500);
+        let index = SphericalCapIndex::from_caps(caps.clone());
+        let mut seen = vec![0; caps.len()];
+        let mut listed = Vec::new();
+        let mut overlaps = 0;
+        for (generation, &query) in (1..).zip(&queries) {
+            let scan = (0..caps.len())
+                .filter(|&cap| query.overlaps(caps[cap]))
+                .collect::<Vec<_>>();
+            let candidates = index.candidates(query);
+            assert!(candidates.windows(2).all(|pair| pair[0] < pair[1]));
+            let found = candidates
+                .iter()
+                .copied()
+                .filter(|&cap| query.overlaps(caps[cap]))
+                .collect::<Vec<_>>();
+            assert_eq!(found, scan, "query {query:?}");
+            index.candidates_into(query, &mut seen, generation, &mut listed);
+            let mut sorted = listed.clone();
+            sorted.sort_unstable();
+            assert_eq!(sorted, candidates);
+            overlaps += scan.len();
+        }
+        assert!(overlaps > 10_000, "{overlaps}");
+    }
+
+    /// A region's small caps, which a grid sized by their number alone put
+    /// in one tile: a query now reads its neighbours, not all of them.
+    #[test]
+    fn the_tiled_cap_index_reads_a_regions_neighbours_only() {
+        let mut state = 5;
+        let caps = (0..3000)
+            .map(|_| {
+                cap_around(
+                    100.0 + uniform(&mut state),
+                    38.0 + uniform(&mut state),
+                    0.01,
+                    std::f64::consts::TAU * uniform(&mut state),
+                )
+            })
+            .collect::<Vec<_>>();
+        let index = SphericalCapIndex::from_caps(caps.clone());
+        let read = caps
+            .iter()
+            .map(|&cap| index.candidates(cap).len())
+            .sum::<usize>();
+        let overlapping = caps
+            .iter()
+            .map(|&cap| caps.iter().filter(|&&other| cap.overlaps(other)).count())
+            .sum::<usize>();
+        assert!(
+            read < 4 * overlapping,
+            "read {read}, overlapping {overlapping}"
+        );
+        assert!(read < 3000 * 3000 / 20, "read {read}");
+    }
 
     // Original remap data flow: prepare neither side across overlap pairs.
     fn scalar_overlap_reference(
