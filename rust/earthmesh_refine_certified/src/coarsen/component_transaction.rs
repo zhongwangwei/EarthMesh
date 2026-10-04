@@ -662,8 +662,11 @@ pub(super) fn solve_component_transaction_at_level(
                 // broken one (guide 11.110).
                 if timing_enabled {
                     eprintln!(
-                        "earthmesh_cli: cmrc_detail phase=candidate_failure component={} stage={:?} reason={}",
-                        component.id, failure.stage, failure.reason
+                        "earthmesh_cli: cmrc_detail phase=candidate_failure component={} stage={:?} reason={}{}",
+                        component.id,
+                        failure.stage,
+                        failure.reason,
+                        failed_face_place(&candidate_state.mesh, failure.failed_guard_face)
                     );
                 }
                 // certify_candidate uses this same timer for completed phases;
@@ -1232,6 +1235,29 @@ fn core_promotion_depths(
         return Err("component promotion depths are disconnected".into());
     }
     Ok(depths)
+}
+
+/// Where a failed guard face lies, for the failure log: its centroid and
+/// how many of its edges are open (on the region's outer boundary).
+fn failed_face_place(mesh: &HierarchyLeafMesh, face: Option<usize>) -> String {
+    let Some(face) = face.filter(|&face| mesh.mesh.is_triangle_live(face)) else {
+        return String::new();
+    };
+    let corners = mesh.mesh.triangles()[face].map(|site| mesh.mesh.vertices()[site]);
+    let [x, y, z] = [
+        corners.iter().map(|point| point.x).sum::<f64>(),
+        corners.iter().map(|point| point.y).sum::<f64>(),
+        corners.iter().map(|point| point.z).sum::<f64>(),
+    ];
+    let open = mesh.mesh.neighbours()[face]
+        .iter()
+        .filter(|&&neighbour| neighbour == 0 || !mesh.mesh.is_triangle_live(neighbour))
+        .count();
+    format!(
+        "; failed face at lon {:.5} lat {:.5}, {open} open edges",
+        y.atan2(x).to_degrees(),
+        (z / (x * x + y * y + z * z).sqrt()).asin().to_degrees()
+    )
 }
 
 fn preferred_core_promotion_for_face(
