@@ -43,6 +43,58 @@ fn log_component_phase(enabled: bool, component: u64, phase: &str, started: &mut
     }
 }
 
+/// The movable vertices of a failed elastic solve where it stopped, by
+/// source slot.
+fn final_movable_positions(
+    witness: &super::elastic_block::GeometryFailureWitness,
+) -> BTreeMap<usize, CartesianPoint> {
+    witness
+        .patch
+        .movable_compact_vertices
+        .iter()
+        .filter_map(|&compact| {
+            let source = witness
+                .mesh
+                .source_vertex_slots
+                .get(compact)
+                .copied()
+                .flatten()?;
+            Some((source, witness.mesh.mesh.vertices()[compact]))
+        })
+        .collect()
+}
+
+/// What an elastic solve did, for the timing log: how it ended, its
+/// iterations and last phase, and the patch it moved.
+fn log_elastic_outcome(component: u64, outcome: &ElasticBlockOutcome, patch: (usize, usize)) {
+    let (kind, iterations, phase) = match outcome {
+        ElasticBlockOutcome::Certified(trial) => {
+            ("Certified", trial.report.elastic_iterations, None)
+        }
+        ElasticBlockOutcome::ElasticNoImprovement {
+            elastic_iterations,
+            final_phase,
+            ..
+        } => ("NoImprovement", *elastic_iterations, Some(*final_phase)),
+        ElasticBlockOutcome::SearchBudgetExhausted {
+            elastic_iterations,
+            final_phase,
+            ..
+        } => ("BudgetExhausted", *elastic_iterations, Some(*final_phase)),
+        ElasticBlockOutcome::RequiresDifferentTopology {
+            elastic_iterations,
+            final_phase,
+            ..
+        } => ("DifferentTopology", *elastic_iterations, Some(*final_phase)),
+        ElasticBlockOutcome::InvalidPatch { .. } => ("InvalidPatch", 0, None),
+    };
+    eprintln!(
+        "earthmesh_cli: cmrc_detail phase=elastic_outcome component={component} outcome={kind} \
+         iterations={iterations} final_phase={phase:?} movable={} guard_faces={}",
+        patch.0, patch.1
+    );
+}
+
 fn log_failed_candidate_tail(
     enabled: bool,
     component: u64,
@@ -482,6 +534,9 @@ pub(super) fn solve_component_transaction_at_level(
     let mut last_retry: Option<(ComponentTransactionStage, String)> = None;
     let mut last_elastic_budget_failure: Option<String> = None;
     let mut preferred_core_promotion = None;
+    // A retried candidate differs from the failed one only near the failure
+    // (guide 11.126): its solve starts where the failed one stopped.
+    let mut warm_start = None::<BTreeMap<usize, CartesianPoint>>;
     let mut topology_state_offset = 0usize;
     let mut halo_expansion_offset = 0usize;
     let mut search_component = component.clone();
@@ -639,6 +694,7 @@ pub(super) fn solve_component_transaction_at_level(
             max_adjacent_level_delta,
             &transition,
             limits.elastic_iterations,
+            warm_start.as_ref().filter(|_| limits.retry_at_failure),
             limits
                 .interval_boxes
                 .saturating_sub(counters.interval_boxes),
@@ -660,7 +716,10 @@ pub(super) fn solve_component_transaction_at_level(
                 *state = candidate_state;
                 return ComponentTransactionOutcome::Certified(Box::new(report));
             }
-            Err(failure) => {
+            Err(mut failure) => {
+                if let Some(positions) = failure.warm_positions.take() {
+                    warm_start = Some(positions);
+                }
                 // Why a candidate failed -- what tells a hard search from a
                 // broken one (guide 11.110).
                 if timing_enabled {
@@ -722,7 +781,7 @@ enum CandidateFailureDisposition {
     BudgetExhausted,
 }
 
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Debug, PartialEq)]
 struct CandidateAttemptFailure {
     disposition: CandidateFailureDisposition,
     stage: ComponentTransactionStage,
@@ -730,6 +789,9 @@ struct CandidateAttemptFailure {
     elastic_iterations: usize,
     interval_boxes: usize,
     failed_guard_face: Option<usize>,
+    /// Where a failed elastic solve left its movable vertices, by source
+    /// slot: the next candidate's solve starts there.
+    warm_positions: Option<BTreeMap<usize, CartesianPoint>>,
 }
 
 impl CandidateAttemptFailure {
@@ -741,6 +803,7 @@ impl CandidateAttemptFailure {
             elastic_iterations: 0,
             interval_boxes: 0,
             failed_guard_face: None,
+            warm_positions: None,
         }
     }
 
@@ -752,6 +815,7 @@ impl CandidateAttemptFailure {
             elastic_iterations: 0,
             interval_boxes: 0,
             failed_guard_face: None,
+            warm_positions: None,
         }
     }
 
@@ -763,6 +827,7 @@ impl CandidateAttemptFailure {
             elastic_iterations: 0,
             interval_boxes: 0,
             failed_guard_face: None,
+            warm_positions: None,
         }
     }
 }
@@ -778,6 +843,7 @@ fn certify_candidate(
     max_adjacent_level_delta: usize,
     transition: &super::TransitionTopologyTrial,
     remaining_elastic_iterations: usize,
+    warm_start: Option<&BTreeMap<usize, CartesianPoint>>,
     remaining_interval_boxes: usize,
     before_fingerprint: u64,
     pre_vertices: usize,
@@ -835,6 +901,21 @@ fn certify_candidate(
                 CandidateAttemptFailure::retry(ComponentTransactionStage::Elastic, reason)
             })?;
         log_component_phase(timing_enabled, component.id, "prepare_patch", phase_started);
+        let patch_size = (
+            patch.movable_compact_vertices.len(),
+            patch.guard_faces.len(),
+        );
+        if let Some(positions) = warm_start {
+            // The patch's targets come from the unmoved mesh; only the start
+            // moves, and only for the vertices the failed solve moved too.
+            for &compact in &patch.movable_compact_vertices {
+                if let Some(&point) = state.mesh.source_vertex_slots[compact]
+                    .and_then(|source| positions.get(&source))
+                {
+                    state.mesh.mesh.move_vertex(compact, point);
+                }
+            }
+        }
         let outcome = solve_elastic_patch_scoped(
             &state.mesh,
             patch,
@@ -846,6 +927,9 @@ fn certify_candidate(
         );
         // Include rejected candidates in solve timing, not in a generic failure tail.
         log_component_phase(timing_enabled, component.id, "elastic_solve", phase_started);
+        if timing_enabled {
+            log_elastic_outcome(component.id, &outcome, patch_size);
+        }
         let elastic = match outcome {
             ElasticBlockOutcome::Certified(trial) => trial,
             ElasticBlockOutcome::ElasticNoImprovement {
@@ -855,6 +939,7 @@ fn certify_candidate(
                 reason,
                 failed_guard_face,
                 global_angle_degrees,
+                witness,
                 ..
             }
             | ElasticBlockOutcome::RequiresDifferentTopology {
@@ -864,6 +949,7 @@ fn certify_candidate(
                 reason,
                 failed_guard_face,
                 global_angle_degrees,
+                witness,
                 ..
             } => {
                 let mut failure = CandidateAttemptFailure::retry(
@@ -876,6 +962,7 @@ fn certify_candidate(
                 );
                 failure.elastic_iterations = iterations;
                 failure.failed_guard_face = failed_guard_face;
+                failure.warm_positions = Some(final_movable_positions(&witness));
                 return Err(failure);
             }
             ElasticBlockOutcome::SearchBudgetExhausted {
@@ -885,6 +972,7 @@ fn certify_candidate(
                 reason,
                 failed_guard_face,
                 global_angle_degrees,
+                witness,
                 ..
             } => {
                 let mut failure = CandidateAttemptFailure::budget(
@@ -897,6 +985,7 @@ fn certify_candidate(
                 );
                 failure.elastic_iterations = iterations;
                 failure.failed_guard_face = failed_guard_face;
+                failure.warm_positions = Some(final_movable_positions(&witness));
                 return Err(failure);
             }
             ElasticBlockOutcome::InvalidPatch { reason } => {
