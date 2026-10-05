@@ -312,6 +312,10 @@ struct EnergyContext {
     /// untangled without the crossing scan (`provably_untangled`); `None`
     /// when it cannot.
     fans: Option<Vec<VertexFan>>,
+    /// Whether every guard-face vertex's degree is in the window: the
+    /// topological half of the region certificate's penalty, fixed for the
+    /// whole solve (`region_degrees_pass`).
+    degrees_pass: bool,
 }
 
 /// One vertex's guard faces, as (index into `guard_faces`, corner), and
@@ -1634,7 +1638,11 @@ fn solve_elastic_patch_impl(
             }
         }
 
-        if certificate.geometry_region_passes(&current.mesh, &guard_faces) {
+        if certificate.geometry_region_passes_with(
+            &current.mesh,
+            &context.guard_faces,
+            context.degrees_pass,
+        ) {
             if let Ok(geometry) = verify_scoped(&certificate, &current.mesh, scope) {
                 return certified(
                     current,
@@ -2665,7 +2673,8 @@ fn energy_phase(
     {
         return ElasticBlockPhase::Untangle;
     }
-    if certificate.geometry_penalty_in(mesh, guard_faces) != Some(0.0) {
+    if !certificate.geometry_interior_passes_with(mesh, &context.guard_faces, context.degrees_pass)
+    {
         return ElasticBlockPhase::AngleFeasibility;
     }
     if !dual_energy(mesh, context, false).is_some_and(|dual| dual.hard_feasible) {
@@ -2805,6 +2814,7 @@ impl EnergyContext {
             })
             .collect();
         let fans = vertex_fans(mesh, &guard_faces, &derivatives);
+        let degrees_pass = crate::certificate::region_degrees_pass(mesh, &guard_faces);
         Ok(Self {
             reference_edge_lengths,
             target_angles,
@@ -2815,6 +2825,7 @@ impl EnergyContext {
             derivatives,
             reference_dual_areas,
             fans,
+            degrees_pass,
         })
     }
 }
@@ -5742,6 +5753,66 @@ mod tests {
         );
     }
 
+    /// The solve's two region tests -- the certificate window each step, the
+    /// interior window in the phase test -- run their angles in parallel with
+    /// the degrees known from the start. On a patch moved by every amount
+    /// from a little to a lot they agree with the penalty sums they replace,
+    /// both ways.
+    #[test]
+    fn parallel_region_tests_agree_with_the_penalty_sums() {
+        let (mesh, patch, movable) = disk_patch(16, 3.5);
+        let certificate = Certificate::internal();
+        let guard_faces = patch.guard_faces.iter().copied().collect::<BTreeSet<_>>();
+        let edge = arc_length_unit_sphere(mesh.vertices()[movable[0]], mesh.vertices()[movable[1]]);
+        let mut state = 0x9e37_79b9_7f4a_7c15u64;
+        let mut random = || {
+            state ^= state << 13;
+            state ^= state >> 7;
+            state ^= state << 17;
+            (state >> 11) as f64 / (1u64 << 53) as f64 - 0.5
+        };
+        let mut outcomes = BTreeSet::new();
+        for trial in 0..60 {
+            let amplitude = edge * [0.0, 0.01, 0.03, 0.06, 0.1, 0.3][trial % 6];
+            let mut moved = mesh.clone();
+            for &site in &movable {
+                let point = moved.vertices()[site];
+                let shifted = CartesianPoint::new(
+                    point.x + amplitude * random(),
+                    point.y + amplitude * random(),
+                    point.z + amplitude * random(),
+                );
+                moved.move_vertex(site, normalized_point(shifted).unwrap());
+            }
+            let context = EnergyContext::new(&moved, &patch).unwrap();
+            let window = certificate.geometry_region_passes(&moved, &guard_faces);
+            let interior = certificate.geometry_penalty_in(&moved, &guard_faces) == Some(0.0);
+            assert_eq!(
+                certificate.geometry_region_passes_with(
+                    &moved,
+                    &context.guard_faces,
+                    context.degrees_pass
+                ),
+                window,
+                "trial {trial}"
+            );
+            assert_eq!(
+                certificate.geometry_interior_passes_with(
+                    &moved,
+                    &context.guard_faces,
+                    context.degrees_pass
+                ),
+                interior,
+                "trial {trial}"
+            );
+            outcomes.insert((window, interior));
+        }
+        assert!(
+            outcomes.contains(&(true, true)) && outcomes.contains(&(false, false)),
+            "{outcomes:?}"
+        );
+    }
+
     /// No proof for a patch whose fixed boundary crosses itself, or whose
     /// movable vertex has an open fan.
     #[test]
@@ -6382,6 +6453,7 @@ mod tests {
             derivatives: BTreeMap::new(),
             reference_dual_areas: BTreeMap::new(),
             fans: None,
+            degrees_pass: false,
         };
         assert!(elastic_energy(
             &grid.mesh,

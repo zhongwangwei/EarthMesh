@@ -365,6 +365,35 @@ impl Certificate {
         )
     }
 
+    /// `geometry_region_passes` for an elastic solve's guard faces, whose
+    /// degree half (`region_degrees_pass`) is known: degrees are topology,
+    /// fixed while the solve moves vertices. The angle half runs in parallel.
+    pub(crate) fn geometry_region_passes_with(
+        &self,
+        mesh: &MeshState,
+        faces: &[usize],
+        degrees_pass: bool,
+    ) -> bool {
+        degrees_pass
+            && region_angles_pass(mesh, faces, self.min_angle_degrees, self.max_angle_degrees)
+    }
+
+    /// Whether `geometry_penalty_in` comes out exactly zero, likewise.
+    pub(crate) fn geometry_interior_passes_with(
+        &self,
+        mesh: &MeshState,
+        faces: &[usize],
+        degrees_pass: bool,
+    ) -> bool {
+        degrees_pass
+            && region_angles_pass(
+                mesh,
+                faces,
+                self.min_angle_degrees + GEOMETRY_INTERIOR_MARGIN_DEGREES,
+                self.max_angle_degrees - GEOMETRY_INTERIOR_MARGIN_DEGREES,
+            )
+    }
+
     fn geometry_penalty_for_region(
         &self,
         mesh: &MeshState,
@@ -398,6 +427,45 @@ impl Certificate {
         }
         Some(penalty)
     }
+}
+
+/// Whether the angle terms of `Certificate::geometry_penalty_for_region`
+/// over `faces` sum to exactly zero: every live face's angles found, and
+/// each angle's squared violation of the window zero. A sum of non-negative
+/// terms is zero exactly when every term is, so the faces are tested in
+/// parallel, each with the expression the sum adds.
+fn region_angles_pass(mesh: &MeshState, faces: &[usize], minimum: f64, maximum: f64) -> bool {
+    faces.par_iter().all(|&face| {
+        !mesh.is_triangle_live(face)
+            || spherical_triangle_angles(
+                mesh.triangles()[face].map(|vertex| mesh.vertices()[vertex]),
+            )
+            .is_some_and(|angles| {
+                angles.iter().all(|&angle| {
+                    let violation = (minimum - angle).max(0.0).max((angle - maximum).max(0.0));
+                    violation * violation == 0.0
+                })
+            })
+    })
+}
+
+/// Whether the degree terms of `Certificate::geometry_penalty_for_region`
+/// over `faces` sum to exactly zero: every vertex of a live face has a
+/// closed fan (`triangle_fan_from`, whatever face it starts from) of five
+/// to seven triangles. Topology alone.
+pub(crate) fn region_degrees_pass(mesh: &MeshState, faces: &[usize]) -> bool {
+    let mut seeds = BTreeMap::<usize, usize>::new();
+    for &face in faces {
+        if mesh.is_triangle_live(face) {
+            for vertex in mesh.triangles()[face] {
+                seeds.entry(vertex).or_insert(face);
+            }
+        }
+    }
+    seeds.into_par_iter().all(|(site, seed)| {
+        mesh.triangle_fan_from(site, seed)
+            .is_ok_and(|fan| (5..=7).contains(&fan.len()))
+    })
 }
 
 #[derive(Debug, Clone, PartialEq)]
