@@ -168,7 +168,7 @@ pub enum TransitionTopologyOutcome {
 /// its whole run.
 struct Patches<'a> {
     source: &'a MotherGrid,
-    known: std::cell::RefCell<std::collections::HashMap<TriangleAddress, ParentPatch>>,
+    known: std::cell::RefCell<crate::mother_grid::AddressMap<ParentPatch>>,
 }
 
 impl<'a> Patches<'a> {
@@ -2190,9 +2190,12 @@ fn parent_patch(source: &MotherGrid, parent: TriangleAddress) -> Result<ParentPa
     let children = parent
         .children_2_to_1()
         .ok_or_else(|| format!("invalid hierarchy parent {parent:?}"))?;
+    // Each child's slot once: the neighbours below read the same four.
+    let mut child_slots = [0usize; 4];
     let mut child_triangles = [[0usize; 3]; 4];
     for (index, child) in children.into_iter().enumerate() {
-        child_triangles[index] = source.mesh.triangles()[source_face_slot(source, child)?];
+        child_slots[index] = source_face_slot(source, child)?;
+        child_triangles[index] = source.mesh.triangles()[child_slots[index]];
     }
     let corners = match parent.orientation {
         crate::mother_grid::TriangleOrientation::Up => [
@@ -2206,15 +2209,17 @@ fn parent_patch(source: &MotherGrid, parent: TriangleAddress) -> Result<ParentPa
             child_triangles[1][2],
         ],
     };
-    let edge_set = child_triangles
-        .iter()
-        .flat_map(|t| [(t[0], t[1]), (t[1], t[2]), (t[2], t[0])])
-        .map(|(a, b)| edge(a, b))
-        .collect::<BTreeSet<_>>();
-    let sites = child_triangles
-        .iter()
-        .flat_map(|t| t.iter().copied())
-        .collect::<BTreeSet<_>>();
+    let mut edges = [(0usize, 0usize); 12];
+    let mut sites = [0usize; 12];
+    for (index, t) in child_triangles.iter().enumerate() {
+        for corner in 0..3 {
+            edges[3 * index + corner] = edge(t[corner], t[(corner + 1) % 3]);
+            sites[3 * index + corner] = t[corner];
+        }
+    }
+    // Ascending: the first qualifying site is taken. A site repeats, which
+    // never changes which one that is.
+    sites.sort_unstable();
     let mut midpoints = [0usize; 3];
     for side in 0..3 {
         let a = corners[side];
@@ -2223,7 +2228,7 @@ fn parent_patch(source: &MotherGrid, parent: TriangleAddress) -> Result<ParentPa
             .iter()
             .copied()
             .find(|&m| {
-                m != a && m != b && edge_set.contains(&edge(a, m)) && edge_set.contains(&edge(m, b))
+                m != a && m != b && edges.contains(&edge(a, m)) && edges.contains(&edge(m, b))
             })
             .ok_or_else(|| format!("parent {parent:?} side {side} has no exact midpoint"))?;
     }
@@ -2232,6 +2237,7 @@ fn parent_patch(source: &MotherGrid, parent: TriangleAddress) -> Result<ParentPa
         neighbours[side] = neighbour_parent(
             source,
             parent,
+            &child_slots,
             corners[side],
             midpoints[side],
             corners[(side + 1) % 3],
@@ -2255,15 +2261,18 @@ pub(super) fn hierarchy_parent_neighbours(
 fn neighbour_parent(
     source: &MotherGrid,
     parent: TriangleAddress,
+    child_slots: &[usize; 4],
     a: usize,
     midpoint: usize,
     b: usize,
 ) -> Result<TriangleAddress, String> {
-    let mut neighbours = BTreeSet::new();
-    for target in [edge(a, midpoint), edge(midpoint, b)] {
+    let mut neighbours = [None; 2];
+    for (target, claimed) in [edge(a, midpoint), edge(midpoint, b)]
+        .into_iter()
+        .zip(&mut neighbours)
+    {
         let mut found = None;
-        for child in parent.children_2_to_1().unwrap() {
-            let slot = source_face_slot(source, child)?;
+        for &slot in child_slots {
             let tri = source.mesh.triangles()[slot];
             for side in 0..3 {
                 if edge(tri[side], tri[(side + 1) % 3]) != target {
@@ -2289,16 +2298,19 @@ fn neighbour_parent(
                     source.triangle_addresses[neighbour].and_then(TriangleAddress::parent_2_to_1);
             }
         }
-        neighbours.insert(found.ok_or_else(|| {
+        *claimed = Some(found.ok_or_else(|| {
             format!("parent {parent:?} boundary segment {target:?} has no neighbour")
         })?);
     }
-    if neighbours.len() != 1 {
+    let [Some(first), Some(second)] = neighbours else {
+        unreachable!("both segments claimed or returned");
+    };
+    if first != second {
         return Err(format!(
             "parent {parent:?} coarse side has inconsistent fine neighbours"
         ));
     }
-    let neighbour = *neighbours.first().expect("one exact neighbour");
+    let neighbour = first;
     if neighbour == parent {
         return Err(format!(
             "parent {parent:?} names itself across a coarse side"

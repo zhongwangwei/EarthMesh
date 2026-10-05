@@ -30,6 +30,52 @@ pub enum TriangleOrientation {
     Down,
 }
 
+/// A map keyed by lattice address. A region looks a face's slot up by its
+/// address several times for every parent the coarsening touches; ordered
+/// maps of tens of millions of faces, and the default hasher, cost more than
+/// the rest of the lookup (guide 11.135).
+pub(crate) type AddressMap<V> =
+    std::collections::HashMap<TriangleAddress, V, std::hash::BuildHasherDefault<AddressHasher>>;
+
+/// The multiply-rotate (Fx) hash: a lattice address is a few small integers,
+/// and needs no defence against chosen keys.
+#[derive(Debug, Default, Clone, Copy)]
+pub(crate) struct AddressHasher(u64);
+
+impl AddressHasher {
+    fn add(&mut self, word: u64) {
+        self.0 = (self.0.rotate_left(5) ^ word).wrapping_mul(0x51_7c_c1_b7_27_22_0a_95);
+    }
+}
+
+impl std::hash::Hasher for AddressHasher {
+    fn finish(&self) -> u64 {
+        self.0
+    }
+
+    fn write(&mut self, bytes: &[u8]) {
+        for &byte in bytes {
+            self.add(u64::from(byte));
+        }
+    }
+
+    fn write_u8(&mut self, value: u8) {
+        self.add(u64::from(value));
+    }
+
+    fn write_u64(&mut self, value: u64) {
+        self.add(value);
+    }
+
+    fn write_usize(&mut self, value: usize) {
+        self.add(value as u64);
+    }
+
+    fn write_isize(&mut self, value: isize) {
+        self.add(value as u64);
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct TriangleAddress {
     pub base_face: u8,

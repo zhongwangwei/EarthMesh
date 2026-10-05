@@ -10,8 +10,8 @@
 //! from the whole grid.
 
 use super::{
-    icosahedron_faces, icosahedron_vertices, push_oriented, weighted, MotherGrid, TriangleAddress,
-    TriangleOrientation, VertexAddress,
+    icosahedron_faces, icosahedron_vertices, push_oriented, weighted, AddressMap, MotherGrid,
+    TriangleAddress, TriangleOrientation, VertexAddress,
 };
 use earthmesh_mesh::{normalize_cartesian_to_radius, CartesianPoint, MeshState};
 use std::collections::{BTreeMap, BTreeSet};
@@ -34,7 +34,7 @@ pub struct VertexOrigin {
 /// order by construction.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RegionIndex {
-    face_slots: BTreeMap<TriangleAddress, usize>,
+    face_slots: AddressMap<usize>,
     origins: Vec<Option<VertexOrigin>>,
     outer_boundary: BTreeSet<usize>,
 }
@@ -322,7 +322,8 @@ impl MotherGrid {
 
         let mut triangles = vec![[1usize; 3]; 2];
         let mut triangle_addresses = vec![None, None];
-        let mut face_slots = BTreeMap::new();
+        let mut face_slots = AddressMap::default();
+        face_slots.reserve(face_origins.len());
         for (face, corners) in face_origins {
             face_slots.insert(face, triangles.len());
             push_oriented(

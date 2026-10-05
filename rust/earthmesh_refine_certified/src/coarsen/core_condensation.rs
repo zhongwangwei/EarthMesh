@@ -12,7 +12,37 @@ pub struct HierarchyLeafSet {
 }
 
 impl HierarchyLeafSet {
+    /// Sorted first, the addresses build the set in one pass; inserted one
+    /// by one, tens of millions of them were much of a large search's time
+    /// (guide 11.135). Whatever is amiss -- a face without an address, at
+    /// the wrong level, or twice -- is reported by the one-by-one build, as
+    /// it always was.
     pub fn from_mother_grid(grid: &MotherGrid) -> Result<Self, String> {
+        let mut addresses = Vec::with_capacity(grid.triangle_addresses.len());
+        for face in grid.mesh.active_triangle_slots() {
+            match grid
+                .triangle_addresses
+                .get(face)
+                .and_then(|address| *address)
+            {
+                Some(address) if address.n == grid.subdivision || grid.region.is_some() => {
+                    addresses.push(address);
+                }
+                _ => return Self::inserted_one_by_one(grid),
+            }
+        }
+        addresses.sort_unstable();
+        if addresses.windows(2).any(|pair| pair[0] == pair[1]) {
+            return Self::inserted_one_by_one(grid);
+        }
+        Ok(Self {
+            leaves: addresses.into_iter().collect(),
+        })
+    }
+
+    /// The set built face by face in slot order, which names the first face
+    /// that has no address, the wrong level or a repeated address.
+    fn inserted_one_by_one(grid: &MotherGrid) -> Result<Self, String> {
         let mut leaves = BTreeSet::new();
         for face in grid.mesh.active_triangle_slots() {
             let address = grid
@@ -39,6 +69,16 @@ impl HierarchyLeafSet {
 
     pub fn condense_core(&mut self, parents: &[TriangleAddress]) -> Result<usize, String> {
         let unique = parents.iter().copied().collect::<BTreeSet<_>>();
+        // A core that holds a large part of the leaves -- a whole region's at
+        // the first level -- rebuilds the set in one merge; a small one
+        // removes and inserts. The set is the same either way, and a missing
+        // child is reported by the second, as it always was.
+        if unique.len().saturating_mul(4 * MERGE_FRACTION) >= self.leaves.len() {
+            if let Some(leaves) = self.condensed_by_merge(&unique) {
+                self.leaves = leaves;
+                return Ok(unique.len());
+            }
+        }
         let mut removals = Vec::with_capacity(unique.len().saturating_mul(4));
         for parent in &unique {
             let children = parent
@@ -59,7 +99,43 @@ impl HierarchyLeafSet {
         self.leaves.extend(unique.iter().copied());
         Ok(unique.len())
     }
+
+    /// The leaves with every parent's four children replaced by the parent,
+    /// walking the sorted leaves and the sorted children together; `None`
+    /// when a parent has no children or a child is not a leaf.
+    fn condensed_by_merge(
+        &self,
+        unique: &BTreeSet<TriangleAddress>,
+    ) -> Option<BTreeSet<HierarchyFaceKey>> {
+        let mut removals = Vec::with_capacity(unique.len().saturating_mul(4));
+        for parent in unique {
+            removals.extend(parent.children_2_to_1()?);
+        }
+        removals.sort_unstable();
+        removals.dedup();
+        let mut removed = removals.iter().copied().peekable();
+        let mut kept = Vec::with_capacity(self.leaves.len().saturating_sub(removals.len()));
+        for &leaf in &self.leaves {
+            if removed.peek().is_some_and(|&child| child < leaf) {
+                return None;
+            }
+            if removed.peek() == Some(&leaf) {
+                removed.next();
+            } else {
+                kept.push(leaf);
+            }
+        }
+        if removed.peek().is_some() {
+            return None;
+        }
+        kept.extend(unique.iter().copied());
+        Some(kept.into_iter().collect())
+    }
 }
+
+/// `condense_core` rebuilds the leaf set by merging when the core's children
+/// number at least one leaf in this many.
+const MERGE_FRACTION: usize = 8;
 
 /// A single materialized trial. Mixed fine/coarse interfaces may remain open
 /// until the transition-topology stage closes them.
@@ -593,6 +669,69 @@ mod tests {
 
         assert!(leaf_set.condense_core(&[parent]).is_err());
         assert_eq!(leaf_set, before);
+    }
+
+    /// The set built in one sorted pass is the one built face by face, on a
+    /// whole grid and on a region; a core condensed by merging, as one
+    /// condensed by removing and inserting, replaces exactly its parents'
+    /// children, at every core size from one parent to all of them; and a
+    /// merge that finds a child missing leaves the set alone and reports it.
+    #[test]
+    fn sorted_builds_and_merges_give_the_one_by_one_sets() {
+        let source = MotherGrid::generate(8).unwrap();
+        let built = HierarchyLeafSet::from_mother_grid(&source).unwrap();
+        assert_eq!(
+            built,
+            HierarchyLeafSet::inserted_one_by_one(&source).unwrap()
+        );
+        let region = MotherGrid::generate_faces(
+            8,
+            source
+                .triangle_addresses
+                .iter()
+                .flatten()
+                .copied()
+                .step_by(3),
+        )
+        .unwrap();
+        assert_eq!(
+            HierarchyLeafSet::from_mother_grid(&region).unwrap(),
+            HierarchyLeafSet::inserted_one_by_one(&region).unwrap()
+        );
+
+        let parents = MotherGrid::generate(4)
+            .unwrap()
+            .triangle_addresses
+            .iter()
+            .flatten()
+            .copied()
+            .collect::<Vec<_>>();
+        for count in [1, 7, parents.len() / 8, parents.len() / 2, parents.len()] {
+            let core = &parents[..count];
+            let mut condensed = built.clone();
+            assert_eq!(condensed.condense_core(core).unwrap(), count);
+            let children = core
+                .iter()
+                .flat_map(|parent| parent.children_2_to_1().unwrap())
+                .collect::<BTreeSet<_>>();
+            let expected = built
+                .leaves
+                .iter()
+                .copied()
+                .filter(|leaf| !children.contains(leaf))
+                .chain(core.iter().copied())
+                .collect::<BTreeSet<_>>();
+            assert_eq!(condensed.leaves, expected, "{count} parents");
+        }
+
+        let mut missing = built.clone();
+        missing
+            .leaves
+            .remove(&parents[0].children_2_to_1().unwrap()[0]);
+        let before = missing.clone();
+        let error = missing.condense_core(&parents).unwrap_err();
+        assert!(error.contains("missing child"), "{error}");
+        assert_eq!(missing, before);
     }
 
     #[test]
