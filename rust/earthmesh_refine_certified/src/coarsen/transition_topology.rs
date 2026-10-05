@@ -8,7 +8,8 @@ use super::{HierarchyComponent, HierarchyLeafMesh, HierarchyLeafSet};
 use crate::certificate::spherical_triangle_angles;
 use crate::mother_grid::{MotherGrid, TriangleAddress, VertexAddress};
 use earthmesh_mesh::{
-    orientation_on_sphere, MeshState, RetirementPostconditionOutcome, RetirementSearchOutcome, Sign,
+    orientation_on_sphere, CartesianPoint, MeshState, RetirementPostconditionOutcome,
+    RetirementSearchOutcome, Sign,
 };
 use std::cmp::Reverse;
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
@@ -17,6 +18,46 @@ use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 pub struct TransitionTopologyLimits {
     pub topology_states: usize,
     pub maximum_halo_expansions: usize,
+}
+
+/// What a failed candidate asks of the next search (guides 11.122, 11.130).
+#[derive(Debug, Clone, Copy, Default)]
+pub(super) struct RetryRequest<'a> {
+    /// The core parent nearest the failed face, and the halo expansions
+    /// its promotion costs.
+    pub promotion: Option<(TriangleAddress, usize)>,
+    /// How deep a failure's promotion may reach: every parent's ring
+    /// distance from the component's first transition ring, and the deepest
+    /// ring allowed. Lets the promotion repair the pinch it makes once the
+    /// halo budget is spent.
+    pub reach: Option<(&'a BTreeMap<TriangleAddress, usize>, usize)>,
+    /// The failed candidate and where it failed: when no promotion moves the
+    /// transition there, the search offers only transitions that change it
+    /// at the failure and keep it as the candidate had it farther away.
+    pub focus: Option<&'a RetryFocus>,
+}
+
+/// A failed candidate's custom transition and the place it failed (guide
+/// 11.130). Distances are in parent edge lengths from `point` to a custom
+/// parent's centre. A focused search keeps every custom parent beyond
+/// `radius_edges` as the candidate chose it, and offers only configurations
+/// that change a parent within `change_radius_edges` -- the transition at
+/// the failure -- and, once widened (`previous_radius_edges` above zero), a
+/// parent beyond the previous radius: everything inside it was offered
+/// already. The degree rule couples the parents along the transition, so a
+/// change at the failure needs others to compensate; the search tries each
+/// free parent's chosen triangles first and sets the parents from the
+/// farthest to the nearest, so the compensations it finds first lie as near
+/// the failure as they can.
+#[derive(Debug, Clone, PartialEq)]
+pub(super) struct RetryFocus {
+    pub point: CartesianPoint,
+    pub change_radius_edges: f64,
+    pub radius_edges: f64,
+    pub previous_radius_edges: f64,
+    pub chosen: BTreeMap<TriangleAddress, Vec<[usize; 3]>>,
+    /// Focused states already examined: the next search starts after them.
+    pub cursor: usize,
 }
 
 impl TransitionTopologyLimits {
@@ -34,7 +75,7 @@ impl TransitionTopologyLimits {
         source: &MotherGrid,
         component: &HierarchyComponent,
         topology_states_cursor: usize,
-        preferred_core_promotion: Option<(TriangleAddress, usize)>,
+        request: RetryRequest<'_>,
         promote_first: bool,
     ) -> TransitionTopologyOutcome {
         solve_transition_topology_from_cursor_with_promotion(
@@ -42,7 +83,7 @@ impl TransitionTopologyLimits {
             component,
             self,
             topology_states_cursor,
-            preferred_core_promotion,
+            request,
             promote_first,
         )
     }
@@ -76,6 +117,13 @@ pub struct TransitionTopologyReport {
     pub halo_expansions: usize,
     pub topology_states: usize,
     pub layout_topology_states: usize,
+    /// For a candidate of a focused search (`RetryFocus`): the focused
+    /// states examined up to and including it. The layout's own cursor
+    /// (`layout_topology_states`) stays where it was.
+    pub focus_topology_states: Option<usize>,
+    /// The candidate retires a vertex (`solve_retirement_family`): it is
+    /// none of the layout's configurations, and no focus is built on it.
+    pub retired_vertex: bool,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -106,6 +154,12 @@ pub enum TransitionTopologyOutcome {
         states_examined: usize,
         halo_expansions: usize,
         reason: String,
+    },
+    /// A focused search (`RetryFocus`) found no configuration it had not
+    /// already offered.
+    FocusExhausted {
+        states_examined: usize,
+        halo_expansions: usize,
     },
 }
 
@@ -162,7 +216,7 @@ pub fn solve_transition_topology_from_cursor(
         component,
         limits,
         topology_states_cursor,
-        None,
+        RetryRequest::default(),
         false,
     )
 }
@@ -172,9 +226,10 @@ fn solve_transition_topology_from_cursor_with_promotion(
     component: &HierarchyComponent,
     limits: TransitionTopologyLimits,
     topology_states_cursor: usize,
-    mut preferred_core_promotion: Option<(TriangleAddress, usize)>,
+    request: RetryRequest<'_>,
     promote_first: bool,
 ) -> TransitionTopologyOutcome {
+    let mut preferred_core_promotion = request.promotion;
     // A search asks for the same parent's patch from its preflight, its
     // core forecast, its boundary and every halo expansion: each once.
     let patches = &Patches::new(source);
@@ -205,16 +260,34 @@ fn solve_transition_topology_from_cursor_with_promotion(
     // is spent as in the 20 km 30 m trial, or no topology at all -- falls
     // back to it, once, and the search goes on as it would have without
     // the promotion. Only a spent state budget ends it either way.
+    //
+    // A promotion that pinches the core once the halo budget is spent may
+    // still repair the pinch (guide 11.130): the parents at the pinch leave
+    // the core as well when none lies deeper than a promotion may reach
+    // (`request.reach`), at most `MAXIMUM_PINCH_REPAIRS` times.
     let mut unpromoted = None;
+    let mut pinch_repairs = 0usize;
     if let Some(preferred) = preferred_core_promotion.filter(|_| promote_first) {
         let kept = (core.clone(), transition.clone());
-        if let Some(cost) = promote_preferred_segment(
+        let promoted = promote_preferred_segment(
             patches,
             &mut core,
             &mut transition,
             preferred,
             limits.maximum_halo_expansions,
-        ) {
+        );
+        if crate::construction::cmrc_timing_enabled() {
+            eprintln!(
+                "earthmesh_cli: cmrc_detail phase=promotion component={} preferred={:?} \
+                 cost={} remaining={} promoted={}",
+                component.id,
+                preferred.0,
+                preferred.1,
+                limits.maximum_halo_expansions,
+                kept.0.len() - core.len()
+            );
+        }
+        if let Some(cost) = promoted {
             unpromoted = Some(kept);
             halo_expansions += cost;
             states_examined = topology_states_cursor;
@@ -289,6 +362,23 @@ fn solve_transition_topology_from_cursor_with_promotion(
             };
         }
 
+        // The layout the failed candidate came from, with no promotion in
+        // effect: a focus varies it around the failure only (guide 11.130).
+        if let Some(focus) = request
+            .focus
+            .filter(|_| unpromoted.is_none() && halo_expansions == 0)
+        {
+            return solve_focused(
+                patches,
+                component.id,
+                &core,
+                &transition,
+                focus,
+                topology_states_cursor,
+                limits.topology_states - topology_states_cursor,
+            );
+        }
+
         let remaining_states = limits.topology_states - states_examined;
         let remaining_halos = limits.maximum_halo_expansions - halo_expansions + 1;
         let local_limit = remaining_states.div_ceil(remaining_halos);
@@ -301,6 +391,7 @@ fn solve_transition_topology_from_cursor_with_promotion(
             halo_expansions,
             local_cursor,
             local_limit,
+            None,
         ) {
             TransitionTopologyOutcome::Closed(mut trial) => {
                 let layout_topology_states = trial.report.topology_states;
@@ -337,21 +428,31 @@ fn solve_transition_topology_from_cursor_with_promotion(
                 halo_expansions += expansion_cost;
             }
             TransitionTopologyOutcome::InvalidBoundary { reason, .. } => {
-                if reason.starts_with("coarse inner boundary:")
-                    && halo_expansions < limits.maximum_halo_expansions
-                {
-                    match promote_pinched_core(patches, &mut core, &mut transition) {
-                        Ok(true) => {
-                            halo_expansions += 1;
-                            continue;
-                        }
-                        Ok(false) => {}
-                        Err(repair_reason) => {
-                            end_or_fall_back!(invalid(
-                                states_examined,
-                                halo_expansions,
-                                repair_reason
-                            ))
+                if reason.starts_with("coarse inner boundary:") {
+                    let repair = if halo_expansions < limits.maximum_halo_expansions {
+                        Some(None)
+                    } else if unpromoted.is_some() && pinch_repairs < MAXIMUM_PINCH_REPAIRS {
+                        request.reach.map(Some)
+                    } else {
+                        None
+                    };
+                    if let Some(reach) = repair {
+                        match promote_pinched_core(patches, &mut core, &mut transition, reach) {
+                            Ok(true) => {
+                                match reach {
+                                    None => halo_expansions += 1,
+                                    Some(_) => pinch_repairs += 1,
+                                }
+                                continue;
+                            }
+                            Ok(false) => {}
+                            Err(repair_reason) => {
+                                end_or_fall_back!(invalid(
+                                    states_examined,
+                                    halo_expansions,
+                                    repair_reason
+                                ))
+                            }
                         }
                     }
                 }
@@ -372,6 +473,34 @@ fn solve_transition_topology_from_cursor_with_promotion(
                             ))
                         }
                     }
+                }
+                if crate::construction::cmrc_timing_enabled()
+                    && unpromoted.is_some()
+                    && reason.starts_with("coarse inner boundary:")
+                {
+                    let pinches = coarse_boundary_edges(patches, &core, &transition)
+                        .map(branched_boundary_vertices)
+                        .unwrap_or_default();
+                    let at_pinch = |parents: &BTreeSet<TriangleAddress>| {
+                        parents
+                            .iter()
+                            .filter(|parent| {
+                                patches.get(**parent).is_ok_and(|patch| {
+                                    patch.corners.iter().any(|corner| pinches.contains(corner))
+                                })
+                            })
+                            .count()
+                    };
+                    eprintln!(
+                        "earthmesh_cli: cmrc_detail phase=promotion_pinch component={} \
+                         pinches={} core_at_pinch={} transition_at_pinch={} halo={} remaining={}",
+                        component.id,
+                        pinches.len(),
+                        at_pinch(&core),
+                        at_pinch(&transition),
+                        halo_expansions,
+                        limits.maximum_halo_expansions
+                    );
                 }
                 end_or_fall_back!(invalid(states_examined, halo_expansions, reason));
             }
@@ -409,10 +538,14 @@ fn solve_transition_topology_from_cursor_with_promotion(
                 };
                 halo_expansions += expansion_cost;
             }
-            TransitionTopologyOutcome::RequiresWiderHalo { .. } => unreachable!(),
+            TransitionTopologyOutcome::RequiresWiderHalo { .. }
+            | TransitionTopologyOutcome::FocusExhausted { .. } => unreachable!(),
         }
     }
 }
+
+/// Pinch repairs a failure's promotion may make past the halo budget.
+const MAXIMUM_PINCH_REPAIRS: usize = 3;
 
 fn preflight(
     patches: &Patches<'_>,
@@ -599,10 +732,13 @@ fn core_boundary(
         .collect()
 }
 
+/// Promotes the core parents at every vertex where the core touches itself.
+/// With a `reach`, only when none of them lies deeper than it allows.
 fn promote_pinched_core(
     patches: &Patches<'_>,
     core: &mut BTreeSet<TriangleAddress>,
     transition: &mut BTreeSet<TriangleAddress>,
+    reach: Option<(&BTreeMap<TriangleAddress, usize>, usize)>,
 ) -> Result<bool, String> {
     let pinches = branched_boundary_vertices(coarse_boundary_edges(patches, core, transition)?);
     if pinches.is_empty() {
@@ -619,6 +755,14 @@ fn promote_pinched_core(
         .collect::<BTreeSet<_>>();
     if promoted.is_empty() || promoted.len() == core.len() {
         return Ok(false);
+    }
+    if let Some((depths, deepest)) = reach {
+        if !promoted
+            .iter()
+            .all(|parent| depths.get(parent).is_some_and(|&depth| depth <= deepest))
+        {
+            return Ok(false);
+        }
     }
     promote_to_transition(core, transition, promoted);
     Ok(true)
@@ -717,10 +861,130 @@ fn pure_core(
             halo_expansions,
             topology_states: 0,
             layout_topology_states: 0,
+            focus_topology_states: None,
+            retired_vertex: false,
         },
     }))
 }
 
+/// A focused search (guide 11.130): the layout's configurations that keep
+/// every custom parent off the focus as the failed candidate had it,
+/// enumerated from the focus's cursor. The layout's own cursor stays where
+/// it was; the candidate reports its focused states separately.
+fn solve_focused(
+    patches: &Patches<'_>,
+    component_id: u64,
+    core: &BTreeSet<TriangleAddress>,
+    transition: &BTreeSet<TriangleAddress>,
+    focus: &RetryFocus,
+    layout_cursor: usize,
+    remaining_states: usize,
+) -> TransitionTopologyOutcome {
+    match solve_once(
+        patches,
+        component_id,
+        core.clone(),
+        transition.clone(),
+        0,
+        focus.cursor,
+        focus.cursor.saturating_add(remaining_states),
+        Some(focus),
+    ) {
+        TransitionTopologyOutcome::Closed(mut trial) => {
+            let focused = trial.report.topology_states;
+            trial.candidate.topology_id += layout_cursor;
+            trial.report.topology_states = layout_cursor;
+            trial.report.layout_topology_states = layout_cursor;
+            trial.report.focus_topology_states = Some(focused);
+            TransitionTopologyOutcome::Closed(trial)
+        }
+        other => other,
+    }
+}
+
+/// How a focus narrows a layout's search (`RetryFocus`).
+struct FocusPlan {
+    /// Groups of positions of which a configuration must change at least
+    /// one each -- every free parent's chosen variant is first, so "changed"
+    /// is "not variant 0".
+    must_change: Vec<Vec<usize>>,
+    /// Each free position's distance from the focus, for the search order.
+    distance: Vec<Option<f64>>,
+}
+
+/// Narrows a layout's variants to a focus: a custom parent beyond the
+/// focus's radius keeps only the failed candidate's triangles, and a free
+/// one has them first.
+fn focus_variants(
+    source: &MotherGrid,
+    custom_transition: &BTreeSet<TriangleAddress>,
+    parent_patches: &BTreeMap<TriangleAddress, ParentPatch>,
+    variants: &mut [Vec<Vec<[usize; 3]>>],
+    focus: &RetryFocus,
+) -> Result<FocusPlan, String> {
+    let vertices = source.mesh.vertices();
+    let mut at_failure = Vec::new();
+    let mut beyond_previous = Vec::new();
+    let mut distances = vec![None; custom_transition.len()];
+    for (position, parent) in custom_transition.iter().enumerate() {
+        let chosen = focus.chosen.get(parent).ok_or_else(|| {
+            format!("the focused candidate has no triangles for transition parent {parent:?}")
+        })?;
+        let variant = variants[position]
+            .iter()
+            .position(|variant| variant == chosen)
+            .ok_or_else(|| {
+                format!(
+                    "the focused candidate's triangles for transition parent {parent:?} are not \
+                     among its variants"
+                )
+            })?;
+        let [a, b, c] = parent_patches[parent]
+            .corners
+            .map(|corner| vertices[corner]);
+        let centre = CartesianPoint::new(a.x + b.x + c.x, a.y + b.y + c.y, a.z + b.z + c.z);
+        let distance = angle_between(centre, focus.point) / angle_between(a, b);
+        if distance > focus.radius_edges {
+            variants[position] = vec![variants[position][variant].clone()];
+            continue;
+        }
+        let first = variants[position].remove(variant);
+        variants[position].insert(0, first);
+        distances[position] = Some(distance);
+        if distance <= focus.change_radius_edges {
+            at_failure.push(position);
+        }
+        if focus.previous_radius_edges > 0.0 && distance > focus.previous_radius_edges {
+            beyond_previous.push(position);
+        }
+    }
+    let mut must_change = vec![at_failure];
+    if focus.previous_radius_edges > 0.0 {
+        must_change.push(beyond_previous);
+    }
+    Ok(FocusPlan {
+        must_change,
+        distance: distances,
+    })
+}
+
+/// A parent's edge length, as an angle on the sphere.
+pub(super) fn parent_edge_angle(
+    source: &MotherGrid,
+    parent: TriangleAddress,
+) -> Result<f64, String> {
+    let corners = parent_patch(source, parent)?.corners;
+    let vertices = source.mesh.vertices();
+    Ok(angle_between(vertices[corners[0]], vertices[corners[1]]))
+}
+
+pub(super) fn angle_between(a: CartesianPoint, b: CartesianPoint) -> f64 {
+    let dot = a.x * b.x + a.y * b.y + a.z * b.z;
+    let norms = ((a.x * a.x + a.y * a.y + a.z * a.z) * (b.x * b.x + b.y * b.y + b.z * b.z)).sqrt();
+    (dot / norms).clamp(-1.0, 1.0).acos()
+}
+
+#[allow(clippy::too_many_arguments)]
 fn solve_once(
     patches: &Patches<'_>,
     component_id: u64,
@@ -729,6 +993,7 @@ fn solve_once(
     halo_expansions: usize,
     start_index: usize,
     budget: usize,
+    focus: Option<&RetryFocus>,
 ) -> TransitionTopologyOutcome {
     let source = patches.source;
     let mut states = 0usize;
@@ -796,6 +1061,21 @@ fn solve_once(
         }
         variants.push(variants_for_parent);
     }
+    let plan = match focus
+        .map(|focus| {
+            focus_variants(
+                source,
+                &custom_transition,
+                &parent_patches,
+                &mut variants,
+                focus,
+            )
+        })
+        .transpose()
+    {
+        Ok(plan) => plan,
+        Err(reason) => return invalid(states, halo_expansions, reason),
+    };
 
     let boundary = match boundary(patches, &core, &transition) {
         Ok(boundary) => boundary,
@@ -819,6 +1099,7 @@ fn solve_once(
         closed: &mut closed,
         substrate_selection: None,
         enumeration_exhausted: &mut enumeration_exhausted,
+        focus: plan.as_ref(),
     }
     .run();
     if let Some(hit) = closed {
@@ -834,6 +1115,12 @@ fn solve_once(
     }
     if !enumeration_exhausted {
         return TransitionTopologyOutcome::SearchBudgetExhausted {
+            states_examined: states,
+            halo_expansions,
+        };
+    }
+    if focus.is_some() {
+        return TransitionTopologyOutcome::FocusExhausted {
             states_examined: states,
             halo_expansions,
         };
@@ -911,6 +1198,8 @@ fn closed_trial(
             halo_expansions,
             topology_states: states,
             layout_topology_states: states,
+            focus_topology_states: None,
+            retired_vertex: hit.retired,
         },
     }))
 }
@@ -1049,6 +1338,7 @@ fn select_retirement_substrate(
             substrate: &mut substrate,
         }),
         enumeration_exhausted: &mut exhausted,
+        focus: None,
     }
     .run();
     substrate
@@ -1153,6 +1443,7 @@ fn retirement_hit(
         triangles,
         degree_forecast,
         topology_id: 0,
+        retired: true,
     })
 }
 
@@ -1286,6 +1577,9 @@ struct ProductSearch<'a> {
     closed: &'a mut Option<SearchHit>,
     substrate_selection: Option<SubstrateSelection<'a>>,
     enumeration_exhausted: &'a mut bool,
+    /// A focused search's plan (`focus_variants`): its order, and the
+    /// configurations it counts but never offers.
+    focus: Option<&'a FocusPlan>,
 }
 
 struct SubstrateSelection<'a> {
@@ -1300,6 +1594,9 @@ struct SearchHit {
     triangles: Vec<[usize; 3]>,
     degree_forecast: BTreeMap<usize, usize>,
     topology_id: usize,
+    /// A retirement family's candidate: its triangles are no parent's
+    /// variant, so no focus can be built on it.
+    retired: bool,
 }
 
 struct SearchVariable {
@@ -1324,8 +1621,12 @@ impl ProductSearch<'_> {
         let mut forecast = DenseForecast::new(self.source.mesh.vertices().len(), self.forecast);
         let mut chosen = vec![None; self.variants.len()];
         let transition = self.transition.iter().copied().collect::<Vec<_>>();
-        let (variables, preassigned_touched) =
-            search_variables(self.variants, &transition, &mut chosen);
+        let (variables, preassigned_touched) = search_variables(
+            self.variants,
+            &transition,
+            &mut chosen,
+            self.focus.map(|plan| plan.distance.as_slice()),
+        );
         for position in chosen
             .iter()
             .enumerate()
@@ -1367,6 +1668,19 @@ impl ProductSearch<'_> {
                         }
                         continue;
                     }
+                    if self.focus.is_some_and(|plan| {
+                        plan.must_change
+                            .iter()
+                            .any(|group| group.iter().all(|&slot| chosen[slot] == Some(0)))
+                    }) {
+                        feasible_ordinal = feasible_ordinal.saturating_add(1);
+                        if !backtrack(&mut position, &mut forecast, &mut chosen, &variables) {
+                            *self.states = feasible_ordinal;
+                            *self.enumeration_exhausted = true;
+                            return;
+                        }
+                        continue;
+                    }
                     let chosen_by_parent = self.chosen_by_parent(&chosen);
                     let chosen_triangles = flatten_custom_triangles(&chosen_by_parent);
                     if let Ok(mesh) =
@@ -1384,6 +1698,7 @@ impl ProductSearch<'_> {
                                 triangles: chosen_triangles,
                                 degree_forecast: forecast.to_map(self.forecast),
                                 topology_id: feasible_ordinal,
+                                retired: false,
                             };
                             if self.substrate_selection.is_some() {
                                 let selected = self.consider_retirement_substrate(&hit);
@@ -1597,10 +1912,14 @@ fn backtrack(
     true
 }
 
+/// The search's variables and the vertices fixed parents touch. A focused
+/// search (`distance`) sets its free parents from the farthest to the
+/// nearest; otherwise `greedy_order` decides.
 fn search_variables(
     variants: &[Vec<Vec<[usize; 3]>>],
     parents: &[TriangleAddress],
     chosen: &mut [Option<usize>],
+    distance: Option<&[Option<f64>]>,
 ) -> (Vec<SearchVariable>, Vec<usize>) {
     let mut fixed_touched = BTreeSet::new();
     let mut pending = Vec::new();
@@ -1628,7 +1947,15 @@ fn search_variables(
             });
         }
     }
-    let order = greedy_order(&pending, parents, &fixed_touched);
+    let order = match distance {
+        None => greedy_order(&pending, parents, &fixed_touched),
+        Some(distance) => {
+            let mut order = (0..pending.len()).collect::<Vec<_>>();
+            let key = |index: usize| distance[pending[index].original_position].unwrap_or(0.0);
+            order.sort_by(|&left, &right| key(right).total_cmp(&key(left)).then(left.cmp(&right)));
+            order
+        }
+    };
     let mut slots = pending.into_iter().map(Some).collect::<Vec<_>>();
     let ordered = order
         .into_iter()
@@ -2951,7 +3278,7 @@ mod tests {
             },
         ];
         let mut chosen = vec![None; variants.len()];
-        let (variables, fixed) = search_variables(&variants, &parents, &mut chosen);
+        let (variables, fixed) = search_variables(&variants, &parents, &mut chosen, None);
         let suffix = SuffixDegreeMasks::new(&variables);
         let mut forecast = DenseForecast::new(
             7,
@@ -3038,6 +3365,7 @@ mod tests {
             triangles: Vec::new(),
             degree_forecast: BTreeMap::new(),
             topology_id: 0,
+            retired: false,
         };
         let boundary = TransitionBoundary {
             halo_parents: transition.iter().copied().collect(),
@@ -3224,7 +3552,15 @@ mod tests {
             .unwrap();
         let cursor = 1;
         let search = |promotion| match solve_transition_topology_from_cursor_with_promotion(
-            &fine, &component, limits, cursor, promotion, true,
+            &fine,
+            &component,
+            limits,
+            cursor,
+            RetryRequest {
+                promotion,
+                ..RetryRequest::default()
+            },
+            true,
         ) {
             TransitionTopologyOutcome::Closed(trial) => trial,
             other => panic!("the fixture's topology must close: {other:?}"),
@@ -3255,12 +3591,9 @@ mod tests {
         }
     }
 
-    /// A failure's promotion whose layout has an invalid boundary the
-    /// search cannot repair -- here a core pinched at a vertex, the halo
-    /// budget spent on the promotion -- falls back to the old layout: the
-    /// search goes on as if no promotion had been asked for.
-    #[test]
-    fn a_promotion_that_pinches_the_core_falls_back_to_the_old_layout() {
+    /// A core with an interior parent left out, and a boundary parent whose
+    /// promotion makes the core touch itself at a vertex.
+    fn pinching_promotion() -> (MotherGrid, HierarchyComponent, TriangleAddress) {
         let fine = MotherGrid::generate(64).unwrap();
         let coarse = MotherGrid::generate(32).unwrap();
         let patches = Patches::new(&fine);
@@ -3279,8 +3612,6 @@ mod tests {
                 .filter(|parent| !core.contains(parent))
                 .collect::<BTreeSet<_>>()
         };
-        // A core with an interior parent left out, and a boundary parent
-        // whose promotion makes the core touch itself at a vertex.
         let whole_peel = core_boundary(&patches, &whole);
         let (core, transition, preferred) = whole
             .iter()
@@ -3313,6 +3644,16 @@ mod tests {
             core_parents: core.iter().copied().collect(),
             transition_parents: transition.iter().copied().collect(),
         };
+        (fine, component, preferred)
+    }
+
+    /// A failure's promotion whose layout has an invalid boundary the
+    /// search cannot repair -- here a core pinched at a vertex, the halo
+    /// budget spent on the promotion -- falls back to the old layout: the
+    /// search goes on as if no promotion had been asked for.
+    #[test]
+    fn a_promotion_that_pinches_the_core_falls_back_to_the_old_layout() {
+        let (fine, component, preferred) = pinching_promotion();
         let limits = TransitionTopologyLimits {
             topology_states: 1_000,
             maximum_halo_expansions: 1,
@@ -3321,13 +3662,218 @@ mod tests {
             format!(
                 "{:?}",
                 solve_transition_topology_from_cursor_with_promotion(
-                    &fine, &component, limits, 1, promotion, true,
+                    &fine,
+                    &component,
+                    limits,
+                    1,
+                    RetryRequest {
+                        promotion,
+                        ..RetryRequest::default()
+                    },
+                    true,
                 )
             )
         };
         let plain = search(None);
         assert!(!plain.starts_with("InvalidBoundary"), "{plain}");
         assert_eq!(search(Some((preferred, 1))), plain);
+    }
+
+    /// The same pinch, repaired within the promotion's reach (guide 11.130):
+    /// the parents at the pinch leave the core too when none lies deeper
+    /// than a promotion may reach, and the search keeps the promotion. With
+    /// a reach that excludes them it falls back as before.
+    #[test]
+    fn a_promotion_repairs_its_pinch_within_its_reach() {
+        let (fine, component, preferred) = pinching_promotion();
+        let limits = TransitionTopologyLimits {
+            topology_states: 1_000,
+            maximum_halo_expansions: 1,
+        };
+        let depths = component
+            .parents
+            .iter()
+            .map(|&parent| (parent, 1))
+            .collect::<BTreeMap<_, _>>();
+        let search = |reach| {
+            solve_transition_topology_from_cursor_with_promotion(
+                &fine,
+                &component,
+                limits,
+                1,
+                RetryRequest {
+                    promotion: Some((preferred, 1)),
+                    reach,
+                    focus: None,
+                },
+                true,
+            )
+        };
+        let plain = format!(
+            "{:?}",
+            solve_transition_topology_from_cursor_with_promotion(
+                &fine,
+                &component,
+                limits,
+                1,
+                RetryRequest::default(),
+                true,
+            )
+        );
+        assert_eq!(format!("{:?}", search(Some((&depths, 0)))), plain);
+        let TransitionTopologyOutcome::Closed(repaired) = search(Some((&depths, 1))) else {
+            panic!("the repaired promotion must close");
+        };
+        let patches = Patches::new(&fine);
+        let core = component
+            .core_parents
+            .iter()
+            .copied()
+            .collect::<BTreeSet<_>>();
+        let transition = component
+            .transition_parents
+            .iter()
+            .copied()
+            .collect::<BTreeSet<_>>();
+        let segment = preferred_boundary_segment(
+            &patches,
+            &core_boundary(&patches, &core),
+            &transition,
+            preferred,
+        )
+        .unwrap();
+        assert!(repaired.candidate.core_parents.len() < core.len() - segment.len());
+        assert!(repaired
+            .candidate
+            .core_parents
+            .iter()
+            .all(|parent| core.contains(parent) && !segment.contains(parent)));
+        assert_eq!(repaired.report.halo_expansions, 1);
+    }
+
+    /// A focus (guide 11.130) offers configurations that change a custom
+    /// parent near its point, keep every parent beyond its radius as the
+    /// failed candidate had it, are never the failed one or one offered
+    /// before, count their own states and leave the layout's cursor alone;
+    /// and it runs out. Widened, it offers only configurations that also
+    /// change a parent beyond the previous radius.
+    #[test]
+    fn a_focus_varies_the_transition_at_the_failure_only() {
+        let fine = MotherGrid::generate(64).unwrap();
+        let coarse = MotherGrid::generate(32).unwrap();
+        let patches = Patches::new(&fine);
+        let core = coarse
+            .triangle_addresses
+            .iter()
+            .flatten()
+            .copied()
+            .filter(|parent| {
+                parent.base_face == 0 && parent.i >= 8 && parent.j >= 8 && parent.i + parent.j < 24
+            })
+            .collect::<BTreeSet<_>>();
+        let transition = core
+            .iter()
+            .flat_map(|&parent| patches.get(parent).unwrap().neighbours)
+            .filter(|parent| !core.contains(parent))
+            .collect::<BTreeSet<_>>();
+        let component = HierarchyComponent {
+            id: 12,
+            parents: core.union(&transition).copied().collect(),
+            boundary_edges: Vec::new(),
+            core_parents: core.iter().copied().collect(),
+            transition_parents: transition.iter().copied().collect(),
+        };
+        let limits = TransitionTopologyLimits {
+            topology_states: 1_000,
+            maximum_halo_expansions: 1,
+        };
+        let cursor = 2;
+        let TransitionTopologyOutcome::Closed(failed) =
+            solve_transition_topology_from_cursor(&fine, &component, limits, cursor)
+        else {
+            panic!("the fixture's topology must close");
+        };
+        let base = failed.candidate.custom_transition_triangles.clone();
+        let vertices = fine.mesh.vertices();
+        let corners =
+            |parent: TriangleAddress| patches.get(parent).unwrap().corners.map(|c| vertices[c]);
+        let centre = |parent: TriangleAddress| {
+            let [a, b, c] = corners(parent);
+            CartesianPoint::new(a.x + b.x + c.x, a.y + b.y + c.y, a.z + b.z + c.z)
+        };
+        let point = centre(*base.keys().next().unwrap());
+        let distance = |parent: TriangleAddress| {
+            let [a, b, _] = corners(parent);
+            angle_between(centre(parent), point) / angle_between(a, b)
+        };
+        let search = |focus: &RetryFocus| {
+            solve_transition_topology_from_cursor_with_promotion(
+                &fine,
+                &component,
+                limits,
+                cursor,
+                RetryRequest {
+                    focus: Some(focus),
+                    ..RetryRequest::default()
+                },
+                true,
+            )
+        };
+        let changed = |triangles: &BTreeMap<TriangleAddress, Vec<[usize; 3]>>,
+                       within: &dyn Fn(f64) -> bool| {
+            triangles
+                .iter()
+                .any(|(parent, chosen)| within(distance(*parent)) && chosen != &base[parent])
+        };
+        let mut focus = RetryFocus {
+            point,
+            change_radius_edges: 2.0,
+            radius_edges: 8.0,
+            previous_radius_edges: 0.0,
+            chosen: base.clone(),
+            cursor: 0,
+        };
+        let mut offered = vec![base.clone()];
+        let enumerate = |focus: &mut RetryFocus, offered: &mut Vec<_>| loop {
+            match search(focus) {
+                TransitionTopologyOutcome::Closed(trial) => {
+                    let states = trial.report.focus_topology_states.unwrap();
+                    assert!(states > focus.cursor);
+                    assert_eq!(trial.report.layout_topology_states, cursor);
+                    assert_eq!(trial.candidate.core_parents, failed.candidate.core_parents);
+                    let triangles = trial.candidate.custom_transition_triangles;
+                    for (parent, chosen) in &triangles {
+                        if distance(*parent) > focus.radius_edges {
+                            assert_eq!(chosen, &base[parent], "{parent:?} is off the focus");
+                        }
+                    }
+                    let near = focus.change_radius_edges;
+                    assert!(changed(&triangles, &|distance| distance <= near));
+                    if focus.previous_radius_edges > 0.0 {
+                        let previous = focus.previous_radius_edges;
+                        assert!(changed(&triangles, &|distance| distance > previous));
+                    }
+                    assert!(!offered.contains(&triangles));
+                    offered.push(triangles);
+                    focus.cursor = states;
+                }
+                TransitionTopologyOutcome::FocusExhausted { .. } => break,
+                other => panic!("unexpected focused outcome: {other:?}"),
+            }
+        };
+        enumerate(&mut focus, &mut offered);
+        let first = offered.len();
+        assert!(first > 1, "the focus must offer a configuration");
+
+        focus = RetryFocus {
+            change_radius_edges: 4.0,
+            radius_edges: 16.0,
+            previous_radius_edges: 8.0,
+            cursor: 0,
+            ..focus
+        };
+        enumerate(&mut focus, &mut offered);
+        assert!(offered.len() >= first);
     }
 
     #[test]

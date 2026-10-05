@@ -413,7 +413,8 @@ pub fn analyze_legacy_transition_family(
                 break (false, format!("legacy boundary invalid: {reason}"));
             }
             TransitionTopologyOutcome::SearchBudgetExhausted { .. }
-            | TransitionTopologyOutcome::RequiresWiderHalo { .. } => {
+            | TransitionTopologyOutcome::RequiresWiderHalo { .. }
+            | TransitionTopologyOutcome::FocusExhausted { .. } => {
                 break (
                     false,
                     "legacy enumeration did not close inside the supplied budget".into(),

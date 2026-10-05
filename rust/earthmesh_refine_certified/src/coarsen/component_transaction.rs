@@ -5,7 +5,9 @@
 //! decide whether the cloned state is committed.
 
 use super::elastic_block::{solve_elastic_patch_scoped, GeometryScope};
-use super::transition_topology::hierarchy_parent_neighbours;
+use super::transition_topology::{
+    angle_between, hierarchy_parent_neighbours, parent_edge_angle, RetryFocus, RetryRequest,
+};
 use super::{
     core_condensation::rebuild_from_leaf_set_with_custom_triangles,
     core_condensation::source_face_slot, ElasticBlockLimits, ElasticBlockOutcome,
@@ -544,6 +546,28 @@ pub(super) fn solve_component_transaction_at_level(
         Ok(depths) => depths,
         Err(reason) => return fail!(InvalidInput, ComponentTransactionStage::Preflight, reason),
     };
+    // A failure no promotion reaches is retried around its face (guide
+    // 11.130): `focus` keeps the failed candidate and the place, and the
+    // search offers transitions that change it there and keep it as it was
+    // beyond the focus's radius. A focus whose candidates fail at its place
+    // `FOCUS_CANDIDATES` times, or that has nothing left to offer even
+    // widened, ends the transaction: the layout's own enumeration would
+    // change the transition far from the failure, which leaves it where it
+    // is (the 40 km 30 m trial failed at one face 40 times that way).
+    let mut focus = None::<RetryFocus>;
+    let mut last_failure = None::<(ComponentTransactionStage, String)>;
+    let mut focus_candidates = 0usize;
+    let mut focused_candidates = 0usize;
+    let mut focused_states = 0usize;
+    let parent_edge = match component
+        .parents
+        .first()
+        .map(|&parent| parent_edge_angle(level_grid, parent))
+        .transpose()
+    {
+        Ok(edge) => edge.unwrap_or(0.0),
+        Err(reason) => return fail!(InvalidInput, ComponentTransactionStage::Preflight, reason),
+    };
 
     loop {
         let preferred_promotion_with_cost = preferred_core_promotion.and_then(|parent| {
@@ -555,14 +579,20 @@ pub(super) fn solve_component_transaction_at_level(
         // bookkeeping from the previous iteration is deliberately uncharged.
         let mut phase_started = Instant::now();
         let outcome = (TransitionTopologyLimits {
-            topology_states: limits.topology_states.saturating_sub(topology_state_offset),
+            topology_states: limits
+                .topology_states
+                .saturating_sub(topology_state_offset + focused_states),
             maximum_halo_expansions: limits.halo_expansions.saturating_sub(halo_expansion_offset),
         })
         .solve_from_cursor_with_promotion(
             level_grid,
             &search_component,
             topology_cursor,
-            preferred_promotion_with_cost,
+            RetryRequest {
+                promotion: preferred_promotion_with_cost,
+                reach: Some((&promotion_depths, limits.halo_expansions)),
+                focus: focus.as_ref().filter(|_| limits.retry_at_failure),
+            },
             limits.retry_at_failure,
         );
         log_component_phase(
@@ -571,24 +601,81 @@ pub(super) fn solve_component_transaction_at_level(
             "topology_search",
             &mut phase_started,
         );
-        let transition = match outcome {
+        let (transition, level_custom_triangles) = match outcome {
             TransitionTopologyOutcome::Closed(trial) => {
-                counters.topology_states =
-                    topology_state_offset.saturating_add(trial.report.topology_states);
+                if let (Some(states), Some(current)) =
+                    (trial.report.focus_topology_states, focus.as_mut())
+                {
+                    focused_states += states.saturating_sub(current.cursor);
+                    current.cursor = states;
+                }
+                counters.topology_states = (topology_state_offset + focused_states)
+                    .saturating_add(trial.report.topology_states);
                 counters.halo_expansions =
                     halo_expansion_offset.saturating_add(trial.report.halo_expansions);
+                // A focus on this candidate keeps its triangles as the
+                // search numbers them.
+                let level_custom_triangles = trial.candidate.custom_transition_triangles.clone();
                 match remap_transition_trial(trial, level_source_slots) {
-                    Ok(trial) => trial,
+                    Ok(trial) => (trial, level_custom_triangles),
                     Err(reason) => {
                         return fail!(InvalidInput, ComponentTransactionStage::Topology, reason)
                     }
                 }
             }
+            TransitionTopologyOutcome::FocusExhausted {
+                states_examined, ..
+            } => {
+                let Some(current) = focus.as_mut() else {
+                    return fail!(
+                        InvalidInput,
+                        ComponentTransactionStage::Topology,
+                        "a focused search ended without a focus".to_string()
+                    );
+                };
+                focused_states += states_examined.saturating_sub(current.cursor);
+                counters.topology_states =
+                    (topology_state_offset + focused_states).saturating_add(topology_cursor);
+                if current.previous_radius_edges == 0.0 {
+                    current.previous_radius_edges = current.radius_edges;
+                    current.change_radius_edges = WIDENED_FOCUS_CHANGE_RADIUS_EDGES;
+                    current.radius_edges = WIDENED_FOCUS_RADIUS_EDGES;
+                    current.cursor = 0;
+                    log_retry_focus(
+                        timing_enabled,
+                        component.id,
+                        "widen",
+                        current,
+                        focus_candidates,
+                    );
+                    continue;
+                }
+                log_retry_focus(
+                    timing_enabled,
+                    component.id,
+                    "exhausted",
+                    current,
+                    focus_candidates,
+                );
+                let reason = focus_end_reason(current, focus_candidates, &last_failure);
+                let stage = last_failure
+                    .as_ref()
+                    .map_or(ComponentTransactionStage::Topology, |(stage, _)| {
+                        stage.clone()
+                    });
+                // As when the layout runs out: an elastic budget that ran
+                // out on the way leaves the search unfinished, not proven.
+                if last_elastic_budget_failure.is_some() {
+                    return fail!(SearchBudgetExhausted, stage, reason);
+                }
+                return fail!(NotCertifiable, stage, reason);
+            }
             TransitionTopologyOutcome::RequiresWiderHalo {
                 states_examined,
                 halo_expansions,
             } => {
-                counters.topology_states = topology_state_offset.saturating_add(states_examined);
+                counters.topology_states =
+                    (topology_state_offset + focused_states).saturating_add(states_examined);
                 counters.halo_expansions = halo_expansion_offset.saturating_add(halo_expansions);
                 return fail!(
                     RequiresWiderHalo,
@@ -600,7 +687,8 @@ pub(super) fn solve_component_transaction_at_level(
                 states_examined,
                 halo_expansions,
             } => {
-                counters.topology_states = topology_state_offset.saturating_add(states_examined);
+                counters.topology_states =
+                    (topology_state_offset + focused_states).saturating_add(states_examined);
                 counters.halo_expansions = halo_expansion_offset.saturating_add(halo_expansions);
                 let reason = last_elastic_budget_failure
                     .as_deref()
@@ -626,7 +714,8 @@ pub(super) fn solve_component_transaction_at_level(
                 halo_expansions,
                 reason,
             } => {
-                counters.topology_states = topology_state_offset.saturating_add(states_examined);
+                counters.topology_states =
+                    (topology_state_offset + focused_states).saturating_add(states_examined);
                 counters.halo_expansions = halo_expansion_offset.saturating_add(halo_expansions);
                 if saw_candidate {
                     if let Some(reason) = last_elastic_budget_failure {
@@ -653,7 +742,8 @@ pub(super) fn solve_component_transaction_at_level(
                 halo_expansions,
                 reason,
             } => {
-                counters.topology_states = topology_state_offset.saturating_add(states_examined);
+                counters.topology_states =
+                    (topology_state_offset + focused_states).saturating_add(states_examined);
                 counters.halo_expansions = halo_expansion_offset.saturating_add(halo_expansions);
                 return fail!(InvalidInput, ComponentTransactionStage::Topology, reason);
             }
@@ -744,6 +834,30 @@ pub(super) fn solve_component_transaction_at_level(
                 preferred_core_promotion = failure.failed_guard_face.and_then(|face| {
                     preferred_core_promotion_for_face(&candidate_state.mesh, &transition, face)
                 });
+                if timing_enabled {
+                    eprintln!(
+                        "earthmesh_cli: cmrc_detail phase=retry_place component={} {} \
+                         preferred={:?} depth={:?} halo_offset={} halo_budget={}",
+                        component.id,
+                        failed_face_neighbourhood(
+                            &candidate_state.mesh,
+                            &transition,
+                            failure.failed_guard_face
+                        ),
+                        preferred_core_promotion,
+                        preferred_core_promotion
+                            .and_then(|parent| promotion_depths.get(&parent).copied()),
+                        halo_expansion_offset,
+                        limits.halo_expansions,
+                    );
+                }
+                // A focused candidate leaves the layout's cursor where it
+                // was: the focus keeps its own.
+                let focused = transition.report.focus_topology_states.is_some();
+                let failed_place = failure
+                    .failed_guard_face
+                    .and_then(|face| face_centroid(&candidate_state.mesh.mesh, face));
+                last_failure = Some((failure.stage.clone(), failure.reason.clone()));
                 match failure.disposition {
                     CandidateFailureDisposition::InvalidInput => {
                         return fail!(InvalidInput, failure.stage, failure.reason)
@@ -751,27 +865,146 @@ pub(super) fn solve_component_transaction_at_level(
                     CandidateFailureDisposition::BudgetExhausted => {
                         if failure.stage != ComponentTransactionStage::Elastic
                             || exact_core_candidate
-                            || candidate_topology_states <= candidate_previous_cursor
+                            || (!focused && candidate_topology_states <= candidate_previous_cursor)
                         {
                             return fail!(SearchBudgetExhausted, failure.stage, failure.reason);
                         }
                         last_elastic_budget_failure = Some(failure.reason);
-                        topology_cursor = candidate_topology_states;
+                        if !focused {
+                            topology_cursor = candidate_topology_states;
+                        }
                     }
                     CandidateFailureDisposition::Retry => {
                         last_retry = Some((failure.stage, failure.reason));
                         if exact_core_candidate
-                            || candidate_topology_states <= candidate_previous_cursor
+                            || (!focused && candidate_topology_states <= candidate_previous_cursor)
                         {
                             let (stage, reason) = last_retry.expect("just recorded retry");
                             return fail!(NotCertifiable, stage, reason);
                         }
-                        topology_cursor = candidate_topology_states;
+                        if !focused {
+                            topology_cursor = candidate_topology_states;
+                        }
                     }
+                }
+                if !limits.retry_at_failure {
+                    continue;
+                }
+                let Some(point) = failed_place.filter(|_| !transition.report.retired_vertex) else {
+                    focus = None;
+                    continue;
+                };
+                focused_candidates += usize::from(focused);
+                let same_place = focused
+                    && focus.as_ref().is_some_and(|current| {
+                        angle_between(current.point, point)
+                            <= current.change_radius_edges * parent_edge
+                    });
+                if same_place {
+                    focus_candidates += 1;
+                } else {
+                    focus = Some(RetryFocus {
+                        point,
+                        change_radius_edges: FOCUS_CHANGE_RADIUS_EDGES,
+                        radius_edges: FOCUS_RADIUS_EDGES,
+                        previous_radius_edges: 0.0,
+                        chosen: level_custom_triangles,
+                        cursor: 0,
+                    });
+                    focus_candidates = 0;
+                }
+                let current = focus.as_ref().expect("a focus was just kept or made");
+                log_retry_focus(
+                    timing_enabled,
+                    component.id,
+                    if same_place { "again" } else { "new" },
+                    current,
+                    focus_candidates,
+                );
+                if focus_candidates >= FOCUS_CANDIDATES || focused_candidates >= FOCUSED_CANDIDATES
+                {
+                    let reason = focus_end_reason(current, focus_candidates, &last_failure);
+                    let stage = last_failure
+                        .as_ref()
+                        .map_or(ComponentTransactionStage::Elastic, |(stage, _)| {
+                            stage.clone()
+                        });
+                    if last_elastic_budget_failure.is_some() {
+                        return fail!(SearchBudgetExhausted, stage, reason);
+                    }
+                    return fail!(NotCertifiable, stage, reason);
                 }
             }
         }
     }
+}
+
+/// A focus's radii in parent edge lengths (guide 11.130): a candidate must
+/// change the transition within the first, may change it within the
+/// second; then both once widened.
+const FOCUS_CHANGE_RADIUS_EDGES: f64 = 2.0;
+const FOCUS_RADIUS_EDGES: f64 = 8.0;
+const WIDENED_FOCUS_CHANGE_RADIUS_EDGES: f64 = 4.0;
+const WIDENED_FOCUS_RADIUS_EDGES: f64 = 16.0;
+/// Candidates of one focus that may fail at its place again, and focused
+/// candidates one transaction may try in all, before it ends.
+const FOCUS_CANDIDATES: usize = 12;
+const FOCUSED_CANDIDATES: usize = 64;
+
+fn face_centroid(mesh: &MeshState, face: usize) -> Option<CartesianPoint> {
+    if !mesh.is_triangle_live(face) {
+        return None;
+    }
+    let corners = mesh.triangles()[face].map(|site| mesh.vertices()[site]);
+    Some(CartesianPoint::new(
+        corners.iter().map(|point| point.x).sum(),
+        corners.iter().map(|point| point.y).sum(),
+        corners.iter().map(|point| point.z).sum(),
+    ))
+}
+
+fn longitude_latitude(point: CartesianPoint) -> (f64, f64) {
+    let norm = (point.x * point.x + point.y * point.y + point.z * point.z).sqrt();
+    (
+        point.y.atan2(point.x).to_degrees(),
+        (point.z / norm).asin().to_degrees(),
+    )
+}
+
+fn log_retry_focus(
+    enabled: bool,
+    component: u64,
+    action: &str,
+    focus: &RetryFocus,
+    candidates: usize,
+) {
+    if enabled {
+        let (longitude, latitude) = longitude_latitude(focus.point);
+        eprintln!(
+            "earthmesh_cli: cmrc_detail phase=retry_focus component={component} action={action} \
+             at lon {longitude:.5} lat {latitude:.5} radius_edges={} candidates={candidates} \
+             cursor={}",
+            focus.radius_edges, focus.cursor
+        );
+    }
+}
+
+fn focus_end_reason(
+    focus: &RetryFocus,
+    candidates: usize,
+    last_failure: &Option<(ComponentTransactionStage, String)>,
+) -> String {
+    let (longitude, latitude) = longitude_latitude(focus.point);
+    format!(
+        "the failure near lon {longitude:.5} lat {latitude:.5} repeats where no promotion \
+         reaches: {} more transitions tried within {} parent edges of it did not certify; \
+         last failure: {}",
+        candidates,
+        focus.radius_edges,
+        last_failure
+            .as_ref()
+            .map_or("none", |(_, reason)| reason.as_str())
+    )
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -1352,6 +1585,61 @@ fn failed_face_place(mesh: &HierarchyLeafMesh, face: Option<usize>) -> String {
     )
 }
 
+/// What a failed face is -- a core parent (`c`), a custom transition
+/// triangle (`x`) or a fine leaf (`f`) -- and how many face steps away the
+/// nearest of each kind lies, for the retry log.
+fn failed_face_neighbourhood(
+    mesh: &HierarchyLeafMesh,
+    transition: &super::TransitionTopologyTrial,
+    face: Option<usize>,
+) -> String {
+    let Some(face) = face.filter(|&face| mesh.mesh.is_triangle_live(face)) else {
+        return String::new();
+    };
+    let core = transition
+        .candidate
+        .core_parents
+        .iter()
+        .copied()
+        .collect::<BTreeSet<_>>();
+    let kind = |face: usize| match mesh.triangle_addresses[face] {
+        None => 'x',
+        Some(address) if core.contains(&address) => 'c',
+        Some(_) => 'f',
+    };
+    let mut first = BTreeMap::<char, usize>::new();
+    let mut custom_within_six = 0usize;
+    let mut seen = BTreeSet::from([face]);
+    let mut frontier = vec![face];
+    for distance in 0..=12 {
+        for &face in &frontier {
+            let kind = kind(face);
+            first.entry(kind).or_insert(distance);
+            if kind == 'x' && distance <= 6 {
+                custom_within_six += 1;
+            }
+        }
+        let mut next = Vec::new();
+        for &face in &frontier {
+            for neighbour in mesh.mesh.neighbours()[face] {
+                if neighbour != 0 && mesh.mesh.is_triangle_live(neighbour) && seen.insert(neighbour)
+                {
+                    next.push(neighbour);
+                }
+            }
+        }
+        frontier = next;
+    }
+    format!(
+        "face_kind={} first_custom={:?} first_core={:?} first_fine={:?} \
+         custom_within_six={custom_within_six}",
+        kind(face),
+        first.get(&'x'),
+        first.get(&'c'),
+        first.get(&'f')
+    )
+}
+
 fn preferred_core_promotion_for_face(
     mesh: &HierarchyLeafMesh,
     transition: &super::TransitionTopologyTrial,
@@ -1886,7 +2174,7 @@ mod tests {
                 &source,
                 &stale_after_layout_shrink,
                 0,
-                None,
+                RetryRequest::default(),
                 true
             ),
             TransitionTopologyOutcome::InvalidBoundary { reason, .. }
@@ -1896,7 +2184,13 @@ mod tests {
         sync_search_component_partition(&mut search_component, vec![core], Vec::new());
         assert_eq!(search_component.parents, vec![core]);
         assert!(matches!(
-            limits.solve_from_cursor_with_promotion(&source, &search_component, 0, None, true),
+            limits.solve_from_cursor_with_promotion(
+                &source,
+                &search_component,
+                0,
+                RetryRequest::default(),
+                true
+            ),
             TransitionTopologyOutcome::RequiresWiderHalo {
                 states_examined: 0,
                 halo_expansions: 0,

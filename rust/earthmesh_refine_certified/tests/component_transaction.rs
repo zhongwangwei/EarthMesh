@@ -356,10 +356,12 @@ fn elastic_budget_is_scoped_to_each_topology_candidate() {
         panic!("incomplete CBER candidates must remain explicit: {outcome:?}")
     };
 
+    // Each candidate spends its own iteration: the failed first one, then
+    // the focus round its failure (guide 11.130) until it has nothing left.
     assert_eq!(report.stage, ComponentTransactionStage::Elastic);
     assert!(report.topology_states > 2);
     assert!(report.topology_states < FULL_LIMITS.topology_states);
-    assert!(report.elastic_iterations > 2);
+    assert!(report.elastic_iterations >= 2);
     assert!(report.elastic_iterations <= report.topology_states);
     assert_eq!(report.before_fingerprint, report.restored_fingerprint);
     assert_eq!(state, snapshot);
