@@ -8,8 +8,9 @@ use super::{
 };
 use crate::{
     certificate::{
-        spherical_triangle_angles, voronoi_cell_is_convex_and_contains_site, AngleContractId,
-        Certificate, CertificateError, GeometryCertificateReport, GEOMETRY_INTERIOR_MARGIN_DEGREES,
+        spherical_triangle_angles, voronoi_cell_is_convex_and_contains_site, AngleContract,
+        AngleContractId, AngleWindow, Certificate, CertificateError, GeometryCertificateReport,
+        GEOMETRY_INTERIOR_MARGIN_DEGREES,
     },
     coarsen::TransitionTopologyTrial,
     mother_grid::{MotherGrid, VertexAddress},
@@ -316,6 +317,15 @@ struct EnergyContext {
     /// topological half of the region certificate's penalty, fixed for the
     /// whole solve (`region_degrees_pass`).
     degrees_pass: bool,
+    /// The window, in radians, that the angle penalty pushes every corner
+    /// into with its full weight, and the interior barrier keeps it in: the
+    /// angle contract's internal window narrowed by the interior margin, the
+    /// one the phase test reads (`geometry_interior_passes_with`).
+    angle_window: (f64, f64),
+    /// The contract's preferred window, narrowed the same way, where it has
+    /// one: a corner the certificate accepts outside it is pushed back with
+    /// `PREFERRED_WINDOW_WEIGHT` of the window's weight.
+    preferred_window: Option<(f64, f64)>,
 }
 
 /// One vertex's guard faces, as (index into `guard_faces`, corner), and
@@ -1222,7 +1232,7 @@ pub fn initial_elastic_phase(
 ) -> Result<ElasticBlockPhase, String> {
     validate_patch(source, patch)?;
     let guard_faces = patch.guard_faces.iter().copied().collect::<BTreeSet<_>>();
-    let context = EnergyContext::new(&source.mesh, patch)?;
+    let context = EnergyContext::new(&source.mesh, patch, AngleContractId::default())?;
     Ok(energy_phase(
         &Certificate::internal(),
         &source.mesh,
@@ -1420,7 +1430,7 @@ fn solve_elastic_patch_impl(
     };
     let initial_step = initial_step * trust_fraction;
     let minimum_step = minimum_step * trust_fraction;
-    let context = match EnergyContext::new(&current.mesh, &patch) {
+    let context = match EnergyContext::new(&current.mesh, &patch, angle_contract) {
         Ok(context) => context,
         Err(reason) => return ElasticBlockOutcome::InvalidPatch { reason },
     };
@@ -2684,7 +2694,11 @@ fn energy_phase(
 }
 
 impl EnergyContext {
-    fn new(mesh: &MeshState, patch: &ElasticPatch) -> Result<Self, String> {
+    fn new(
+        mesh: &MeshState,
+        patch: &ElasticPatch,
+        contract: AngleContractId,
+    ) -> Result<Self, String> {
         let mut guard_seeds = BTreeMap::new();
         let mut guard_edges = BTreeSet::new();
         for &face in &patch.guard_faces {
@@ -2815,6 +2829,13 @@ impl EnergyContext {
             .collect();
         let fans = vertex_fans(mesh, &guard_faces, &derivatives);
         let degrees_pass = crate::certificate::region_degrees_pass(mesh, &guard_faces);
+        let contract = AngleContract::for_id(contract);
+        let narrowed = |window: AngleWindow| {
+            (
+                (window.minimum_degrees + GEOMETRY_INTERIOR_MARGIN_DEGREES).to_radians(),
+                (window.maximum_degrees - GEOMETRY_INTERIOR_MARGIN_DEGREES).to_radians(),
+            )
+        };
         Ok(Self {
             reference_edge_lengths,
             target_angles,
@@ -2826,6 +2847,8 @@ impl EnergyContext {
             reference_dual_areas,
             fans,
             degrees_pass,
+            angle_window: narrowed(contract.internal),
+            preferred_window: contract.preferred.map(narrowed),
         })
     }
 }
@@ -3101,6 +3124,13 @@ fn face_edge_energy(
 /// in parallel.
 const PARALLEL_ENERGY_TERMS: usize = 4096;
 
+/// The weight of the preferred window's penalty against the certificate
+/// window's 100: a tenth. Without it corners crowd the certificate's edges
+/// and one settled just outside them; at the full weight -- the 40-80
+/// window under the 38-82 contract -- it held corners outside the
+/// certificate's window. Guide 11.134 has the trials.
+const PREFERRED_WINDOW_WEIGHT: f64 = 10.0;
+
 /// One guard face's terms of the elastic energy, in the order they are
 /// added: at most two a corner and one for the face.
 fn face_energy_terms(
@@ -3111,8 +3141,7 @@ fn face_energy_terms(
     context: &EnergyContext,
     face: usize,
 ) -> Option<([f64; 7], usize)> {
-    let minimum_angle = (40.2 + GEOMETRY_INTERIOR_MARGIN_DEGREES).to_radians();
-    let maximum_angle = (79.8 - GEOMETRY_INTERIOR_MARGIN_DEGREES).to_radians();
+    let (minimum_angle, maximum_angle) = context.angle_window;
     let mut terms = [0.0; 7];
     let mut count = 0;
     if !mesh.is_triangle_live(face) {
@@ -3142,6 +3171,11 @@ fn face_energy_terms(
         let below = (minimum_angle - angle).max(0.0);
         let above = (angle - maximum_angle).max(0.0);
         terms[count] = 100.0 * (below * below + above * above);
+        if let Some((low, high)) = context.preferred_window {
+            let below = (low - angle).max(0.0);
+            let above = (angle - high).max(0.0);
+            terms[count] += PREFERRED_WINDOW_WEIGHT * (below * below + above * above);
+        }
         count += 1;
         match phase {
             ElasticBlockPhase::Untangle | ElasticBlockPhase::DelaunayVoronoiFeasibility => {}
@@ -4827,7 +4861,7 @@ mod tests {
             target_field: ElasticTargetField::default(),
         };
         let guard_set = guard_faces.iter().copied().collect::<BTreeSet<_>>();
-        let context = EnergyContext::new(&grid.mesh, &patch).unwrap();
+        let context = EnergyContext::new(&grid.mesh, &patch, AngleContractId::default()).unwrap();
         (grid.mesh, patch, guard_set, context)
     }
 
@@ -4864,8 +4898,10 @@ mod tests {
                             )
                         });
                 }
-                let context = EnergyContext::new(&mesh, &patch).unwrap();
-                let prepared_context = EnergyContext::new(&mesh, &prepared).unwrap();
+                let context =
+                    EnergyContext::new(&mesh, &patch, AngleContractId::default()).unwrap();
+                let prepared_context =
+                    EnergyContext::new(&mesh, &prepared, AngleContractId::default()).unwrap();
                 let mut moved = mesh.clone();
                 let site = patch.movable_compact_vertices[0];
                 let point = exponential_map(
@@ -4935,8 +4971,10 @@ mod tests {
                         .entry(vertex)
                         .or_insert(std::f64::consts::TAU / degrees[vertex] as f64);
                 }
-                let context = EnergyContext::new(&mesh, &patch).unwrap();
-                let prepared_context = EnergyContext::new(&mesh, &prepared).unwrap();
+                let context =
+                    EnergyContext::new(&mesh, &patch, AngleContractId::default()).unwrap();
+                let prepared_context =
+                    EnergyContext::new(&mesh, &prepared, AngleContractId::default()).unwrap();
                 for &(vertex, _) in &base_context.guard_seeds {
                     assert_eq!(
                         context.target_angles[&vertex].to_bits(),
@@ -5344,7 +5382,7 @@ mod tests {
             ))
             .unwrap(),
         );
-        let context = EnergyContext::new(&mesh, &patch).unwrap();
+        let context = EnergyContext::new(&mesh, &patch, AngleContractId::default()).unwrap();
         for phase in [
             ElasticBlockPhase::Untangle,
             ElasticBlockPhase::AngleFeasibility,
@@ -5432,7 +5470,7 @@ mod tests {
                 .unwrap(),
             );
         }
-        let context = EnergyContext::new(&mesh, &patch).unwrap();
+        let context = EnergyContext::new(&mesh, &patch, AngleContractId::default()).unwrap();
         let phase = ElasticBlockPhase::AngleFeasibility;
         let parallel =
             finite_difference_gradient(&mut mesh.clone(), &patch, phase, 0.01, &context).unwrap();
@@ -5467,8 +5505,7 @@ mod tests {
         guard_edges: &[(usize, usize)],
     ) -> Option<f64> {
         let mut energy = 0.0;
-        let minimum_angle = (40.2 + GEOMETRY_INTERIOR_MARGIN_DEGREES).to_radians();
-        let maximum_angle = (79.8 - GEOMETRY_INTERIOR_MARGIN_DEGREES).to_radians();
+        let (minimum_angle, maximum_angle) = context.angle_window;
         for &face in guard_faces {
             if !mesh.is_triangle_live(face) {
                 return None;
@@ -5496,7 +5533,13 @@ mod tests {
                 let target = *context.target_angles.get(&site)?;
                 let below = (minimum_angle - angle).max(0.0);
                 let above = (angle - maximum_angle).max(0.0);
-                energy += 100.0 * (below * below + above * above);
+                let mut term = 100.0 * (below * below + above * above);
+                if let Some((low, high)) = context.preferred_window {
+                    let below = (low - angle).max(0.0);
+                    let above = (angle - high).max(0.0);
+                    term += PREFERRED_WINDOW_WEIGHT * (below * below + above * above);
+                }
+                energy += term;
                 match phase {
                     ElasticBlockPhase::Untangle | ElasticBlockPhase::DelaunayVoronoiFeasibility => {
                     }
@@ -5590,7 +5633,7 @@ mod tests {
                 .unwrap(),
             );
         }
-        let context = EnergyContext::new(&mesh, &patch).unwrap();
+        let context = EnergyContext::new(&mesh, &patch, AngleContractId::default()).unwrap();
         let mut compared = 0;
         for phase in [
             ElasticBlockPhase::Untangle,
@@ -5732,7 +5775,7 @@ mod tests {
                 );
                 moved.move_vertex(site, normalized_point(shifted).unwrap());
             }
-            let context = EnergyContext::new(&moved, &patch).unwrap();
+            let context = EnergyContext::new(&moved, &patch, AngleContractId::default()).unwrap();
             let phase = energy_phase(&certificate, &moved, &guard_faces, &context);
             assert_eq!(
                 phase,
@@ -5784,7 +5827,7 @@ mod tests {
                 );
                 moved.move_vertex(site, normalized_point(shifted).unwrap());
             }
-            let context = EnergyContext::new(&moved, &patch).unwrap();
+            let context = EnergyContext::new(&moved, &patch, AngleContractId::default()).unwrap();
             let window = certificate.geometry_region_passes(&moved, &guard_faces);
             let interior = certificate.geometry_penalty_in(&moved, &guard_faces) == Some(0.0);
             assert_eq!(
@@ -5813,12 +5856,115 @@ mod tests {
         );
     }
 
+    /// The angle penalty pushes corners into the window the phase test reads
+    /// with its full weight, and into the contract's preferred window, where
+    /// it has one, with a tenth of it. On a patch moved by every amount from
+    /// none to a lot:
+    /// - under the 40-80 contract it vanishes exactly when the interior
+    ///   window holds;
+    /// - under the 38-82 contract, exactly when the narrowed preferred window
+    ///   does; and wherever the certificate's interior window holds, it is at
+    ///   most a tenth of what the 40-80 window charges: corners between 38.4
+    ///   and 40.4 degrees are still pushed, but no longer held.
+    #[test]
+    fn the_angle_penalty_follows_the_contract() {
+        let (mesh, patch, movable) = disk_patch(16, 3.5);
+        let legacy = Certificate::internal();
+        let domain = Certificate::internal_for(AngleContractId::DomainQuality38To82V1);
+        // [40, 80], which `geometry_interior_passes_with` narrows as the
+        // context narrows the preferred window.
+        let preferred = Certificate {
+            min_angle_degrees: 40.0,
+            max_angle_degrees: 80.0,
+        };
+        let edge = arc_length_unit_sphere(mesh.vertices()[movable[0]], mesh.vertices()[movable[1]]);
+        let mut state = 0x6a09_e667_f3bc_c908u64;
+        let mut random = || {
+            state ^= state << 13;
+            state ^= state >> 7;
+            state ^= state << 17;
+            (state >> 11) as f64 / (1u64 << 53) as f64 - 0.5
+        };
+        let penalty = |moved: &MeshState, context: &EnergyContext| {
+            context
+                .guard_faces
+                .iter()
+                .map(|&face| {
+                    let (terms, count) = face_energy_terms(
+                        moved,
+                        &|site| moved.vertices()[site],
+                        &patch,
+                        ElasticBlockPhase::AngleFeasibility,
+                        context,
+                        face,
+                    )
+                    .unwrap();
+                    terms[..count].iter().sum::<f64>()
+                })
+                .sum::<f64>()
+        };
+        let mut cases = BTreeSet::new();
+        for trial in 0..60 {
+            let amplitude = edge * [0.0, 0.03, 0.06, 0.1, 0.2, 0.3][trial % 6];
+            let mut moved = mesh.clone();
+            for &site in &movable {
+                let point = moved.vertices()[site];
+                let shifted = CartesianPoint::new(
+                    point.x + amplitude * random(),
+                    point.y + amplitude * random(),
+                    point.z + amplitude * random(),
+                );
+                moved.move_vertex(site, normalized_point(shifted).unwrap());
+            }
+            let legacy_context =
+                EnergyContext::new(&moved, &patch, AngleContractId::LegacyStrict40To80).unwrap();
+            let domain_context =
+                EnergyContext::new(&moved, &patch, AngleContractId::DomainQuality38To82V1).unwrap();
+            let (faces, degrees) = (&legacy_context.guard_faces, legacy_context.degrees_pass);
+            let legacy_penalty = penalty(&moved, &legacy_context);
+            let domain_penalty = penalty(&moved, &domain_context);
+            assert_eq!(
+                legacy_penalty == 0.0,
+                legacy.geometry_interior_passes_with(&moved, faces, degrees),
+                "trial {trial}"
+            );
+            assert_eq!(
+                domain_penalty == 0.0,
+                preferred.geometry_interior_passes_with(&moved, faces, degrees),
+                "trial {trial}"
+            );
+            let domain_interior = domain.geometry_interior_passes_with(&moved, faces, degrees);
+            if domain_interior {
+                assert!(
+                    domain_penalty <= 0.1 * legacy_penalty * (1.0 + 1.0e-12),
+                    "trial {trial}: {domain_penalty} against {legacy_penalty}"
+                );
+            }
+            cases.insert((
+                legacy_penalty == 0.0,
+                domain_interior,
+                domain_penalty == 0.0,
+            ));
+        }
+        assert!(
+            cases.contains(&(true, true, true))
+                && cases.contains(&(false, true, false))
+                && cases.contains(&(false, false, false)),
+            "{cases:?}"
+        );
+    }
+
     /// No proof for a patch whose fixed boundary crosses itself, or whose
     /// movable vertex has an open fan.
     #[test]
     fn the_untangled_proof_needs_a_simple_fixed_boundary_and_closed_movable_fans() {
         let (mesh, patch, movable) = disk_patch(16, 2.5);
-        assert!(EnergyContext::new(&mesh, &patch).unwrap().fans.is_some());
+        assert!(
+            EnergyContext::new(&mesh, &patch, AngleContractId::default())
+                .unwrap()
+                .fans
+                .is_some()
+        );
 
         let mut crossed = mesh.clone();
         let boundary = patch.fixed_compact_vertices.clone();
@@ -5826,7 +5972,12 @@ mod tests {
         let (pa, pb) = (crossed.vertices()[a], crossed.vertices()[b]);
         crossed.move_vertex(a, pb);
         crossed.move_vertex(b, pa);
-        assert!(EnergyContext::new(&crossed, &patch).unwrap().fans.is_none());
+        assert!(
+            EnergyContext::new(&crossed, &patch, AngleContractId::default())
+                .unwrap()
+                .fans
+                .is_none()
+        );
 
         let mut open = patch.clone();
         let dropped = open
@@ -5835,7 +5986,8 @@ mod tests {
             .position(|&face| mesh.triangles()[face].contains(&movable[0]))
             .unwrap();
         open.guard_faces.remove(dropped);
-        assert!(EnergyContext::new(&mesh, &open).map_or(true, |context| context.fans.is_none()));
+        assert!(EnergyContext::new(&mesh, &open, AngleContractId::default())
+            .map_or(true, |context| context.fans.is_none()));
     }
 
     #[test]
@@ -5896,7 +6048,7 @@ mod tests {
                 ..Default::default()
             },
         };
-        let context = EnergyContext::new(&grid.mesh, &patch).unwrap();
+        let context = EnergyContext::new(&grid.mesh, &patch, AngleContractId::default()).unwrap();
         assert_eq!(context.reference_dual_areas[&site], Some(target_area));
     }
 
@@ -6454,6 +6606,11 @@ mod tests {
             reference_dual_areas: BTreeMap::new(),
             fans: None,
             degrees_pass: false,
+            angle_window: (
+                (40.2 + GEOMETRY_INTERIOR_MARGIN_DEGREES).to_radians(),
+                (79.8 - GEOMETRY_INTERIOR_MARGIN_DEGREES).to_radians(),
+            ),
+            preferred_window: None,
         };
         assert!(elastic_energy(
             &grid.mesh,
@@ -6467,7 +6624,7 @@ mod tests {
     #[test]
     fn negative_geometry_reaches_untangle_phase() {
         let (source, patch) = inverted_elastic_fixture();
-        let context = EnergyContext::new(&source.mesh, &patch).unwrap();
+        let context = EnergyContext::new(&source.mesh, &patch, AngleContractId::default()).unwrap();
         assert_eq!(
             initial_elastic_phase(&source, &patch).unwrap(),
             ElasticBlockPhase::Untangle

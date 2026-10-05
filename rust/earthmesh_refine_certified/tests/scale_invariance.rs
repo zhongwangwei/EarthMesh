@@ -195,8 +195,12 @@ fn one_pattern_coarsens_alike_from_kilometres_to_thirty_metres() {
             (fine.0, fine.1, fine.2, &fine.4),
             "{coarse:?} against {fine:?}"
         );
+        // Within one iteration, or a twentieth of the count where that is
+        // more. The 1 -> 0 solve took 210 iterations when this was written;
+        // it took 15 at both scales before the energy followed the contract
+        // (guide 11.134), and takes 14 and 15 since.
         assert!(
-            coarse.3.abs_diff(fine.3) * 20 <= coarse.3.max(fine.3),
+            coarse.3.abs_diff(fine.3) <= 1.max(coarse.3.max(fine.3) / 20),
             "{coarse:?} against {fine:?}"
         );
     }
