@@ -2390,15 +2390,40 @@ pub(super) fn face_graph_distance_to_any(
     None
 }
 
+/// The guard face the next candidate widens the transition at: the one whose
+/// angles leave the certificate's window furthest (guide 11.129). The first
+/// face that fails the window decided before, and when several failed -- a
+/// smallest angle a little short on one side of the patch, a largest angle
+/// stuck far over on the other -- the retries kept widening at the first
+/// while the worst stayed. When every face's angles are inside the window
+/// and only the interval proof fails, the first face that fails.
 fn failed_guard_face(
     certificate: &Certificate,
     mesh: &MeshState,
     patch: &ElasticPatch,
 ) -> Option<usize> {
-    patch.guard_faces.iter().copied().find(|face| {
-        certificate
-            .verify_geometry_region(mesh, &BTreeSet::from([*face]))
-            .is_err()
+    let worst = patch
+        .guard_faces
+        .iter()
+        .copied()
+        .filter_map(|face| {
+            let angles = spherical_triangle_angles(
+                mesh.triangles()[face].map(|site| mesh.vertices()[site]),
+            )?;
+            let smallest = angles.iter().copied().fold(f64::INFINITY, f64::min);
+            let largest = angles.iter().copied().fold(f64::NEG_INFINITY, f64::max);
+            let excess = (certificate.min_angle_degrees - smallest)
+                .max(largest - certificate.max_angle_degrees);
+            (excess > 0.0).then_some((excess, face))
+        })
+        // The largest excess; of equal ones, the lowest face.
+        .max_by(|left, right| left.0.total_cmp(&right.0).then(right.1.cmp(&left.1)));
+    worst.map(|(_, face)| face).or_else(|| {
+        patch.guard_faces.iter().copied().find(|face| {
+            certificate
+                .verify_geometry_region(mesh, &BTreeSet::from([*face]))
+                .is_err()
+        })
     })
 }
 
