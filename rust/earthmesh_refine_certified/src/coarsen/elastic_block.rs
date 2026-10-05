@@ -308,6 +308,17 @@ struct EnergyContext {
     dual_pairs: Vec<DualPair>,
     derivatives: BTreeMap<usize, DerivativeContext>,
     reference_dual_areas: BTreeMap<usize, Option<f64>>,
+    /// Every guard-face vertex's fan, when the patch can be proved
+    /// untangled without the crossing scan (`provably_untangled`); `None`
+    /// when it cannot.
+    fans: Option<Vec<VertexFan>>,
+}
+
+/// One vertex's guard faces, as (index into `guard_faces`, corner), and
+/// whether they close round it.
+struct VertexFan {
+    closed: bool,
+    corners: Vec<(usize, usize)>,
 }
 
 #[derive(Clone, Copy)]
@@ -2649,7 +2660,8 @@ fn energy_phase(
     context: &EnergyContext,
 ) -> ElasticBlockPhase {
     if !all_faces_positive(mesh, guard_faces)
-        || edge_crossing_penalty(mesh, &context.guard_edges) > 1.0e-18
+        || (!provably_untangled(mesh, context)
+            && edge_crossing_penalty(mesh, &context.guard_edges) > 1.0e-18)
     {
         return ElasticBlockPhase::Untangle;
     }
@@ -2792,6 +2804,7 @@ impl EnergyContext {
                 )
             })
             .collect();
+        let fans = vertex_fans(mesh, &guard_faces, &derivatives);
         Ok(Self {
             reference_edge_lengths,
             target_angles,
@@ -2801,8 +2814,101 @@ impl EnergyContext {
             dual_pairs,
             derivatives,
             reference_dual_areas,
+            fans,
         })
     }
+}
+
+/// The guard faces' fans at every vertex, for `provably_untangled`; `None`
+/// when the proof does not apply: a movable vertex whose fan does not close
+/// (on an open edge of a built region), or a patch boundary that crosses
+/// itself. The boundary -- the edges of one guard face -- has fixed ends
+/// and stays where it is for the whole solve, so it is tested once.
+fn vertex_fans(
+    mesh: &MeshState,
+    guard_faces: &[usize],
+    movable: &BTreeMap<usize, DerivativeContext>,
+) -> Option<Vec<VertexFan>> {
+    let mut edge_faces = HashMap::<(usize, usize), u8>::new();
+    let mut corners = BTreeMap::<usize, Vec<(usize, usize)>>::new();
+    for (index, &face) in guard_faces.iter().enumerate() {
+        let triangle = mesh.triangles()[face];
+        for corner in 0..3 {
+            corners
+                .entry(triangle[corner])
+                .or_default()
+                .push((index, corner));
+            let (a, b) = (triangle[corner], triangle[(corner + 1) % 3]);
+            *edge_faces.entry((a.min(b), a.max(b))).or_default() += 1;
+        }
+    }
+    let closes =
+        |site: usize, other: usize| edge_faces.get(&(site.min(other), site.max(other))) == Some(&2);
+    let fans = corners
+        .into_iter()
+        .map(|(site, corners)| {
+            let closed = corners.iter().all(|&(index, corner)| {
+                let triangle = mesh.triangles()[guard_faces[index]];
+                closes(site, triangle[(corner + 1) % 3]) && closes(site, triangle[(corner + 2) % 3])
+            });
+            if !closed && movable.contains_key(&site) {
+                None
+            } else {
+                Some(VertexFan { closed, corners })
+            }
+        })
+        .collect::<Option<Vec<_>>>()?;
+    let boundary = edge_faces
+        .into_iter()
+        .filter_map(|(edge, faces)| (faces == 1).then_some(edge))
+        .collect::<Vec<_>>();
+    (edge_crossing_penalty(mesh, &boundary) <= 1.0e-18).then_some(fans)
+}
+
+/// Whether the patch has no crossing edges, proved without scanning them
+/// (guide 11.132). With every guard face positive (the caller's test), a
+/// vertex whose faces' angles add up to one turn -- a closed fan below
+/// 540 degrees, an open fan below 360 -- is where the map from the patch
+/// is one to one locally; the patch's boundary has fixed ends and does not
+/// cross itself (`vertex_fans`). A local homeomorphism whose boundary is a
+/// fixed simple curve system is one to one, so no two edges cross and the
+/// crossing scan would sum to zero. Answers false whenever it cannot tell,
+/// and the scan runs as before.
+/// How far from flat or null every guard face's angles must stay for
+/// `provably_untangled` to answer.
+const UNTANGLED_PROOF_MARGIN_DEGREES: f64 = 0.1;
+
+fn provably_untangled(mesh: &MeshState, context: &EnergyContext) -> bool {
+    let Some(fans) = &context.fans else {
+        return false;
+    };
+    // A face with a near-flat or near-null angle is where rounding makes
+    // the scan count crossings of edges that only touch: such a patch is
+    // scanned as before.
+    let Some(angles) = context
+        .guard_faces
+        .par_iter()
+        .map(|&face| {
+            spherical_triangle_angles(mesh.triangles()[face].map(|site| mesh.vertices()[site]))
+                .filter(|angles| {
+                    angles.iter().all(|&angle| {
+                        angle > UNTANGLED_PROOF_MARGIN_DEGREES
+                            && angle < 180.0 - UNTANGLED_PROOF_MARGIN_DEGREES
+                    })
+                })
+        })
+        .collect::<Option<Vec<_>>>()
+    else {
+        return false;
+    };
+    fans.par_iter().all(|fan| {
+        let turn = fan
+            .corners
+            .iter()
+            .map(|&(index, corner)| angles[index][corner])
+            .sum::<f64>();
+        turn.is_finite() && turn < if fan.closed { 540.0 } else { 360.0 }
+    })
 }
 
 fn reference_voronoi_area(
@@ -5508,6 +5614,159 @@ mod tests {
         assert!(compared >= 3, "only {compared} phases had an energy");
     }
 
+    /// The phase test as it was before `provably_untangled`: the crossing
+    /// scan on every call.
+    fn energy_phase_oracle(
+        certificate: &Certificate,
+        mesh: &MeshState,
+        guard_faces: &BTreeSet<usize>,
+        context: &EnergyContext,
+    ) -> ElasticBlockPhase {
+        if !all_faces_positive(mesh, guard_faces)
+            || edge_crossing_penalty(mesh, &context.guard_edges) > 1.0e-18
+        {
+            return ElasticBlockPhase::Untangle;
+        }
+        if certificate.geometry_penalty_in(mesh, guard_faces) != Some(0.0) {
+            return ElasticBlockPhase::AngleFeasibility;
+        }
+        if !dual_energy(mesh, context, false).is_some_and(|dual| dual.hard_feasible) {
+            return ElasticBlockPhase::DelaunayVoronoiFeasibility;
+        }
+        ElasticBlockPhase::Interior
+    }
+
+    /// A disk-shaped patch: the vertices within `rings` edge lengths of a
+    /// vertex move, every face touching them is guarded.
+    fn disk_patch(subdivision: usize, rings: f64) -> (MeshState, ElasticPatch, Vec<usize>) {
+        let grid = MotherGrid::generate(subdivision).unwrap();
+        let face = grid.mesh.active_triangle_slots().next().unwrap();
+        let centre = grid.mesh.triangles()[face][0];
+        let distance = |site: usize| {
+            arc_length_unit_sphere(grid.mesh.vertices()[site], grid.mesh.vertices()[centre])
+        };
+        let radius = rings * distance(grid.mesh.triangles()[face][1]);
+        let movable = grid
+            .mesh
+            .active_vertex_slots()
+            .filter(|&site| distance(site) <= radius)
+            .collect::<Vec<_>>();
+        let movable_set = movable.iter().copied().collect::<BTreeSet<_>>();
+        let guard_faces = grid
+            .mesh
+            .active_triangle_slots()
+            .filter(|&face| {
+                grid.mesh.triangles()[face]
+                    .iter()
+                    .any(|site| movable_set.contains(site))
+            })
+            .collect::<Vec<_>>();
+        let fixed = guard_faces
+            .iter()
+            .flat_map(|&face| grid.mesh.triangles()[face])
+            .filter(|site| !movable_set.contains(site))
+            .collect::<BTreeSet<_>>();
+        let patch = ElasticPatch {
+            domain_id: GeometryDomainId::CurrentAnnulus,
+            topology: TransitionTopologyCandidate {
+                component_id: 1,
+                topology_id: 1,
+                core_parents: Vec::new(),
+                custom_transition_triangles: BTreeMap::new(),
+                source_triangles: guard_faces
+                    .iter()
+                    .map(|&face| grid.mesh.triangles()[face])
+                    .collect(),
+                source_active_vertices: movable.iter().chain(&fixed).copied().collect(),
+                source_degree_forecast: BTreeMap::new(),
+            },
+            reference_positions: grid.mesh.vertices().to_vec(),
+            fixed_compact_vertices: fixed.into_iter().collect(),
+            movable_compact_vertices: movable.clone(),
+            guard_faces,
+            target_mode: ElasticTargetMode::TrialReference,
+            target_field: ElasticTargetField::default(),
+        };
+        (grid.mesh, patch, movable)
+    }
+
+    /// The phase test skips the crossing scan only where the patch is
+    /// provably untangled: on a patch moved a little, by a lot, and every
+    /// amount between -- folds and inverted faces included -- it names the
+    /// same phase as the scan on every call, and the scan finds nothing
+    /// wherever the proof holds.
+    #[test]
+    fn the_untangled_proof_never_changes_the_phase() {
+        let (mesh, patch, movable) = disk_patch(16, 3.5);
+        let certificate = Certificate::internal();
+        let guard_faces = patch.guard_faces.iter().copied().collect::<BTreeSet<_>>();
+        let edge = arc_length_unit_sphere(mesh.vertices()[movable[0]], mesh.vertices()[movable[1]]);
+        let mut state = 0x2545_f491_4f6c_dd1du64;
+        let mut random = || {
+            state ^= state << 13;
+            state ^= state >> 7;
+            state ^= state << 17;
+            (state >> 11) as f64 / (1u64 << 53) as f64 - 0.5
+        };
+        let (mut proved, mut scanned, mut tangled) = (0, 0, 0);
+        for trial in 0..60 {
+            let amplitude = edge * [0.02, 0.1, 0.3, 0.6, 1.0, 1.6][trial % 6];
+            let mut moved = mesh.clone();
+            for &site in &movable {
+                let point = moved.vertices()[site];
+                let shifted = CartesianPoint::new(
+                    point.x + amplitude * random(),
+                    point.y + amplitude * random(),
+                    point.z + amplitude * random(),
+                );
+                moved.move_vertex(site, normalized_point(shifted).unwrap());
+            }
+            let context = EnergyContext::new(&moved, &patch).unwrap();
+            let phase = energy_phase(&certificate, &moved, &guard_faces, &context);
+            assert_eq!(
+                phase,
+                energy_phase_oracle(&certificate, &moved, &guard_faces, &context),
+                "trial {trial}"
+            );
+            if all_faces_positive(&moved, &guard_faces) && provably_untangled(&moved, &context) {
+                proved += 1;
+                assert_eq!(edge_crossing_penalty(&moved, &context.guard_edges), 0.0);
+            } else {
+                scanned += 1;
+            }
+            tangled += usize::from(phase == ElasticBlockPhase::Untangle);
+        }
+        assert!(
+            proved > 0 && scanned > 0 && tangled > 0,
+            "{proved} {scanned} {tangled}"
+        );
+    }
+
+    /// No proof for a patch whose fixed boundary crosses itself, or whose
+    /// movable vertex has an open fan.
+    #[test]
+    fn the_untangled_proof_needs_a_simple_fixed_boundary_and_closed_movable_fans() {
+        let (mesh, patch, movable) = disk_patch(16, 2.5);
+        assert!(EnergyContext::new(&mesh, &patch).unwrap().fans.is_some());
+
+        let mut crossed = mesh.clone();
+        let boundary = patch.fixed_compact_vertices.clone();
+        let (a, b) = (boundary[0], boundary[boundary.len() / 2]);
+        let (pa, pb) = (crossed.vertices()[a], crossed.vertices()[b]);
+        crossed.move_vertex(a, pb);
+        crossed.move_vertex(b, pa);
+        assert!(EnergyContext::new(&crossed, &patch).unwrap().fans.is_none());
+
+        let mut open = patch.clone();
+        let dropped = open
+            .guard_faces
+            .iter()
+            .position(|&face| mesh.triangles()[face].contains(&movable[0]))
+            .unwrap();
+        open.guard_faces.remove(dropped);
+        assert!(EnergyContext::new(&mesh, &open).map_or(true, |context| context.fans.is_none()));
+    }
+
     #[test]
     fn median_averages_even_sample_middle_values() {
         let mut odd = [3.0, 1.0, 2.0];
@@ -6122,6 +6381,7 @@ mod tests {
             }],
             derivatives: BTreeMap::new(),
             reference_dual_areas: BTreeMap::new(),
+            fans: None,
         };
         assert!(elastic_energy(
             &grid.mesh,
