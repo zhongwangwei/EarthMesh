@@ -2907,74 +2907,187 @@ fn elastic_energy_in(
     dual_pairs: &[DualPair],
     crossing_index: Option<&EdgeCrossingIndex>,
 ) -> Option<f64> {
+    let energy = face_edge_energy(
+        mesh,
+        |site| mesh.vertices()[site],
+        patch,
+        phase,
+        context,
+        guard_faces,
+        guard_edges,
+    )?;
+    elastic_energy_rest(
+        mesh,
+        phase,
+        context,
+        guard_edges,
+        guard_seeds,
+        dual_pairs,
+        crossing_index,
+        energy,
+    )
+}
+
+/// The faces' and edges' part of the elastic energy -- all of it in the
+/// angle-feasibility phase -- with every vertex read through `position`:
+/// the parallel gradient (`finite_difference_gradient`) evaluates a moved
+/// vertex this way without moving it in the shared mesh. A large set's
+/// terms are worked out in parallel; every set's are added one by one in
+/// the order they always were, so the sum is the same to the bit.
+fn face_edge_energy(
+    mesh: &MeshState,
+    position: impl Fn(usize) -> CartesianPoint + Sync,
+    patch: &ElasticPatch,
+    phase: ElasticBlockPhase,
+    context: &EnergyContext,
+    guard_faces: &[usize],
+    guard_edges: &[(usize, usize)],
+) -> Option<f64> {
+    let face = |&face: &usize| face_energy_terms(mesh, &position, patch, phase, context, face);
+    let edge = |&edge: &(usize, usize)| edge_energy_term(&position, phase, context, edge);
     let mut energy = 0.0;
-    let minimum_angle = (40.2 + GEOMETRY_INTERIOR_MARGIN_DEGREES).to_radians();
-    let maximum_angle = (79.8 - GEOMETRY_INTERIOR_MARGIN_DEGREES).to_radians();
-    for &face in guard_faces {
-        if !mesh.is_triangle_live(face) {
-            return None;
-        }
-        let triangle = mesh.triangles()[face];
-        let points = triangle.map(|site| mesh.vertices()[site]);
-        let [Some(a), Some(b), Some(c)] = points.map(normalized_point) else {
-            return None;
-        };
-        let determinant = dot(a, cross(b, c));
-        if !determinant.is_finite() {
-            return None;
-        }
-        if matches!(phase, ElasticBlockPhase::Untangle) {
-            energy += 1_000_000.0 * (1.0e-10 - determinant).max(0.0).powi(2);
-            continue;
-        }
-        if determinant <= 0.0 {
-            return None;
-        }
-        let angles = spherical_triangle_angles(points)?.map(f64::to_radians);
-        for corner in 0..3 {
-            let angle = angles[corner];
-            let site = triangle[corner];
-            let target = *context.target_angles.get(&site)?;
-            let below = (minimum_angle - angle).max(0.0);
-            let above = (angle - maximum_angle).max(0.0);
-            energy += 100.0 * (below * below + above * above);
-            match phase {
-                ElasticBlockPhase::Untangle | ElasticBlockPhase::DelaunayVoronoiFeasibility => {}
-                ElasticBlockPhase::AngleFeasibility => {
-                    if patch.target_mode.uses_hierarchy_area_degree() {
-                        energy += 0.001 * (angle - target).powi(2);
-                    }
-                }
-                ElasticBlockPhase::Interior => {
-                    let lower = angle - minimum_angle;
-                    let upper = maximum_angle - angle;
-                    if lower <= 0.0 || upper <= 0.0 {
-                        return None;
-                    }
-                    energy += 0.2 * (angle - target).powi(2) - 0.001 * (lower.ln() + upper.ln());
-                }
+    if guard_faces.len() >= PARALLEL_ENERGY_TERMS {
+        for (terms, count) in guard_faces
+            .par_iter()
+            .map(face)
+            .collect::<Option<Vec<_>>>()?
+        {
+            for term in &terms[..count] {
+                energy += term;
             }
         }
-        if matches!(phase, ElasticBlockPhase::Interior) {
-            energy -= 0.0001 * determinant.ln();
+    } else {
+        for index in guard_faces {
+            let (terms, count) = face(index)?;
+            for term in &terms[..count] {
+                energy += term;
+            }
         }
     }
+    if guard_edges.len() >= PARALLEL_ENERGY_TERMS {
+        for term in guard_edges
+            .par_iter()
+            .map(edge)
+            .collect::<Option<Vec<_>>>()?
+        {
+            energy += term;
+        }
+    } else {
+        for term in guard_edges.iter().map(edge) {
+            energy += term?;
+        }
+    }
+    Some(energy)
+}
 
+/// Guard faces or edges from which `face_edge_energy` works the terms out
+/// in parallel.
+const PARALLEL_ENERGY_TERMS: usize = 4096;
+
+/// One guard face's terms of the elastic energy, in the order they are
+/// added: at most two a corner and one for the face.
+fn face_energy_terms(
+    mesh: &MeshState,
+    position: &impl Fn(usize) -> CartesianPoint,
+    patch: &ElasticPatch,
+    phase: ElasticBlockPhase,
+    context: &EnergyContext,
+    face: usize,
+) -> Option<([f64; 7], usize)> {
+    let minimum_angle = (40.2 + GEOMETRY_INTERIOR_MARGIN_DEGREES).to_radians();
+    let maximum_angle = (79.8 - GEOMETRY_INTERIOR_MARGIN_DEGREES).to_radians();
+    let mut terms = [0.0; 7];
+    let mut count = 0;
+    if !mesh.is_triangle_live(face) {
+        return None;
+    }
+    let triangle = mesh.triangles()[face];
+    let points = triangle.map(position);
+    let [Some(a), Some(b), Some(c)] = points.map(normalized_point) else {
+        return None;
+    };
+    let determinant = dot(a, cross(b, c));
+    if !determinant.is_finite() {
+        return None;
+    }
+    if matches!(phase, ElasticBlockPhase::Untangle) {
+        terms[0] = 1_000_000.0 * (1.0e-10 - determinant).max(0.0).powi(2);
+        return Some((terms, 1));
+    }
+    if determinant <= 0.0 {
+        return None;
+    }
+    let angles = spherical_triangle_angles(points)?.map(f64::to_radians);
+    for corner in 0..3 {
+        let angle = angles[corner];
+        let site = triangle[corner];
+        let target = *context.target_angles.get(&site)?;
+        let below = (minimum_angle - angle).max(0.0);
+        let above = (angle - maximum_angle).max(0.0);
+        terms[count] = 100.0 * (below * below + above * above);
+        count += 1;
+        match phase {
+            ElasticBlockPhase::Untangle | ElasticBlockPhase::DelaunayVoronoiFeasibility => {}
+            ElasticBlockPhase::AngleFeasibility => {
+                if patch.target_mode.uses_hierarchy_area_degree() {
+                    terms[count] = 0.001 * (angle - target).powi(2);
+                    count += 1;
+                }
+            }
+            ElasticBlockPhase::Interior => {
+                let lower = angle - minimum_angle;
+                let upper = maximum_angle - angle;
+                if lower <= 0.0 || upper <= 0.0 {
+                    return None;
+                }
+                terms[count] = 0.2 * (angle - target).powi(2) - 0.001 * (lower.ln() + upper.ln());
+                count += 1;
+            }
+        }
+    }
+    if matches!(phase, ElasticBlockPhase::Interior) {
+        // `energy -= x` adds `-x`, to the bit.
+        terms[count] = -(0.0001 * determinant.ln());
+        count += 1;
+    }
+    Some((terms, count))
+}
+
+/// One guard edge's term of the elastic energy.
+fn edge_energy_term(
+    position: &impl Fn(usize) -> CartesianPoint,
+    phase: ElasticBlockPhase,
+    context: &EnergyContext,
+    (left, right): (usize, usize),
+) -> Option<f64> {
     let edge_weight = match phase {
         ElasticBlockPhase::Untangle
         | ElasticBlockPhase::AngleFeasibility
         | ElasticBlockPhase::DelaunayVoronoiFeasibility => 0.001,
         ElasticBlockPhase::Interior => 0.01,
     };
-    for &(left, right) in guard_edges {
-        let length = arc_length_unit_sphere(mesh.vertices()[left], mesh.vertices()[right]);
-        let edge = (left.min(right), left.max(right));
-        let reference = *context.reference_edge_lengths.get(&edge)?;
-        if length <= 0.0 || reference <= 0.0 || !length.is_finite() || !reference.is_finite() {
-            return None;
-        }
-        energy += edge_weight * (length / reference).ln().powi(2);
+    let length = arc_length_unit_sphere(position(left), position(right));
+    let edge = (left.min(right), left.max(right));
+    let reference = *context.reference_edge_lengths.get(&edge)?;
+    if length <= 0.0 || reference <= 0.0 || !length.is_finite() || !reference.is_finite() {
+        return None;
     }
+    Some(edge_weight * (length / reference).ln().powi(2))
+}
+
+/// What the phase adds to the faces' and edges' energy: the crossing
+/// penalty while untangling, the dual terms after angle feasibility.
+#[allow(clippy::too_many_arguments)]
+fn elastic_energy_rest(
+    mesh: &MeshState,
+    phase: ElasticBlockPhase,
+    context: &EnergyContext,
+    guard_edges: &[(usize, usize)],
+    guard_seeds: &[(usize, usize)],
+    dual_pairs: &[DualPair],
+    crossing_index: Option<&EdgeCrossingIndex>,
+    mut energy: f64,
+) -> Option<f64> {
     if matches!(phase, ElasticBlockPhase::Untangle) {
         energy += 10_000.0
             * crossing_index.map_or_else(
@@ -3046,10 +3159,10 @@ struct EdgeCrossingQuery {
 
 impl EdgeCrossingIndex {
     fn new(mesh: &MeshState, edges: &[(usize, usize)]) -> Option<Self> {
+        // Each edge's cap on its own, in order: the same caps in parallel.
         let caps = edges
-            .iter()
-            .copied()
-            .map(|edge| edge_cap(mesh, edge))
+            .par_iter()
+            .map(|&edge| edge_cap(mesh, edge))
             .collect::<Option<Vec<_>>>()?;
         Some(Self {
             index: SphericalCapIndex::from_caps(caps.clone()),
@@ -4232,11 +4345,83 @@ fn finite_difference_gradient(
     // ponytail: finite differences keep PR29 auditable; replace with analytic
     // patch derivatives only if transition-local profiling shows this dominates.
     let epsilon = finite_difference_step(initial_step);
+    // The angle-feasibility energy is the faces' and edges' alone: each
+    // vertex's differences read the moved vertex through a position
+    // override and leave the mesh alone, so the vertices run in parallel.
+    // Each derivative is the same sum as moving the vertex in the mesh
+    // gives, bit for bit; the other phases read the mesh's own Voronoi
+    // cells or crossing index and stay serial.
+    if matches!(phase, ElasticBlockPhase::AngleFeasibility) {
+        let mesh: &MeshState = mesh;
+        return patch
+            .movable_compact_vertices
+            .par_iter()
+            .map(|&site| {
+                let local = context.derivatives.get(&site)?;
+                let point = mesh.vertices()[site];
+                let [first, second] = tangent_basis(point)?;
+                let energy_at = |moved: CartesianPoint| {
+                    face_edge_energy(
+                        mesh,
+                        |vertex| {
+                            if vertex == site {
+                                moved
+                            } else {
+                                mesh.vertices()[vertex]
+                            }
+                        },
+                        patch,
+                        phase,
+                        context,
+                        &local.guard_faces,
+                        &local.guard_edges,
+                    )
+                    .filter(|energy| energy.is_finite())
+                };
+                let base_energy = energy_at(point)?;
+                let derivative = |direction: CartesianPoint| {
+                    let plus = exponential_map(point, scale_point(direction, epsilon))?;
+                    let minus = exponential_map(point, scale_point(direction, -epsilon))?;
+                    match (energy_at(plus), energy_at(minus)) {
+                        (Some(plus), Some(minus)) => Some((plus - minus) / (2.0 * epsilon)),
+                        (Some(plus), None) => Some((plus - base_energy) / epsilon),
+                        (None, Some(minus)) => Some((base_energy - minus) / epsilon),
+                        (None, None) => None,
+                    }
+                };
+                let d_first = derivative(first)?;
+                let d_second = derivative(second)?;
+                Some((
+                    site,
+                    add_points(scale_point(first, d_first), scale_point(second, d_second)),
+                ))
+            })
+            .collect();
+    }
     let crossing_index = if matches!(phase, ElasticBlockPhase::Untangle) {
         Some(EdgeCrossingIndex::new(mesh, &context.guard_edges)?)
     } else {
         None
     };
+    serial_finite_difference_gradient(
+        mesh,
+        patch,
+        phase,
+        epsilon,
+        context,
+        crossing_index.as_ref(),
+    )
+}
+
+/// The gradient one vertex at a time, each moved in the mesh and back.
+fn serial_finite_difference_gradient(
+    mesh: &mut MeshState,
+    patch: &ElasticPatch,
+    phase: ElasticBlockPhase,
+    epsilon: f64,
+    context: &EnergyContext,
+    crossing_index: Option<&EdgeCrossingIndex>,
+) -> Option<Vec<(usize, CartesianPoint)>> {
     let mut gradient = Vec::with_capacity(patch.movable_compact_vertices.len());
     for &site in &patch.movable_compact_vertices {
         let local = context.derivatives.get(&site)?;
@@ -4252,7 +4437,7 @@ fn finite_difference_gradient(
                 &local.guard_edges,
                 &local.guard_seeds,
                 &local.dual_pairs,
-                crossing_index.as_ref(),
+                crossing_index,
             )
         };
         let base_energy = energy_at_current(mesh)?;
@@ -5062,6 +5247,265 @@ mod tests {
                 }
             }
         }
+    }
+
+    /// The angle-feasibility gradient runs its vertices in parallel through
+    /// a position override; it must equal moving each vertex in the mesh
+    /// one at a time, bit for bit.
+    #[test]
+    fn parallel_angle_gradient_equals_the_serial_one_bit_for_bit() {
+        let grid = MotherGrid::generate(8).unwrap();
+        let face = grid.mesh.active_triangle_slots().next().unwrap();
+        let centre = grid.mesh.triangles()[face][0];
+        let near = |site: usize| {
+            arc_length_unit_sphere(grid.mesh.vertices()[site], grid.mesh.vertices()[centre])
+        };
+        let radius = 3.5 * near(grid.mesh.triangles()[face][1]);
+        let movable = grid
+            .mesh
+            .active_vertex_slots()
+            .filter(|&site| near(site) <= radius)
+            .collect::<BTreeSet<_>>();
+        assert!(movable.len() > 20, "{}", movable.len());
+        let guard_faces = grid
+            .mesh
+            .active_triangle_slots()
+            .filter(|&face| {
+                grid.mesh.triangles()[face]
+                    .iter()
+                    .any(|s| movable.contains(s))
+            })
+            .collect::<Vec<_>>();
+        let fixed = guard_faces
+            .iter()
+            .flat_map(|&face| grid.mesh.triangles()[face])
+            .filter(|site| !movable.contains(site))
+            .collect::<BTreeSet<_>>();
+        let reference_positions = grid.mesh.vertices().to_vec();
+        let patch = ElasticPatch {
+            domain_id: GeometryDomainId::CurrentAnnulus,
+            topology: TransitionTopologyCandidate {
+                component_id: 1,
+                topology_id: 1,
+                core_parents: Vec::new(),
+                custom_transition_triangles: BTreeMap::new(),
+                source_triangles: guard_faces
+                    .iter()
+                    .map(|&face| grid.mesh.triangles()[face])
+                    .collect(),
+                source_active_vertices: movable.iter().chain(&fixed).copied().collect(),
+                source_degree_forecast: BTreeMap::new(),
+            },
+            reference_positions: reference_positions.clone(),
+            fixed_compact_vertices: fixed.into_iter().collect(),
+            movable_compact_vertices: movable.iter().copied().collect(),
+            guard_faces,
+            target_mode: ElasticTargetMode::TrialReference,
+            target_field: ElasticTargetField::default(),
+        };
+        let mut mesh = grid.mesh;
+        for (index, &site) in movable.iter().enumerate() {
+            let other = reference_positions[(site + 1 + index) % reference_positions.len()];
+            mesh.move_vertex(
+                site,
+                normalized_point(add_points(
+                    scale_point(reference_positions[site], 1.0),
+                    scale_point(other, 0.002 * (1.0 + (index % 3) as f64)),
+                ))
+                .unwrap(),
+            );
+        }
+        let context = EnergyContext::new(&mesh, &patch).unwrap();
+        let phase = ElasticBlockPhase::AngleFeasibility;
+        let parallel =
+            finite_difference_gradient(&mut mesh.clone(), &patch, phase, 0.01, &context).unwrap();
+        let serial = serial_finite_difference_gradient(
+            &mut mesh.clone(),
+            &patch,
+            phase,
+            finite_difference_step(0.01),
+            &context,
+            None,
+        )
+        .unwrap();
+        assert_eq!(parallel.len(), movable.len());
+        assert_eq!(parallel.len(), serial.len());
+        for ((left_site, left), (right_site, right)) in parallel.into_iter().zip(serial) {
+            assert_eq!(left_site, right_site);
+            assert_eq!(
+                [left.x, left.y, left.z].map(f64::to_bits),
+                [right.x, right.y, right.z].map(f64::to_bits)
+            );
+        }
+    }
+
+    /// The faces' and edges' energy as it was written before its terms were
+    /// worked out in parallel: one running sum, face by face, edge by edge.
+    fn face_edge_energy_oracle(
+        mesh: &MeshState,
+        patch: &ElasticPatch,
+        phase: ElasticBlockPhase,
+        context: &EnergyContext,
+        guard_faces: &[usize],
+        guard_edges: &[(usize, usize)],
+    ) -> Option<f64> {
+        let mut energy = 0.0;
+        let minimum_angle = (40.2 + GEOMETRY_INTERIOR_MARGIN_DEGREES).to_radians();
+        let maximum_angle = (79.8 - GEOMETRY_INTERIOR_MARGIN_DEGREES).to_radians();
+        for &face in guard_faces {
+            if !mesh.is_triangle_live(face) {
+                return None;
+            }
+            let triangle = mesh.triangles()[face];
+            let points = triangle.map(|site| mesh.vertices()[site]);
+            let [Some(a), Some(b), Some(c)] = points.map(normalized_point) else {
+                return None;
+            };
+            let determinant = dot(a, cross(b, c));
+            if !determinant.is_finite() {
+                return None;
+            }
+            if matches!(phase, ElasticBlockPhase::Untangle) {
+                energy += 1_000_000.0 * (1.0e-10 - determinant).max(0.0).powi(2);
+                continue;
+            }
+            if determinant <= 0.0 {
+                return None;
+            }
+            let angles = spherical_triangle_angles(points)?.map(f64::to_radians);
+            for corner in 0..3 {
+                let angle = angles[corner];
+                let site = triangle[corner];
+                let target = *context.target_angles.get(&site)?;
+                let below = (minimum_angle - angle).max(0.0);
+                let above = (angle - maximum_angle).max(0.0);
+                energy += 100.0 * (below * below + above * above);
+                match phase {
+                    ElasticBlockPhase::Untangle | ElasticBlockPhase::DelaunayVoronoiFeasibility => {
+                    }
+                    ElasticBlockPhase::AngleFeasibility => {
+                        if patch.target_mode.uses_hierarchy_area_degree() {
+                            energy += 0.001 * (angle - target).powi(2);
+                        }
+                    }
+                    ElasticBlockPhase::Interior => {
+                        let lower = angle - minimum_angle;
+                        let upper = maximum_angle - angle;
+                        if lower <= 0.0 || upper <= 0.0 {
+                            return None;
+                        }
+                        energy +=
+                            0.2 * (angle - target).powi(2) - 0.001 * (lower.ln() + upper.ln());
+                    }
+                }
+            }
+            if matches!(phase, ElasticBlockPhase::Interior) {
+                energy -= 0.0001 * determinant.ln();
+            }
+        }
+        let edge_weight = match phase {
+            ElasticBlockPhase::Untangle
+            | ElasticBlockPhase::AngleFeasibility
+            | ElasticBlockPhase::DelaunayVoronoiFeasibility => 0.001,
+            ElasticBlockPhase::Interior => 0.01,
+        };
+        for &(left, right) in guard_edges {
+            let length = arc_length_unit_sphere(mesh.vertices()[left], mesh.vertices()[right]);
+            let edge = (left.min(right), left.max(right));
+            let reference = *context.reference_edge_lengths.get(&edge)?;
+            if length <= 0.0 || reference <= 0.0 || !length.is_finite() || !reference.is_finite() {
+                return None;
+            }
+            energy += edge_weight * (length / reference).ln().powi(2);
+        }
+        Some(energy)
+    }
+
+    /// The faces' and edges' energy of a patch large enough for its terms
+    /// to be worked out in parallel equals the running sum it replaced, in
+    /// every phase, to the bit -- or is absent where that was.
+    #[test]
+    fn parallel_face_edge_energy_equals_the_running_sum_bit_for_bit() {
+        let grid = MotherGrid::generate(32).unwrap();
+        let guard_faces = grid.mesh.active_triangle_slots().collect::<Vec<_>>();
+        assert!(guard_faces.len() >= PARALLEL_ENERGY_TERMS);
+        let movable = grid
+            .mesh
+            .active_vertex_slots()
+            .filter(|site| site % 3 != 0)
+            .collect::<Vec<_>>();
+        let fixed = grid
+            .mesh
+            .active_vertex_slots()
+            .filter(|site| site % 3 == 0)
+            .collect::<Vec<_>>();
+        let reference_positions = grid.mesh.vertices().to_vec();
+        let patch = ElasticPatch {
+            domain_id: GeometryDomainId::CurrentAnnulus,
+            topology: TransitionTopologyCandidate {
+                component_id: 1,
+                topology_id: 1,
+                core_parents: Vec::new(),
+                custom_transition_triangles: BTreeMap::new(),
+                source_triangles: guard_faces
+                    .iter()
+                    .map(|&face| grid.mesh.triangles()[face])
+                    .collect(),
+                source_active_vertices: grid.mesh.active_vertex_slots().collect(),
+                source_degree_forecast: BTreeMap::new(),
+            },
+            reference_positions: reference_positions.clone(),
+            fixed_compact_vertices: fixed,
+            movable_compact_vertices: movable.clone(),
+            guard_faces: guard_faces.clone(),
+            target_mode: ElasticTargetMode::TrialReference,
+            target_field: ElasticTargetField::default(),
+        };
+        let mut mesh = grid.mesh;
+        for (index, &site) in movable.iter().enumerate() {
+            let other = reference_positions[(site * 7 + 3) % reference_positions.len()];
+            mesh.move_vertex(
+                site,
+                normalized_point(add_points(
+                    reference_positions[site],
+                    scale_point(other, 0.0005 * (1.0 + (index % 5) as f64)),
+                ))
+                .unwrap(),
+            );
+        }
+        let context = EnergyContext::new(&mesh, &patch).unwrap();
+        let mut compared = 0;
+        for phase in [
+            ElasticBlockPhase::Untangle,
+            ElasticBlockPhase::AngleFeasibility,
+            ElasticBlockPhase::DelaunayVoronoiFeasibility,
+            ElasticBlockPhase::Interior,
+        ] {
+            let parallel = face_edge_energy(
+                &mesh,
+                |site| mesh.vertices()[site],
+                &patch,
+                phase,
+                &context,
+                &context.guard_faces,
+                &context.guard_edges,
+            );
+            let oracle = face_edge_energy_oracle(
+                &mesh,
+                &patch,
+                phase,
+                &context,
+                &context.guard_faces,
+                &context.guard_edges,
+            );
+            assert_eq!(
+                parallel.map(f64::to_bits),
+                oracle.map(f64::to_bits),
+                "{phase:?}"
+            );
+            compared += usize::from(oracle.is_some());
+        }
+        assert!(compared >= 3, "only {compared} phases had an energy");
     }
 
     #[test]
