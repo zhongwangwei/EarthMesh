@@ -438,14 +438,24 @@ fn solve_transition_topology_from_cursor_with_promotion(
                     };
                     if let Some(reach) = repair {
                         match promote_pinched_core(patches, &mut core, &mut transition, reach) {
-                            Ok(true) => {
+                            Ok(PinchRepair::Promoted) => {
                                 match reach {
                                     None => halo_expansions += 1,
                                     Some(_) => pinch_repairs += 1,
                                 }
                                 continue;
                             }
-                            Ok(false) => {}
+                            Ok(PinchRepair::Nothing) => {}
+                            // Nothing would be left to coarsen: no topology,
+                            // as when a halo expansion leaves no core, and
+                            // the component stays as it is (guide 11.136).
+                            Ok(PinchRepair::WholeCore) => {
+                                end_or_fall_back!(TransitionTopologyOutcome::ProvenInfeasible {
+                                    states_examined,
+                                    halo_expansions,
+                                    reason: format!("every core parent is at a pinch ({reason})"),
+                                })
+                            }
                             Err(repair_reason) => {
                                 end_or_fall_back!(invalid(
                                     states_examined,
@@ -732,6 +742,18 @@ fn core_boundary(
         .collect()
 }
 
+/// What promoting the core parents at the core's pinches did.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PinchRepair {
+    /// They left the core for the transition.
+    Promoted,
+    /// There is no pinch, or a parent at one lies deeper than `reach`.
+    Nothing,
+    /// Every core parent is at a pinch -- two parents touching at a corner,
+    /// say -- so promoting them would leave nothing to coarsen.
+    WholeCore,
+}
+
 /// Promotes the core parents at every vertex where the core touches itself.
 /// With a `reach`, only when none of them lies deeper than it allows.
 fn promote_pinched_core(
@@ -739,10 +761,10 @@ fn promote_pinched_core(
     core: &mut BTreeSet<TriangleAddress>,
     transition: &mut BTreeSet<TriangleAddress>,
     reach: Option<(&BTreeMap<TriangleAddress, usize>, usize)>,
-) -> Result<bool, String> {
+) -> Result<PinchRepair, String> {
     let pinches = branched_boundary_vertices(coarse_boundary_edges(patches, core, transition)?);
     if pinches.is_empty() {
-        return Ok(false);
+        return Ok(PinchRepair::Nothing);
     }
     let promoted = core
         .iter()
@@ -753,19 +775,22 @@ fn promote_pinched_core(
                 .is_ok_and(|patch| patch.corners.iter().any(|corner| pinches.contains(corner)))
         })
         .collect::<BTreeSet<_>>();
-    if promoted.is_empty() || promoted.len() == core.len() {
-        return Ok(false);
+    if promoted.is_empty() {
+        return Ok(PinchRepair::Nothing);
+    }
+    if promoted.len() == core.len() {
+        return Ok(PinchRepair::WholeCore);
     }
     if let Some((depths, deepest)) = reach {
         if !promoted
             .iter()
             .all(|parent| depths.get(parent).is_some_and(|&depth| depth <= deepest))
         {
-            return Ok(false);
+            return Ok(PinchRepair::Nothing);
         }
     }
     promote_to_transition(core, transition, promoted);
-    Ok(true)
+    Ok(PinchRepair::Promoted)
 }
 
 fn retain_fine_at_pinches(
@@ -3601,6 +3626,71 @@ mod tests {
             assert_eq!(kept.candidate.topology_id, plain.candidate.topology_id);
             assert_eq!(kept.report.halo_expansions, 0);
         }
+    }
+
+    /// A core of two parents that touch at one corner has nothing left to
+    /// coarsen once the pinch is repaired: the search reports no topology,
+    /// as when a halo expansion leaves no core, not an invalid boundary
+    /// (the 100 km 30 m trial stopped at level 1 -> 0 on one).
+    #[test]
+    fn a_core_that_is_all_pinch_has_no_topology() {
+        let fine = MotherGrid::generate(64).unwrap();
+        let coarse = MotherGrid::generate(32).unwrap();
+        let patches = Patches::new(&fine);
+        let parents = coarse
+            .triangle_addresses
+            .iter()
+            .flatten()
+            .copied()
+            .filter(|parent| parent.base_face == 0 && parent.i >= 8 && parent.j >= 8)
+            .collect::<Vec<_>>();
+        let (first, second) = parents
+            .iter()
+            .find_map(|&first| {
+                let patch = patches.get(first).unwrap();
+                parents.iter().copied().find_map(|second| {
+                    let other = patches.get(second).unwrap();
+                    let shared = patch
+                        .corners
+                        .iter()
+                        .filter(|corner| other.corners.contains(corner))
+                        .count();
+                    (second != first && shared == 1 && !patch.neighbours.contains(&second))
+                        .then_some((first, second))
+                })
+            })
+            .unwrap();
+        let core = BTreeSet::from([first, second]);
+        let transition = core
+            .iter()
+            .flat_map(|&parent| patches.get(parent).unwrap().neighbours)
+            .filter(|parent| !core.contains(parent))
+            .collect::<BTreeSet<_>>();
+        let reason = boundary(&patches, &core, &transition).unwrap_err();
+        assert!(reason.starts_with("coarse inner boundary:"), "{reason}");
+        let component = HierarchyComponent {
+            id: 20,
+            parents: core.union(&transition).copied().collect(),
+            boundary_edges: Vec::new(),
+            core_parents: core.iter().copied().collect(),
+            transition_parents: transition.iter().copied().collect(),
+        };
+        let outcome = solve_transition_topology(
+            &fine,
+            &component,
+            TransitionTopologyLimits {
+                topology_states: 1_000,
+                maximum_halo_expansions: 3,
+            },
+        );
+        assert!(
+            matches!(
+                &outcome,
+                TransitionTopologyOutcome::ProvenInfeasible { reason, .. }
+                    if reason.starts_with("every core parent is at a pinch")
+            ),
+            "{outcome:?}"
+        );
     }
 
     /// A core with an interior parent left out, and a boundary parent whose
