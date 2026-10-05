@@ -1333,8 +1333,8 @@ impl ProductSearch<'_> {
         {
             forecast.apply_triangles(&self.variants[position][0], 1);
         }
-        let suffix_masks = suffix_degree_masks(&variables);
-        if !forecast.can_finish_all(&preassigned_touched, &suffix_masks[0]) {
+        let suffix_masks = SuffixDegreeMasks::new(&variables);
+        if !forecast.can_finish_all(&preassigned_touched, &suffix_masks, 0) {
             *self.enumeration_exhausted = true;
             *self.states = 0;
             return;
@@ -1353,7 +1353,7 @@ impl ProductSearch<'_> {
         loop {
             if position == variables.len() {
                 let touched = touched_vertices(&variables, &preassigned_touched);
-                if forecast.can_finish_all(&touched, &[]) {
+                if forecast.can_finish_all(&touched, &suffix_masks, variables.len()) {
                     if feasible_ordinal >= self.budget {
                         *self.states = self.budget;
                         return;
@@ -1442,7 +1442,7 @@ impl ProductSearch<'_> {
             let variable = &variables[position];
             let choice = &variable.variants[choice_index];
             forecast.apply_delta(&choice.delta, 1);
-            if forecast.can_finish_all(&variable.touched, &suffix_masks[position + 1]) {
+            if forecast.can_finish_all(&variable.touched, &suffix_masks, position + 1) {
                 chosen[variable.original_position] = Some(choice.variant_index);
                 position += 1;
                 if position < indices.len() {
@@ -1550,13 +1550,16 @@ impl DenseForecast {
         }
     }
 
-    fn can_finish_all(&self, vertices: &[usize], suffix_masks: &[(usize, u128)]) -> bool {
+    /// Whether every vertex can still reach a valid degree with what the
+    /// variables from `position` on may add to it.
+    fn can_finish_all(
+        &self,
+        vertices: &[usize],
+        suffix_masks: &SuffixDegreeMasks,
+        position: usize,
+    ) -> bool {
         vertices.iter().copied().all(|vertex| {
-            let mask = suffix_masks
-                .binary_search_by_key(&vertex, |&(candidate, _)| candidate)
-                .map(|index| suffix_masks[index].1)
-                .unwrap_or(1);
-            degree_mask_can_finish(self.degrees[vertex], mask)
+            degree_mask_can_finish(self.degrees[vertex], suffix_masks.mask(vertex, position))
         })
     }
 
@@ -1708,15 +1711,46 @@ fn touched_vertices(variables: &[SearchVariable], fixed: &[usize]) -> Vec<usize>
         .collect()
 }
 
-fn suffix_degree_masks(variables: &[SearchVariable]) -> Vec<Vec<(usize, u128)>> {
-    let mut suffix = vec![Vec::new(); variables.len() + 1];
-    for position in (0..variables.len()).rev() {
-        suffix[position] = combine_suffix_masks(
-            &local_degree_masks(&variables[position]),
-            &suffix[position + 1],
-        );
+/// What the variables from each position on may add to each vertex's
+/// degree, as bit masks (bit k: k more faces), kept per vertex (guide 11.128).
+/// Each vertex is touched by a handful of variables, so a vertex keeps the
+/// positions of those and the convolution of their masks from each one to
+/// the end. Merging every suffix into one list per position cost the square
+/// of the variables: a 100 km component held 400 GB and searched for 10
+/// minutes in them.
+struct SuffixDegreeMasks {
+    /// Vertex -> (position of a variable touching it, the convolution of
+    /// its mask and every later touching variable's), positions ascending.
+    by_vertex: HashMap<usize, Vec<(usize, u128)>>,
+}
+
+impl SuffixDegreeMasks {
+    fn new(variables: &[SearchVariable]) -> Self {
+        let mut by_vertex = HashMap::<usize, Vec<(usize, u128)>>::new();
+        for (position, variable) in variables.iter().enumerate() {
+            for (vertex, mask) in local_degree_masks(variable) {
+                by_vertex.entry(vertex).or_default().push((position, mask));
+            }
+        }
+        for touching in by_vertex.values_mut() {
+            let mut suffix = 1u128;
+            for (_, mask) in touching.iter_mut().rev() {
+                suffix = convolve_degree_masks(*mask, suffix);
+                *mask = suffix;
+            }
+        }
+        Self { by_vertex }
     }
-    suffix
+
+    /// What the variables at `position` and after may add to `vertex`: the
+    /// convolution of their masks, 1 (nothing) when none touches it.
+    fn mask(&self, vertex: usize, position: usize) -> u128 {
+        let Some(touching) = self.by_vertex.get(&vertex) else {
+            return 1;
+        };
+        let first = touching.partition_point(|&(at, _)| at < position);
+        touching.get(first).map_or(1, |&(_, mask)| mask)
+    }
 }
 
 fn local_degree_masks(variable: &SearchVariable) -> Vec<(usize, u128)> {
@@ -1736,39 +1770,6 @@ fn local_degree_masks(variable: &SearchVariable) -> Vec<(usize, u128)> {
             (vertex, mask)
         })
         .collect()
-}
-
-fn combine_suffix_masks(left: &[(usize, u128)], right: &[(usize, u128)]) -> Vec<(usize, u128)> {
-    let mut out = Vec::new();
-    let mut left_index = 0;
-    let mut right_index = 0;
-    while left_index < left.len() || right_index < right.len() {
-        let vertex = match (left.get(left_index), right.get(right_index)) {
-            (Some((left, _)), Some((right, _))) => (*left).min(*right),
-            (Some((left, _)), None) => *left,
-            (None, Some((right, _))) => *right,
-            (None, None) => unreachable!(),
-        };
-        let left_mask = if left.get(left_index).is_some_and(|&(v, _)| v == vertex) {
-            let mask = left[left_index].1;
-            left_index += 1;
-            mask
-        } else {
-            1
-        };
-        let right_mask = if right.get(right_index).is_some_and(|&(v, _)| v == vertex) {
-            let mask = right[right_index].1;
-            right_index += 1;
-            mask
-        } else {
-            1
-        };
-        let mask = convolve_degree_masks(left_mask, right_mask);
-        if mask != 1 {
-            out.push((vertex, mask));
-        }
-    }
-    out
 }
 
 fn convolve_degree_masks(left: u128, right: u128) -> u128 {
@@ -2825,6 +2826,108 @@ mod tests {
         }
     }
 
+    /// The suffix of every position merged into one list -- the
+    /// implementation `SuffixDegreeMasks` replaced, kept as its oracle.
+    fn merged_suffix_masks(variables: &[SearchVariable]) -> Vec<Vec<(usize, u128)>> {
+        let mut suffix = vec![Vec::new(); variables.len() + 1];
+        for position in (0..variables.len()).rev() {
+            suffix[position] = combine_suffix_masks(
+                &local_degree_masks(&variables[position]),
+                &suffix[position + 1],
+            );
+        }
+        suffix
+    }
+
+    fn combine_suffix_masks(left: &[(usize, u128)], right: &[(usize, u128)]) -> Vec<(usize, u128)> {
+        let mut out = Vec::new();
+        let mut left_index = 0;
+        let mut right_index = 0;
+        while left_index < left.len() || right_index < right.len() {
+            let vertex = match (left.get(left_index), right.get(right_index)) {
+                (Some((left, _)), Some((right, _))) => (*left).min(*right),
+                (Some((left, _)), None) => *left,
+                (None, Some((right, _))) => *right,
+                (None, None) => unreachable!(),
+            };
+            let left_mask = if left.get(left_index).is_some_and(|&(v, _)| v == vertex) {
+                let mask = left[left_index].1;
+                left_index += 1;
+                mask
+            } else {
+                1
+            };
+            let right_mask = if right.get(right_index).is_some_and(|&(v, _)| v == vertex) {
+                let mask = right[right_index].1;
+                right_index += 1;
+                mask
+            } else {
+                1
+            };
+            let mask = convolve_degree_masks(left_mask, right_mask);
+            if mask != 1 {
+                out.push((vertex, mask));
+            }
+        }
+        out
+    }
+
+    /// Per-vertex suffix masks are the merged ones, position for position
+    /// and vertex for vertex, on random variables.
+    #[test]
+    fn suffix_masks_per_vertex_are_the_merged_ones() {
+        let mut state = 0x2545_f491_4f6c_dd1du64;
+        let mut next = move |bound: u64| {
+            state ^= state << 13;
+            state ^= state >> 7;
+            state ^= state << 17;
+            state % bound
+        };
+        for round in 0..100 {
+            let vertices = 4 + next(30) as usize;
+            let variables = (0..next(40) as usize)
+                .map(|position| {
+                    let variants = (0..1 + next(4))
+                        .map(|variant_index| VariantChoice {
+                            variant_index: variant_index as usize,
+                            delta: (0..1 + next(5))
+                                .map(|_| (next(vertices as u64) as usize, 1 + next(3) as isize))
+                                .collect::<BTreeMap<_, _>>()
+                                .into_iter()
+                                .collect(),
+                        })
+                        .collect::<Vec<_>>();
+                    let touched = variants
+                        .iter()
+                        .flat_map(|choice| choice.delta.iter().map(|&(vertex, _)| vertex))
+                        .collect::<BTreeSet<_>>()
+                        .into_iter()
+                        .collect();
+                    SearchVariable {
+                        original_position: position,
+                        variants,
+                        touched,
+                    }
+                })
+                .collect::<Vec<_>>();
+            let merged = merged_suffix_masks(&variables);
+            let per_vertex = SuffixDegreeMasks::new(&variables);
+            for (position, list) in merged.iter().enumerate() {
+                for vertex in 0..vertices {
+                    let expected = list
+                        .binary_search_by_key(&vertex, |&(candidate, _)| candidate)
+                        .map(|index| list[index].1)
+                        .unwrap_or(1);
+                    assert_eq!(
+                        per_vertex.mask(vertex, position),
+                        expected,
+                        "round {round} position {position} vertex {vertex}"
+                    );
+                }
+            }
+        }
+    }
+
     #[test]
     fn degree_prefix_bounds_keep_later_repairable_candidates() {
         let variants = vec![
@@ -2849,7 +2952,7 @@ mod tests {
         ];
         let mut chosen = vec![None; variants.len()];
         let (variables, fixed) = search_variables(&variants, &parents, &mut chosen);
-        let suffix = suffix_degree_masks(&variables);
+        let suffix = SuffixDegreeMasks::new(&variables);
         let mut forecast = DenseForecast::new(
             7,
             &BTreeMap::from([(1, 4), (2, 4), (3, 4), (4, 4), (5, 4), (6, 4)]),
@@ -2861,7 +2964,7 @@ mod tests {
         {
             forecast.apply_triangles(&variants[position][0], 1);
         }
-        assert!(forecast.can_finish_all(&fixed, &suffix[0]));
+        assert!(forecast.can_finish_all(&fixed, &suffix, 0));
 
         let repair = variables[0]
             .variants
@@ -2869,7 +2972,7 @@ mod tests {
             .find(|choice| choice.variant_index == 0)
             .unwrap();
         forecast.apply_delta(&repair.delta, 1);
-        assert!(forecast.can_finish_all(&variables[0].touched, &[]));
+        assert!(forecast.can_finish_all(&variables[0].touched, &suffix, variables.len()));
         forecast.apply_delta(&repair.delta, -1);
 
         let bad = variables[0]
@@ -2878,7 +2981,7 @@ mod tests {
             .find(|choice| choice.variant_index == 1)
             .unwrap();
         forecast.apply_delta(&bad.delta, 1);
-        assert!(!forecast.can_finish_all(&variables[0].touched, &[]));
+        assert!(!forecast.can_finish_all(&variables[0].touched, &suffix, variables.len()));
     }
 
     fn retirement_family_fixture() -> (
