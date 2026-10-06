@@ -209,20 +209,16 @@ fn restore_backups(backups: &[(PathBuf, PathBuf, bool)]) -> io::Result<()> {
 mod tests {
     use super::*;
 
+    /// A character device stands in for every special file: a socket in the
+    /// temporary directory needs its path to fit `sun_path` (104 bytes on
+    /// macOS, 108 on Linux), which a job runner's private TMPDIR exceeds.
     #[cfg(unix)]
     #[test]
     fn output_destination_rejects_special_files() {
-        let dir =
-            std::env::temp_dir().join(format!("earthmesh-special-output-{}", std::process::id()));
-        fs::create_dir_all(&dir).unwrap();
-        let output = dir.join("socket");
-        let socket = std::os::unix::net::UnixListener::bind(&output).unwrap();
-        assert!(validate_output_destination(&output)
+        assert!(validate_output_destination(Path::new("/dev/null"))
             .unwrap_err()
             .to_string()
             .contains("regular file"));
-        drop(socket);
-        fs::remove_dir_all(dir).unwrap();
     }
 
     #[test]
