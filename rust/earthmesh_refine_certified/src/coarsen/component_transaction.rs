@@ -4,7 +4,7 @@
 //! only transition coordinates, then the normal geometry/final-cell/remap gates
 //! decide whether the cloned state is committed.
 
-use super::elastic_block::{solve_elastic_patch_scoped, GeometryScope};
+use super::elastic_block::{solve_elastic_patch_scoped, GeometryFailureWitness, GeometryScope};
 use super::transition_topology::{
     angle_between, hierarchy_parent_neighbours, parent_edge_angle, RetryFocus, RetryRequest,
 };
@@ -64,6 +64,71 @@ fn final_movable_positions(
             Some((source, witness.mesh.mesh.vertices()[compact]))
         })
         .collect()
+}
+
+/// A failed solve is a near miss when no guard face's angles lie more than
+/// this outside the certificate's window, in degrees: the 100 km 30 m trial
+/// spent its last candidates at level 3 -> 2 between 0.02 and 0.08 out,
+/// one place at a time (guide 11.137).
+const NEAR_MISS_DEGREES: f64 = 0.1;
+/// Places a stalled near miss is retried at in one candidate, its worst
+/// included.
+const NEAR_MISS_PLACES: usize = 16;
+/// A near miss has stalled when its worst face is still more than this
+/// share of the previous near miss's outside the window.
+const NEAR_MISS_STALL: f64 = 0.9;
+
+/// How far a near miss missed, and where: its worst excess in degrees and
+/// the guard faces outside the window, worst first.
+#[derive(Debug, Clone, PartialEq)]
+struct NearMiss {
+    worst: f64,
+    faces: Vec<usize>,
+}
+
+/// The guard faces a failed solve left outside the certificate's window,
+/// when it is a near miss (`NEAR_MISS_DEGREES`); `None` when a face lies
+/// farther out or is not positive, or none lies out at all.
+fn near_miss(witness: &GeometryFailureWitness, certificate: &Certificate) -> Option<NearMiss> {
+    let mesh = &witness.mesh.mesh;
+    let mut outside = Vec::new();
+    for &face in &witness.patch.guard_faces {
+        let points = mesh.triangles()[face].map(|site| mesh.vertices()[site]);
+        if earthmesh_mesh::orientation_on_sphere(points[0], points[1], points[2])
+            != Ok(earthmesh_mesh::Sign::Positive)
+        {
+            return None;
+        }
+        let angles = crate::certificate::spherical_triangle_angles(points)?;
+        let smallest = angles.iter().copied().fold(f64::INFINITY, f64::min);
+        let largest = angles.iter().copied().fold(f64::NEG_INFINITY, f64::max);
+        let excess =
+            (certificate.min_angle_degrees - smallest).max(largest - certificate.max_angle_degrees);
+        if excess > NEAR_MISS_DEGREES {
+            return None;
+        }
+        if excess > 0.0 {
+            outside.push((excess, face));
+        }
+    }
+    outside.sort_by(|left, right| right.0.total_cmp(&left.0).then(left.1.cmp(&right.1)));
+    let worst = outside.first()?.0;
+    Some(NearMiss {
+        worst,
+        faces: outside.into_iter().map(|(_, face)| face).collect(),
+    })
+}
+
+/// Whether a near miss has stalled: the candidate before was a near miss
+/// too, and the worst face came less than a tenth of the way in
+/// (`NEAR_MISS_STALL`). One near miss alone is retried at its worst place,
+/// as any failure is: at 40 km that passed, where promoting all sixteen
+/// places changed the next level enough to cost it four failures.
+fn near_miss_stalled(current: Option<&NearMiss>, previous: Option<f64>) -> bool {
+    match (current, previous) {
+        (Some(current), Some(previous)) => current.worst > NEAR_MISS_STALL * previous,
+        _ => false,
+    }
 }
 
 /// What an elastic solve did, for the timing log: how it ended, its
@@ -536,6 +601,9 @@ pub(super) fn solve_component_transaction_at_level(
     let mut last_retry: Option<(ComponentTransactionStage, String)> = None;
     let mut last_elastic_budget_failure: Option<String> = None;
     let mut preferred_core_promotion = None;
+    // A near miss's other places (guide 11.137), promoted with the worst.
+    let mut other_core_promotions = Vec::<TriangleAddress>::new();
+    let mut previous_near_miss = None::<f64>;
     // A retried candidate differs from the failed one only near the failure
     // (guide 11.126): its solve starts where the failed one stopped.
     let mut warm_start = None::<BTreeMap<usize, CartesianPoint>>;
@@ -570,11 +638,17 @@ pub(super) fn solve_component_transaction_at_level(
     };
 
     loop {
-        let preferred_promotion_with_cost = preferred_core_promotion.and_then(|parent| {
+        let with_cost = |parent: TriangleAddress| {
             let depth = promotion_depths.get(&parent).copied()?;
             (depth <= limits.halo_expansions)
                 .then_some((parent, depth.saturating_sub(halo_expansion_offset)))
-        });
+        };
+        let preferred_promotion_with_cost = preferred_core_promotion.and_then(with_cost);
+        let other_promotions_with_cost = other_core_promotions
+            .iter()
+            .copied()
+            .filter_map(with_cost)
+            .collect::<Vec<_>>();
         // Start topology timing exactly at the solver call; failed-candidate
         // bookkeeping from the previous iteration is deliberately uncharged.
         let mut phase_started = Instant::now();
@@ -590,6 +664,7 @@ pub(super) fn solve_component_transaction_at_level(
             topology_cursor,
             RetryRequest {
                 promotion: preferred_promotion_with_cost,
+                also: &other_promotions_with_cost,
                 reach: Some((&promotion_depths, limits.halo_expansions)),
                 focus: focus.as_ref().filter(|_| limits.retry_at_failure),
             },
@@ -834,6 +909,30 @@ pub(super) fn solve_component_transaction_at_level(
                 preferred_core_promotion = failure.failed_guard_face.and_then(|face| {
                     preferred_core_promotion_for_face(&candidate_state.mesh, &transition, face)
                 });
+                // A near miss is retried at every place it missed, not one
+                // a candidate (guide 11.137).
+                other_core_promotions.clear();
+                let stalled = near_miss_stalled(failure.near_miss.as_deref(), previous_near_miss);
+                previous_near_miss = failure.near_miss.as_ref().map(|miss| miss.worst);
+                let places = failure
+                    .near_miss
+                    .as_ref()
+                    .filter(|_| stalled)
+                    .map_or(&[][..], |miss| &miss.faces[..]);
+                for &face in places {
+                    if other_core_promotions.len() + 1 >= NEAR_MISS_PLACES {
+                        break;
+                    }
+                    if let Some(parent) =
+                        preferred_core_promotion_for_face(&candidate_state.mesh, &transition, face)
+                    {
+                        if Some(parent) != preferred_core_promotion
+                            && !other_core_promotions.contains(&parent)
+                        {
+                            other_core_promotions.push(parent);
+                        }
+                    }
+                }
                 if timing_enabled {
                     eprintln!(
                         "earthmesh_cli: cmrc_detail phase=retry_place component={} {} \
@@ -1025,6 +1124,9 @@ struct CandidateAttemptFailure {
     /// Where a failed elastic solve left its movable vertices, by source
     /// slot: the next candidate's solve starts there.
     warm_positions: Option<BTreeMap<usize, CartesianPoint>>,
+    /// How far a near miss missed, and where (`near_miss`); boxed, as the
+    /// failure is returned by value.
+    near_miss: Option<Box<NearMiss>>,
 }
 
 impl CandidateAttemptFailure {
@@ -1037,6 +1139,7 @@ impl CandidateAttemptFailure {
             interval_boxes: 0,
             failed_guard_face: None,
             warm_positions: None,
+            near_miss: None,
         }
     }
 
@@ -1049,6 +1152,7 @@ impl CandidateAttemptFailure {
             interval_boxes: 0,
             failed_guard_face: None,
             warm_positions: None,
+            near_miss: None,
         }
     }
 
@@ -1061,6 +1165,7 @@ impl CandidateAttemptFailure {
             interval_boxes: 0,
             failed_guard_face: None,
             warm_positions: None,
+            near_miss: None,
         }
     }
 }
@@ -1196,6 +1301,8 @@ fn certify_candidate(
                 failure.elastic_iterations = iterations;
                 failure.failed_guard_face = failed_guard_face;
                 failure.warm_positions = Some(final_movable_positions(&witness));
+                failure.near_miss =
+                    near_miss(&witness, &Certificate::internal_for(angle_contract)).map(Box::new);
                 return Err(failure);
             }
             ElasticBlockOutcome::SearchBudgetExhausted {
@@ -1219,6 +1326,8 @@ fn certify_candidate(
                 failure.elastic_iterations = iterations;
                 failure.failed_guard_face = failed_guard_face;
                 failure.warm_positions = Some(final_movable_positions(&witness));
+                failure.near_miss =
+                    near_miss(&witness, &Certificate::internal_for(angle_contract)).map(Box::new);
                 return Err(failure);
             }
             ElasticBlockOutcome::InvalidPatch { reason } => {
@@ -2052,6 +2161,164 @@ fn target_levels_for(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A disk of movable vertices, eight edges across from its centre, on a
+    /// near-equilateral grid: every face well inside the window.
+    fn near_miss_disk() -> (HierarchyLeafMesh, ElasticPatch, usize) {
+        let grid = MotherGrid::generate(32).unwrap();
+        let face = grid.mesh.active_triangle_slots().next().unwrap();
+        let centre = grid.mesh.triangles()[face][0];
+        let edge = angle_between(
+            grid.mesh.vertices()[centre],
+            grid.mesh.vertices()[grid.mesh.triangles()[face][1]],
+        );
+        let movable = grid
+            .mesh
+            .active_vertex_slots()
+            .filter(|&site| {
+                angle_between(grid.mesh.vertices()[site], grid.mesh.vertices()[centre])
+                    <= 8.0 * edge
+            })
+            .collect::<BTreeSet<_>>();
+        let guard_faces = grid
+            .mesh
+            .active_triangle_slots()
+            .filter(|&face| {
+                grid.mesh.triangles()[face]
+                    .iter()
+                    .any(|site| movable.contains(site))
+            })
+            .collect::<Vec<_>>();
+        let fixed = guard_faces
+            .iter()
+            .flat_map(|&face| grid.mesh.triangles()[face])
+            .filter(|site| !movable.contains(site))
+            .collect::<BTreeSet<_>>();
+        let mesh = HierarchyLeafMesh {
+            mesh: grid.mesh.clone(),
+            triangle_addresses: grid.triangle_addresses.clone(),
+            source_vertex_slots: (0..grid.mesh.vertices().len())
+                .map(|site| grid.mesh.is_vertex_live(site).then_some(site))
+                .collect(),
+        };
+        let patch = ElasticPatch {
+            domain_id: GeometryDomainId::CurrentAnnulus,
+            topology: TransitionTopologyCandidate {
+                component_id: 1,
+                topology_id: 1,
+                core_parents: Vec::new(),
+                custom_transition_triangles: BTreeMap::new(),
+                source_triangles: Vec::new(),
+                source_active_vertices: movable.iter().chain(&fixed).copied().collect(),
+                source_degree_forecast: BTreeMap::new(),
+            },
+            reference_positions: grid.mesh.vertices().to_vec(),
+            fixed_compact_vertices: fixed.into_iter().collect(),
+            movable_compact_vertices: movable.into_iter().collect(),
+            guard_faces,
+            target_mode: ElasticTargetMode::TrialReference,
+            target_field: ElasticTargetField::default(),
+        };
+        (mesh, patch, centre)
+    }
+
+    /// A failed solve is a near miss when every guard face lies within
+    /// `NEAR_MISS_DEGREES` of the window: its faces outside it are listed,
+    /// worst first. A face farther out, or none out at all, lists nothing.
+    #[test]
+    fn a_near_miss_lists_the_faces_it_left_outside_the_window() {
+        let (mesh, patch, centre) = near_miss_disk();
+        let certificate = Certificate::internal_for(AngleContractId::DomainQuality38To82V1);
+        let neighbour = mesh
+            .mesh
+            .active_triangle_slots()
+            .find_map(|face| {
+                let triangle = mesh.mesh.triangles()[face];
+                triangle
+                    .contains(&centre)
+                    .then(|| *triangle.iter().find(|&&site| site != centre).unwrap())
+            })
+            .unwrap();
+        let moved = |fraction: f64| {
+            let mut moved = mesh.clone();
+            let [a, b] = [
+                mesh.mesh.vertices()[centre],
+                mesh.mesh.vertices()[neighbour],
+            ];
+            let point = CartesianPoint::new(
+                a.x + fraction * (b.x - a.x),
+                a.y + fraction * (b.y - a.y),
+                a.z + fraction * (b.z - a.z),
+            );
+            let norm = (point.x * point.x + point.y * point.y + point.z * point.z).sqrt();
+            moved.mesh.move_vertex(
+                centre,
+                CartesianPoint::new(point.x / norm, point.y / norm, point.z / norm),
+            );
+            GeometryFailureWitness {
+                mesh: moved,
+                patch: patch.clone(),
+            }
+        };
+        let excess = |witness: &GeometryFailureWitness| {
+            witness
+                .patch
+                .guard_faces
+                .iter()
+                .map(|&face| {
+                    let angles = crate::certificate::spherical_triangle_angles(
+                        witness.mesh.mesh.triangles()[face]
+                            .map(|site| witness.mesh.mesh.vertices()[site]),
+                    )
+                    .unwrap();
+                    let smallest = angles.iter().copied().fold(f64::INFINITY, f64::min);
+                    let largest = angles.iter().copied().fold(f64::NEG_INFINITY, f64::max);
+                    (certificate.min_angle_degrees - smallest)
+                        .max(largest - certificate.max_angle_degrees)
+                })
+                .fold(f64::NEG_INFINITY, f64::max)
+        };
+        // The fraction at which the worst face lies `target` outside.
+        let fraction_for = |target: f64| {
+            let (mut low, mut high) = (0.0, 0.45);
+            for _ in 0..60 {
+                let middle = 0.5 * (low + high);
+                if excess(&moved(middle)) < target {
+                    low = middle;
+                } else {
+                    high = middle;
+                }
+            }
+            0.5 * (low + high)
+        };
+        assert_eq!(near_miss(&moved(0.0), &certificate), None);
+        let near = moved(fraction_for(0.5 * NEAR_MISS_DEGREES));
+        let miss = near_miss(&near, &certificate).expect("a near miss");
+        assert!(miss.worst > 0.0 && miss.worst <= NEAR_MISS_DEGREES);
+        let faces = miss.faces;
+        assert!(!faces.is_empty());
+        assert!(faces
+            .iter()
+            .all(|face| near.mesh.mesh.triangles()[*face].contains(&centre)));
+        let far = moved(fraction_for(2.0 * NEAR_MISS_DEGREES));
+        assert!(excess(&far) > NEAR_MISS_DEGREES);
+        assert_eq!(near_miss(&far, &certificate), None);
+    }
+
+    /// A near miss has stalled only when the candidate before was one too
+    /// and the worst face came less than a tenth of the way in.
+    #[test]
+    fn a_near_miss_stalls_only_after_another_that_came_no_nearer() {
+        let miss = |worst| NearMiss {
+            worst,
+            faces: vec![1],
+        };
+        assert!(!near_miss_stalled(None, Some(0.05)));
+        assert!(!near_miss_stalled(Some(&miss(0.05)), None));
+        assert!(!near_miss_stalled(Some(&miss(0.04)), Some(0.08)));
+        assert!(near_miss_stalled(Some(&miss(0.0192)), Some(0.0193)));
+        assert!(near_miss_stalled(Some(&miss(0.06)), Some(0.05)));
+    }
 
     #[test]
     fn mixed_component_certifies_only_its_transition_neighbourhood() {

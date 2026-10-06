@@ -26,6 +26,10 @@ pub(super) struct RetryRequest<'a> {
     /// The core parent nearest the failed face, and the halo expansions
     /// its promotion costs.
     pub promotion: Option<(TriangleAddress, usize)>,
+    /// A near miss's other places (guide 11.137): the core parents nearest
+    /// its other faces outside the window, worst first, with their costs.
+    /// Each is promoted with `promotion` where it pinches nothing.
+    pub also: &'a [(TriangleAddress, usize)],
     /// How deep a failure's promotion may reach: every parent's ring
     /// distance from the component's first transition ring, and the deepest
     /// ring allowed. Lets the promotion repair the pinch it makes once the
@@ -269,22 +273,41 @@ fn solve_transition_topology_from_cursor_with_promotion(
     let mut pinch_repairs = 0usize;
     if let Some(preferred) = preferred_core_promotion.filter(|_| promote_first) {
         let kept = (core.clone(), transition.clone());
-        let promoted = promote_preferred_segment(
+        let mut promoted = promote_preferred_segment(
             patches,
             &mut core,
             &mut transition,
             preferred,
             limits.maximum_halo_expansions,
         );
+        let mut places = usize::from(promoted.is_some());
+        if let Some(cost) = promoted.as_mut().filter(|_| !request.also.is_empty()) {
+            match promote_other_places(
+                patches,
+                &mut core,
+                &mut transition,
+                request.also,
+                limits.maximum_halo_expansions,
+            ) {
+                Ok((others, deepest)) => {
+                    places += others;
+                    *cost = (*cost).max(deepest);
+                }
+                Err(reason) => {
+                    return invalid(0, 0, reason);
+                }
+            }
+        }
         if crate::construction::cmrc_timing_enabled() {
             eprintln!(
                 "earthmesh_cli: cmrc_detail phase=promotion component={} preferred={:?} \
-                 cost={} remaining={} promoted={}",
+                 cost={} remaining={} promoted={} places={places} asked={}",
                 component.id,
                 preferred.0,
                 preferred.1,
                 limits.maximum_halo_expansions,
-                kept.0.len() - core.len()
+                kept.0.len() - core.len(),
+                1 + request.also.len()
             );
         }
         if let Some(cost) = promoted {
@@ -695,6 +718,101 @@ fn promote_preferred_segment(
     let segment = preferred_boundary_segment(patches, &peel, transition, preferred)?;
     promote_to_transition(core, transition, segment);
     Some(cost)
+}
+
+/// Promotes a near miss's other places (guide 11.137) after its worst
+/// one: each parent still on the core boundary takes its boundary segment
+/// into the transition, as the worst place's did, unless that pinches the
+/// core at one of the segment's corners -- then it is put back. Returns how
+/// many places were promoted and the dearest one's cost.
+fn promote_other_places(
+    patches: &Patches<'_>,
+    core: &mut BTreeSet<TriangleAddress>,
+    transition: &mut BTreeSet<TriangleAddress>,
+    others: &[(TriangleAddress, usize)],
+    remaining_halo_expansions: usize,
+) -> Result<(usize, usize), String> {
+    let mut peel = core_boundary(patches, core);
+    let (mut places, mut deepest) = (0, 0);
+    for &(other, cost) in others {
+        if cost > remaining_halo_expansions || !core.contains(&other) || !peel.contains(&other) {
+            continue;
+        }
+        let Some(segment) = preferred_boundary_segment(patches, &peel, transition, other) else {
+            continue;
+        };
+        let segment = segment
+            .into_iter()
+            .filter(|parent| core.contains(parent))
+            .collect::<BTreeSet<_>>();
+        if segment.len() >= core.len() {
+            continue;
+        }
+        promote_to_transition(core, transition, segment.clone());
+        if pinches_at(patches, core, transition, &segment)? {
+            for parent in &segment {
+                transition.remove(parent);
+                core.insert(*parent);
+            }
+            continue;
+        }
+        for parent in &segment {
+            peel.remove(parent);
+            for neighbour in patches.get(*parent)?.neighbours {
+                if core.contains(&neighbour) {
+                    peel.insert(neighbour);
+                }
+            }
+        }
+        places += 1;
+        deepest = deepest.max(cost);
+    }
+    Ok((places, deepest))
+}
+
+/// Whether the coarse boundary branches at a corner of `segment`, the only
+/// place promoting it can pinch the core. The core parents round such a
+/// corner lie within three sides of the segment, so only their boundary
+/// edges are read.
+fn pinches_at(
+    patches: &Patches<'_>,
+    core: &BTreeSet<TriangleAddress>,
+    transition: &BTreeSet<TriangleAddress>,
+    segment: &BTreeSet<TriangleAddress>,
+) -> Result<bool, String> {
+    let mut corners = BTreeSet::new();
+    for parent in segment {
+        corners.extend(patches.get(*parent)?.corners);
+    }
+    let mut seen = segment.clone();
+    let mut frontier = segment.iter().copied().collect::<Vec<_>>();
+    let mut near = BTreeSet::new();
+    for _ in 0..3 {
+        let mut next = Vec::new();
+        for parent in frontier {
+            for neighbour in patches.get(parent)?.neighbours {
+                if !neighbour.is_outside() && seen.insert(neighbour) {
+                    next.push(neighbour);
+                    if core.contains(&neighbour) {
+                        near.insert(neighbour);
+                    }
+                }
+            }
+        }
+        frontier = next;
+    }
+    let mut edges = Vec::new();
+    for parent in near {
+        let patch = patches.get(parent)?;
+        for side in 0..3 {
+            if transition.contains(&patch.neighbours[side]) {
+                edges.push((patch.corners[(side + 1) % 3], patch.corners[side]));
+            }
+        }
+    }
+    Ok(branched_boundary_vertices(edges)
+        .iter()
+        .any(|vertex| corners.contains(vertex)))
 }
 
 fn preferred_boundary_segment(
@@ -3628,6 +3746,83 @@ mod tests {
         }
     }
 
+    /// A near miss is retried at every place it missed (guide 11.137): the
+    /// search promotes the other places' boundary segments with the worst
+    /// one's, and leaves out a place whose segment would pinch the core.
+    #[test]
+    fn a_near_miss_promotes_its_other_places_where_they_pinch_nothing() {
+        let (fine, component, pinching) = pinching_promotion();
+        let patches = Patches::new(&fine);
+        let core = component
+            .core_parents
+            .iter()
+            .copied()
+            .collect::<BTreeSet<_>>();
+        let transition = component
+            .transition_parents
+            .iter()
+            .copied()
+            .collect::<BTreeSet<_>>();
+        let peel = core_boundary(&patches, &core);
+        let clean = |parent: TriangleAddress| {
+            preferred_boundary_segment(&patches, &peel, &transition, parent).filter(|segment| {
+                boundary(
+                    &patches,
+                    &core.difference(segment).copied().collect(),
+                    &transition.union(segment).copied().collect(),
+                )
+                .is_ok()
+            })
+        };
+        let far =
+            |a: TriangleAddress, b: TriangleAddress| a.i.abs_diff(b.i) + a.j.abs_diff(b.j) >= 6;
+        let worst = peel
+            .iter()
+            .copied()
+            .find(|&parent| far(parent, pinching) && clean(parent).is_some())
+            .unwrap();
+        let other = peel
+            .iter()
+            .copied()
+            .find(|&parent| far(parent, pinching) && far(parent, worst) && clean(parent).is_some())
+            .unwrap();
+        let limits = TransitionTopologyLimits {
+            topology_states: 1_000,
+            maximum_halo_expansions: 1,
+        };
+        let core_after = |also: &[(TriangleAddress, usize)]| {
+            let TransitionTopologyOutcome::Closed(trial) =
+                solve_transition_topology_from_cursor_with_promotion(
+                    &fine,
+                    &component,
+                    limits,
+                    1,
+                    RetryRequest {
+                        promotion: Some((worst, 0)),
+                        also,
+                        ..RetryRequest::default()
+                    },
+                    true,
+                )
+            else {
+                panic!("the promoted layout must close");
+            };
+            trial
+                .candidate
+                .core_parents
+                .into_iter()
+                .collect::<BTreeSet<_>>()
+        };
+        let alone = core_after(&[]);
+        assert!(!alone.contains(&worst) && alone.contains(&other));
+        let both = core_after(&[(other, 0)]);
+        assert!(!both.contains(&worst) && !both.contains(&other));
+        assert!(both.is_subset(&alone));
+        let pinched = core_after(&[(pinching, 0)]);
+        assert!(!pinched.contains(&worst) && pinched.contains(&pinching));
+        assert_eq!(pinched, alone);
+    }
+
     /// A core of two parents that touch at one corner has nothing left to
     /// coarsen once the pinch is repaired: the search reports no topology,
     /// as when a halo expansion leaves no core, not an invalid boundary
@@ -3804,6 +3999,7 @@ mod tests {
                 limits,
                 1,
                 RetryRequest {
+                    also: &[],
                     promotion: Some((preferred, 1)),
                     reach,
                     focus: None,
