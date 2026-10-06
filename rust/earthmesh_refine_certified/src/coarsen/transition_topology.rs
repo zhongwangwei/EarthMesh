@@ -1813,6 +1813,7 @@ impl ProductSearch<'_> {
             return;
         }
         *self.states = self.start_index;
+        let mut gate_failures = 0usize;
 
         let mut forecast = DenseForecast::new(self.source.mesh.vertices().len(), self.forecast);
         let mut chosen = vec![None; self.variants.len()];
@@ -1846,6 +1847,11 @@ impl ProductSearch<'_> {
             .budget
             .saturating_mul(variables.len().max(1))
             .saturating_mul(64);
+        // Where the work went when it runs out, for the timing log: the
+        // deepest position the search reached, and how often each position
+        // ran out of choices.
+        let mut deepest = 0usize;
+        let mut dead_ends = vec![0u32; variables.len()];
 
         loop {
             if position == variables.len() {
@@ -1879,48 +1885,62 @@ impl ProductSearch<'_> {
                     }
                     let chosen_by_parent = self.chosen_by_parent(&chosen);
                     let chosen_triangles = flatten_custom_triangles(&chosen_by_parent);
-                    if let Ok(mesh) =
+                    let rebuilt =
                         super::core_condensation::rebuild_from_leaf_set_with_custom_triangles(
                             self.source,
                             self.leaf_set,
                             self.transition,
                             &chosen_triangles,
-                        )
-                    {
-                        if let Ok(()) = hard_gate(self.source, &mesh) {
-                            let hit = SearchHit {
-                                mesh,
-                                triangles_by_parent: chosen_by_parent,
-                                triangles: chosen_triangles,
-                                degree_forecast: forecast.to_map(self.forecast),
-                                topology_id: feasible_ordinal,
-                                retired: false,
-                            };
-                            if self.substrate_selection.is_some() {
-                                let selected = self.consider_retirement_substrate(&hit);
-                                feasible_ordinal = feasible_ordinal.saturating_add(1);
-                                if selected {
-                                    *self.states = feasible_ordinal;
-                                    return;
-                                }
-                                if feasible_ordinal >= self.budget {
-                                    *self.states = self.budget;
-                                    *self.enumeration_exhausted = true;
-                                    return;
-                                }
-                                if !backtrack(&mut position, &mut forecast, &mut chosen, &variables)
-                                {
-                                    *self.states = feasible_ordinal;
-                                    *self.enumeration_exhausted = true;
-                                    return;
-                                }
-                                continue;
-                            }
-                            if feasible_ordinal >= self.start_index {
-                                *self.states = feasible_ordinal.saturating_add(1);
-                                *self.closed = Some(hit);
+                        );
+                    // Why a degree-feasible state was turned down: the
+                    // first few per search, for the timing log.
+                    let gate = rebuilt
+                        .as_ref()
+                        .map_err(|reason| format!("rebuild: {reason}"))
+                        .and_then(|mesh| hard_gate(self.source, mesh));
+                    if let Err(reason) = &gate {
+                        if crate::construction::cmrc_timing_enabled() && gate_failures < 3 {
+                            gate_failures += 1;
+                            eprintln!(
+                                "earthmesh_cli: cmrc_detail phase=hard_gate_failure state={feasible_ordinal} \
+                                 transition_parents={} reason={}",
+                                self.transition.len(),
+                                reason.chars().take(400).collect::<String>()
+                            );
+                        }
+                    }
+                    if let (Ok(mesh), Ok(())) = (rebuilt, gate) {
+                        let hit = SearchHit {
+                            mesh,
+                            triangles_by_parent: chosen_by_parent,
+                            triangles: chosen_triangles,
+                            degree_forecast: forecast.to_map(self.forecast),
+                            topology_id: feasible_ordinal,
+                            retired: false,
+                        };
+                        if self.substrate_selection.is_some() {
+                            let selected = self.consider_retirement_substrate(&hit);
+                            feasible_ordinal = feasible_ordinal.saturating_add(1);
+                            if selected {
+                                *self.states = feasible_ordinal;
                                 return;
                             }
+                            if feasible_ordinal >= self.budget {
+                                *self.states = self.budget;
+                                *self.enumeration_exhausted = true;
+                                return;
+                            }
+                            if !backtrack(&mut position, &mut forecast, &mut chosen, &variables) {
+                                *self.states = feasible_ordinal;
+                                *self.enumeration_exhausted = true;
+                                return;
+                            }
+                            continue;
+                        }
+                        if feasible_ordinal >= self.start_index {
+                            *self.states = feasible_ordinal.saturating_add(1);
+                            *self.closed = Some(hit);
+                            return;
                         }
                     }
                     feasible_ordinal = feasible_ordinal.saturating_add(1);
@@ -1935,6 +1955,7 @@ impl ProductSearch<'_> {
 
             if indices[position] == variables[position].variants.len() {
                 indices[position] = 0;
+                dead_ends[position] = dead_ends[position].saturating_add(1);
                 if !backtrack(&mut position, &mut forecast, &mut chosen, &variables) {
                     *self.states = feasible_ordinal;
                     *self.enumeration_exhausted = true;
@@ -1946,6 +1967,27 @@ impl ProductSearch<'_> {
             let choice_index = indices[position];
             indices[position] += 1;
             if remaining_work == 0 {
+                if crate::construction::cmrc_timing_enabled() {
+                    let parent = |position: usize| {
+                        variables
+                            .get(position)
+                            .map(|variable| transition[variable.original_position])
+                    };
+                    let (worst, worst_dead_ends) = dead_ends
+                        .iter()
+                        .enumerate()
+                        .max_by_key(|&(position, &count)| (count, Reverse(position)))
+                        .map_or((0, 0), |(position, &count)| (position, count));
+                    eprintln!(
+                        "earthmesh_cli: cmrc_detail phase=search_work_exhausted variables={} \
+                         deepest={deepest} deepest_parent={:?} dead_ends_at_deepest={} \
+                         most_dead_ends={worst_dead_ends} at={worst} parent={:?} states={feasible_ordinal}",
+                        variables.len(),
+                        parent(deepest),
+                        dead_ends.get(deepest).copied().unwrap_or(0),
+                        parent(worst)
+                    );
+                }
                 *self.states = self.budget;
                 return;
             }
@@ -1956,6 +1998,7 @@ impl ProductSearch<'_> {
             if forecast.can_finish_all(&variable.touched, &suffix_masks, position + 1) {
                 chosen[variable.original_position] = Some(choice.variant_index);
                 position += 1;
+                deepest = deepest.max(position);
                 if position < indices.len() {
                     indices[position] = 0;
                 }

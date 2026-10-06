@@ -77,19 +77,33 @@ const NEAR_MISS_PLACES: usize = 16;
 /// A near miss has stalled when its worst face is still more than this
 /// share of the previous near miss's outside the window.
 const NEAR_MISS_STALL: f64 = 0.9;
+/// A failure that missed at more places than this -- core parents nearest
+/// its faces outside the window -- is retried at every one of them at once
+/// (guide 11.139). The Heihe trial's first solve at level 3 -> 2 left 9,067
+/// faces outside, the worst 64 alone at 60 places, and each retry at its
+/// worst place brought about 60 faces in. One place can count dozens: the
+/// 10 km 30 m trial's 60 faces outside lay at 22, and one promotion
+/// brought them all in.
+const WIDESPREAD_PLACES: usize = 64;
 
-/// How far a near miss missed, and where: its worst excess in degrees and
-/// the guard faces outside the window, worst first.
+/// Where a failed solve left guard faces outside the certificate's window:
+/// its worst excess in degrees and those faces, worst first.
 #[derive(Debug, Clone, PartialEq)]
-struct NearMiss {
+struct Missed {
     worst: f64,
     faces: Vec<usize>,
 }
 
-/// The guard faces a failed solve left outside the certificate's window,
-/// when it is a near miss (`NEAR_MISS_DEGREES`); `None` when a face lies
-/// farther out or is not positive, or none lies out at all.
-fn near_miss(witness: &GeometryFailureWitness, certificate: &Certificate) -> Option<NearMiss> {
+impl Missed {
+    /// Whether no face lies more than `NEAR_MISS_DEGREES` out.
+    fn is_near(&self) -> bool {
+        self.worst <= NEAR_MISS_DEGREES
+    }
+}
+
+/// The guard faces a failed solve left outside the certificate's window;
+/// `None` when a face is not positive, or none lies out at all.
+fn missed_faces(witness: &GeometryFailureWitness, certificate: &Certificate) -> Option<Missed> {
     let mesh = &witness.mesh.mesh;
     let mut outside = Vec::new();
     for &face in &witness.patch.guard_faces {
@@ -104,16 +118,13 @@ fn near_miss(witness: &GeometryFailureWitness, certificate: &Certificate) -> Opt
         let largest = angles.iter().copied().fold(f64::NEG_INFINITY, f64::max);
         let excess =
             (certificate.min_angle_degrees - smallest).max(largest - certificate.max_angle_degrees);
-        if excess > NEAR_MISS_DEGREES {
-            return None;
-        }
         if excess > 0.0 {
             outside.push((excess, face));
         }
     }
     outside.sort_by(|left, right| right.0.total_cmp(&left.0).then(left.1.cmp(&right.1)));
     let worst = outside.first()?.0;
-    Some(NearMiss {
+    Some(Missed {
         worst,
         faces: outside.into_iter().map(|(_, face)| face).collect(),
     })
@@ -124,11 +135,42 @@ fn near_miss(witness: &GeometryFailureWitness, certificate: &Certificate) -> Opt
 /// (`NEAR_MISS_STALL`). One near miss alone is retried at its worst place,
 /// as any failure is: at 40 km that passed, where promoting all sixteen
 /// places changed the next level enough to cost it four failures.
-fn near_miss_stalled(current: Option<&NearMiss>, previous: Option<f64>) -> bool {
-    match (current, previous) {
+fn near_miss_stalled(current: Option<&Missed>, previous: Option<f64>) -> bool {
+    match (current.filter(|current| current.is_near()), previous) {
         (Some(current), Some(previous)) => current.worst > NEAR_MISS_STALL * previous,
         _ => false,
     }
+}
+
+/// The core parents a failure's next candidate promotes besides the one
+/// nearest its worst face (`worst`): those nearest its other faces outside
+/// the window, in the faces' order, each once. A failure that missed at
+/// more than `WIDESPREAD_PLACES` places gives every one (guide 11.139); a
+/// stalled near miss, up to `NEAR_MISS_PLACES` in all (guide 11.137); any
+/// other failure, none.
+fn retry_places(
+    missed: &Missed,
+    stalled: bool,
+    worst: Option<TriangleAddress>,
+    mut nearest: impl FnMut(usize) -> Option<TriangleAddress>,
+) -> Vec<TriangleAddress> {
+    let mut seen = worst.into_iter().collect::<BTreeSet<_>>();
+    let mut places = Vec::new();
+    for &face in &missed.faces {
+        if let Some(parent) = nearest(face) {
+            if seen.insert(parent) {
+                places.push(parent);
+            }
+        }
+    }
+    if seen.len() > WIDESPREAD_PLACES {
+        return places;
+    }
+    if !stalled {
+        return Vec::new();
+    }
+    places.truncate(NEAR_MISS_PLACES - 1);
+    places
 }
 
 /// What an elastic solve did, for the timing log: how it ended, its
@@ -555,12 +597,26 @@ pub(super) fn solve_component_transaction_at_level(
     let pre_faces = state.mesh.mesh.triangle_count();
     let mut counters = Counters::default();
 
+    // A component left as it was says why in the timing log: a search that
+    // ends without a candidate leaves no other trace (guide 11.139).
     macro_rules! fail {
         ($variant:ident, $stage:expr, $reason:expr) => {{
+            let stage = $stage;
+            let reason: String = $reason;
+            if timing_enabled {
+                eprintln!(
+                    "earthmesh_cli: cmrc_detail phase=component_rollback component={} \
+                     outcome={} stage={stage:?} topology_states={} halo={} reason={reason}",
+                    component.id,
+                    stringify!($variant),
+                    counters.topology_states,
+                    counters.halo_expansions
+                );
+            }
             ComponentTransactionOutcome::$variant(ComponentRollbackReport {
                 component_id: component.id,
-                stage: $stage,
-                reason: $reason,
+                stage,
+                reason,
                 before_fingerprint,
                 restored_fingerprint: state.fingerprint(),
                 pre_vertices,
@@ -911,27 +967,31 @@ pub(super) fn solve_component_transaction_at_level(
                 });
                 // A near miss is retried at every place it missed, not one
                 // a candidate (guide 11.137).
-                other_core_promotions.clear();
-                let stalled = near_miss_stalled(failure.near_miss.as_deref(), previous_near_miss);
-                previous_near_miss = failure.near_miss.as_ref().map(|miss| miss.worst);
-                let places = failure
-                    .near_miss
-                    .as_ref()
-                    .filter(|_| stalled)
-                    .map_or(&[][..], |miss| &miss.faces[..]);
-                for &face in places {
-                    if other_core_promotions.len() + 1 >= NEAR_MISS_PLACES {
-                        break;
-                    }
-                    if let Some(parent) =
-                        preferred_core_promotion_for_face(&candidate_state.mesh, &transition, face)
-                    {
-                        if Some(parent) != preferred_core_promotion
-                            && !other_core_promotions.contains(&parent)
-                        {
-                            other_core_promotions.push(parent);
-                        }
-                    }
+                // ... and one that missed at many places, at all of them
+                // (guide 11.139).
+                let missed = failure.missed.as_deref();
+                let stalled = near_miss_stalled(missed, previous_near_miss);
+                previous_near_miss = missed
+                    .filter(|missed| missed.is_near())
+                    .map(|miss| miss.worst);
+                other_core_promotions = missed.map_or_else(Vec::new, |missed| {
+                    let core = transition
+                        .candidate
+                        .core_parents
+                        .iter()
+                        .copied()
+                        .collect::<BTreeSet<_>>();
+                    retry_places(missed, stalled, preferred_core_promotion, |face| {
+                        nearest_core_parent(&candidate_state.mesh, &core, face)
+                    })
+                });
+                // Retried at that many places, the next candidate differs
+                // from this one at all of them: its solve starts from the
+                // unmoved mesh. Started where this one stopped, the 100 km
+                // trial's 215 places tangled and the untangling ran for an
+                // hour without finishing (guide 11.139).
+                if other_core_promotions.len() >= WIDESPREAD_PLACES {
+                    warm_start = None;
                 }
                 if timing_enabled {
                     eprintln!(
@@ -1124,9 +1184,9 @@ struct CandidateAttemptFailure {
     /// Where a failed elastic solve left its movable vertices, by source
     /// slot: the next candidate's solve starts there.
     warm_positions: Option<BTreeMap<usize, CartesianPoint>>,
-    /// How far a near miss missed, and where (`near_miss`); boxed, as the
-    /// failure is returned by value.
-    near_miss: Option<Box<NearMiss>>,
+    /// Where a failed solve left faces outside the window, and how far
+    /// (`missed_faces`); boxed, as the failure is returned by value.
+    missed: Option<Box<Missed>>,
 }
 
 impl CandidateAttemptFailure {
@@ -1139,7 +1199,7 @@ impl CandidateAttemptFailure {
             interval_boxes: 0,
             failed_guard_face: None,
             warm_positions: None,
-            near_miss: None,
+            missed: None,
         }
     }
 
@@ -1152,7 +1212,7 @@ impl CandidateAttemptFailure {
             interval_boxes: 0,
             failed_guard_face: None,
             warm_positions: None,
-            near_miss: None,
+            missed: None,
         }
     }
 
@@ -1165,7 +1225,7 @@ impl CandidateAttemptFailure {
             interval_boxes: 0,
             failed_guard_face: None,
             warm_positions: None,
-            near_miss: None,
+            missed: None,
         }
     }
 }
@@ -1301,8 +1361,20 @@ fn certify_candidate(
                 failure.elastic_iterations = iterations;
                 failure.failed_guard_face = failed_guard_face;
                 failure.warm_positions = Some(final_movable_positions(&witness));
-                failure.near_miss =
-                    near_miss(&witness, &Certificate::internal_for(angle_contract)).map(Box::new);
+                failure.missed = missed_faces(&witness, &Certificate::internal_for(angle_contract))
+                    .map(Box::new);
+                if timing_enabled {
+                    eprintln!(
+                        "{}",
+                        failure_places_log(
+                            &witness,
+                            transition,
+                            &Certificate::internal_for(angle_contract),
+                            failed_guard_face,
+                            component.id,
+                        )
+                    );
+                }
                 return Err(failure);
             }
             ElasticBlockOutcome::SearchBudgetExhausted {
@@ -1326,8 +1398,20 @@ fn certify_candidate(
                 failure.elastic_iterations = iterations;
                 failure.failed_guard_face = failed_guard_face;
                 failure.warm_positions = Some(final_movable_positions(&witness));
-                failure.near_miss =
-                    near_miss(&witness, &Certificate::internal_for(angle_contract)).map(Box::new);
+                failure.missed = missed_faces(&witness, &Certificate::internal_for(angle_contract))
+                    .map(Box::new);
+                if timing_enabled {
+                    eprintln!(
+                        "{}",
+                        failure_places_log(
+                            &witness,
+                            transition,
+                            &Certificate::internal_for(angle_contract),
+                            failed_guard_face,
+                            component.id,
+                        )
+                    );
+                }
                 return Err(failure);
             }
             ElasticBlockOutcome::InvalidPatch { reason } => {
@@ -1749,23 +1833,156 @@ fn failed_face_neighbourhood(
     )
 }
 
-fn preferred_core_promotion_for_face(
-    mesh: &HierarchyLeafMesh,
+/// What a failed solve left outside the certificate's window, for the retry
+/// log: how many guard faces, the worst excess, how many lie within a tenth
+/// of it, the count in each band of excess, and how many core parents the
+/// worst 64 would promote; then the failed face's three rings, each face's
+/// kind (`failed_face_neighbourhood`), angles and corners, a movable corner
+/// starred and followed by its degree.
+fn failure_places_log(
+    witness: &GeometryFailureWitness,
     transition: &super::TransitionTopologyTrial,
-    failed_face: usize,
-) -> Option<TriangleAddress> {
-    if !mesh.mesh.is_triangle_live(failed_face) {
-        return None;
+    certificate: &Certificate,
+    failed: Option<usize>,
+    component: u64,
+) -> String {
+    let mesh = &witness.mesh;
+    let corners = |face: usize| mesh.mesh.triangles()[face].map(|site| mesh.mesh.vertices()[site]);
+    let mut outside = Vec::new();
+    for &face in &witness.patch.guard_faces {
+        let Some(angles) = crate::certificate::spherical_triangle_angles(corners(face)) else {
+            continue;
+        };
+        let smallest = angles.iter().copied().fold(f64::INFINITY, f64::min);
+        let largest = angles.iter().copied().fold(f64::NEG_INFINITY, f64::max);
+        let excess =
+            (certificate.min_angle_degrees - smallest).max(largest - certificate.max_angle_degrees);
+        if excess > 0.0 {
+            outside.push((excess, face));
+        }
     }
+    outside.sort_by(|left, right| right.0.total_cmp(&left.0).then(left.1.cmp(&right.1)));
+    let worst = outside.first().map_or(0.0, |&(excess, _)| excess);
+    let bounds = [0.05, 0.1, 0.2, 0.3, 0.5, f64::INFINITY];
+    let mut bands = [0usize; 6];
+    for &(excess, _) in &outside {
+        bands[bounds
+            .iter()
+            .position(|&bound| excess <= bound)
+            .unwrap_or(5)] += 1;
+    }
+    let near_worst = outside
+        .iter()
+        .filter(|&&(excess, _)| excess >= 0.9 * worst)
+        .count();
     let core = transition
         .candidate
         .core_parents
         .iter()
         .copied()
         .collect::<BTreeSet<_>>();
-    let mut seen = vec![false; mesh.mesh.triangles().len()];
-    seen[failed_face] = true;
-    let mut queue = VecDeque::from([failed_face]);
+    let parents = outside
+        .iter()
+        .take(64)
+        .filter_map(|&(_, face)| nearest_core_parent(mesh, &core, face))
+        .collect::<BTreeSet<_>>()
+        .len();
+    let mut log = format!(
+        "earthmesh_cli: cmrc_detail phase=failure_places component={component} outside={} \
+         worst={worst:.6} near_worst={near_worst} bands(0.05,0.1,0.2,0.3,0.5,more)={bands:?} \
+         parents_of_worst64={parents}",
+        outside.len()
+    );
+    let Some(face) = failed.filter(|&face| mesh.mesh.is_triangle_live(face)) else {
+        return log;
+    };
+    let movable = witness
+        .patch
+        .movable_compact_vertices
+        .iter()
+        .copied()
+        .collect::<BTreeSet<_>>();
+    let kind = |face: usize| match mesh.triangle_addresses[face] {
+        None => 'x',
+        Some(address) if core.contains(&address) => 'c',
+        Some(_) => 'f',
+    };
+    let mut seen = BTreeSet::from([face]);
+    let mut frontier = vec![face];
+    for ring in 0..=3 {
+        for &face in &frontier {
+            let angles = crate::certificate::spherical_triangle_angles(corners(face))
+                .unwrap_or([f64::NAN; 3]);
+            let sites = mesh.mesh.triangles()[face];
+            let text = sites
+                .iter()
+                .map(|&site| {
+                    let point = mesh.mesh.vertices()[site];
+                    let norm = (point.x * point.x + point.y * point.y + point.z * point.z).sqrt();
+                    let degree = mesh
+                        .mesh
+                        .vertex_degree_from(site, face)
+                        .map_or("?".to_string(), |degree| degree.to_string());
+                    format!(
+                        "{}{site}:{:.6},{:.6}:d{degree}",
+                        if movable.contains(&site) { "*" } else { "" },
+                        point.y.atan2(point.x).to_degrees(),
+                        (point.z / norm).asin().to_degrees()
+                    )
+                })
+                .collect::<Vec<_>>()
+                .join(" ");
+            log.push_str(&format!(
+                "\nearthmesh_cli: cmrc_detail phase=failure_face component={component} ring={ring} \
+                 face={face} kind={} angles={:.4}/{:.4}/{:.4} corners={text}",
+                kind(face),
+                angles[0],
+                angles[1],
+                angles[2]
+            ));
+        }
+        let mut next = Vec::new();
+        for &face in &frontier {
+            for neighbour in mesh.mesh.neighbours()[face] {
+                if neighbour != 0 && mesh.mesh.is_triangle_live(neighbour) && seen.insert(neighbour)
+                {
+                    next.push(neighbour);
+                }
+            }
+        }
+        frontier = next;
+    }
+    log
+}
+
+fn preferred_core_promotion_for_face(
+    mesh: &HierarchyLeafMesh,
+    transition: &super::TransitionTopologyTrial,
+    failed_face: usize,
+) -> Option<TriangleAddress> {
+    let core = transition
+        .candidate
+        .core_parents
+        .iter()
+        .copied()
+        .collect::<BTreeSet<_>>();
+    nearest_core_parent(mesh, &core, failed_face)
+}
+
+/// The core parent nearest a face in face steps, the lowest of equally near
+/// ones. The faces passed are kept in a set rather than a mesh-sized table:
+/// a failure that missed at thousands of places (guide 11.139) looks each
+/// one up, and its nearest core parent lies a step or two away.
+fn nearest_core_parent(
+    mesh: &HierarchyLeafMesh,
+    core: &BTreeSet<TriangleAddress>,
+    face: usize,
+) -> Option<TriangleAddress> {
+    if !mesh.mesh.is_triangle_live(face) {
+        return None;
+    }
+    let mut seen = BTreeSet::from([face]);
+    let mut queue = VecDeque::from([face]);
     while !queue.is_empty() {
         let mut nearest = BTreeSet::new();
         for _ in 0..queue.len() {
@@ -1777,8 +1994,8 @@ fn preferred_core_promotion_for_face(
                 continue;
             }
             for neighbour in mesh.mesh.neighbours()[face] {
-                if neighbour != 0 && mesh.mesh.is_triangle_live(neighbour) && !seen[neighbour] {
-                    seen[neighbour] = true;
+                if neighbour != 0 && mesh.mesh.is_triangle_live(neighbour) && seen.insert(neighbour)
+                {
                     queue.push_back(neighbour);
                 }
             }
@@ -2222,11 +2439,11 @@ mod tests {
         (mesh, patch, centre)
     }
 
-    /// A failed solve is a near miss when every guard face lies within
-    /// `NEAR_MISS_DEGREES` of the window: its faces outside it are listed,
-    /// worst first. A face farther out, or none out at all, lists nothing.
+    /// A failed solve lists the guard faces it left outside the window,
+    /// worst first, and is a near miss when none lies more than
+    /// `NEAR_MISS_DEGREES` out. None out at all lists nothing.
     #[test]
-    fn a_near_miss_lists_the_faces_it_left_outside_the_window() {
+    fn a_failure_lists_the_faces_it_left_outside_the_window() {
         let (mesh, patch, centre) = near_miss_disk();
         let certificate = Certificate::internal_for(AngleContractId::DomainQuality38To82V1);
         let neighbour = mesh
@@ -2291,25 +2508,32 @@ mod tests {
             }
             0.5 * (low + high)
         };
-        assert_eq!(near_miss(&moved(0.0), &certificate), None);
+        assert_eq!(missed_faces(&moved(0.0), &certificate), None);
         let near = moved(fraction_for(0.5 * NEAR_MISS_DEGREES));
-        let miss = near_miss(&near, &certificate).expect("a near miss");
+        let miss = missed_faces(&near, &certificate).expect("faces outside");
+        assert!(miss.is_near());
         assert!(miss.worst > 0.0 && miss.worst <= NEAR_MISS_DEGREES);
-        let faces = miss.faces;
-        assert!(!faces.is_empty());
-        assert!(faces
+        assert!(!miss.faces.is_empty());
+        assert!(miss
+            .faces
             .iter()
             .all(|face| near.mesh.mesh.triangles()[*face].contains(&centre)));
         let far = moved(fraction_for(2.0 * NEAR_MISS_DEGREES));
         assert!(excess(&far) > NEAR_MISS_DEGREES);
-        assert_eq!(near_miss(&far, &certificate), None);
+        let miss = missed_faces(&far, &certificate).expect("faces outside");
+        assert!(!miss.is_near());
+        assert!((miss.worst - excess(&far)).abs() < 1.0e-12);
+        assert!(miss
+            .faces
+            .iter()
+            .all(|face| far.mesh.mesh.triangles()[*face].contains(&centre)));
     }
 
     /// A near miss has stalled only when the candidate before was one too
     /// and the worst face came less than a tenth of the way in.
     #[test]
     fn a_near_miss_stalls_only_after_another_that_came_no_nearer() {
-        let miss = |worst| NearMiss {
+        let miss = |worst| Missed {
             worst,
             faces: vec![1],
         };
@@ -2318,6 +2542,54 @@ mod tests {
         assert!(!near_miss_stalled(Some(&miss(0.04)), Some(0.08)));
         assert!(near_miss_stalled(Some(&miss(0.0192)), Some(0.0193)));
         assert!(near_miss_stalled(Some(&miss(0.06)), Some(0.05)));
+        // A failure farther out is no near miss, stalled or not.
+        assert!(!near_miss_stalled(Some(&miss(0.2)), Some(0.05)));
+    }
+
+    /// The places a failure's next candidate promotes besides its worst: a
+    /// failure that missed at more than `WIDESPREAD_PLACES` places gives
+    /// every one, each once and in its faces' order; at fewer, only a
+    /// stalled near miss gives any, up to `NEAR_MISS_PLACES` in all.
+    #[test]
+    fn a_failure_that_missed_at_many_places_is_retried_at_all_of_them() {
+        let parent = |i: usize| TriangleAddress {
+            base_face: 0,
+            i,
+            j: 0,
+            n: 1_000,
+            orientation: crate::mother_grid::TriangleOrientation::Up,
+        };
+        // Two faces at every place, the worst place's first.
+        let missed = |places: usize, worst: f64| Missed {
+            worst,
+            faces: (0..2 * places).collect(),
+        };
+        let nearest = |face: usize| Some(parent(face / 2));
+        let worst = Some(parent(0));
+        let many = retry_places(&missed(WIDESPREAD_PLACES + 1, 0.3), false, worst, nearest);
+        assert_eq!(
+            many,
+            (1..=WIDESPREAD_PLACES).map(parent).collect::<Vec<_>>()
+        );
+        // As many places as the bound: no more than any other failure.
+        let bound = missed(WIDESPREAD_PLACES, 0.3);
+        assert!(retry_places(&bound, false, worst, nearest).is_empty());
+        let near = missed(WIDESPREAD_PLACES, 0.05);
+        assert!(retry_places(&near, false, worst, nearest).is_empty());
+        assert_eq!(
+            retry_places(&near, true, worst, nearest),
+            (1..NEAR_MISS_PLACES).map(parent).collect::<Vec<_>>()
+        );
+        // A face no core parent is near gives no place.
+        let few = Missed {
+            worst: 0.05,
+            faces: vec![0, 1, 2, 3, 4],
+        };
+        let nearest = |face: usize| (face != 3).then(|| parent(face));
+        assert_eq!(
+            retry_places(&few, true, worst, nearest),
+            vec![parent(1), parent(2), parent(4)]
+        );
     }
 
     #[test]
