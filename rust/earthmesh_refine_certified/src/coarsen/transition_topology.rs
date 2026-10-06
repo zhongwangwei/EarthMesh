@@ -452,15 +452,51 @@ fn solve_transition_topology_from_cursor_with_promotion(
             }
             TransitionTopologyOutcome::InvalidBoundary { reason, .. } => {
                 if reason.starts_with("coarse inner boundary:") {
+                    // Past the halo budget a pinch is still repaired where
+                    // no parent at it lies deeper than a promotion may reach
+                    // (guide 11.130): a few times after a failure's
+                    // promotion, more in the component's own layout, where a
+                    // real requirement's core can pinch at many places
+                    // (guide 11.138).
+                    let pinch_repair_limit = if unpromoted.is_some() {
+                        MAXIMUM_PINCH_REPAIRS
+                    } else {
+                        MAXIMUM_LAYOUT_PINCH_REPAIRS
+                    };
                     let repair = if halo_expansions < limits.maximum_halo_expansions {
                         Some(None)
-                    } else if unpromoted.is_some() && pinch_repairs < MAXIMUM_PINCH_REPAIRS {
+                    } else if pinch_repairs < pinch_repair_limit {
                         request.reach.map(Some)
                     } else {
                         None
                     };
+                    if crate::construction::cmrc_timing_enabled() && repair.is_none() {
+                        eprintln!(
+                            "earthmesh_cli: cmrc_detail phase=pinch_repair component={} \
+                             outcome=no_budget core={} halo={} of={} repairs={pinch_repairs}",
+                            component.id,
+                            core.len(),
+                            halo_expansions,
+                            limits.maximum_halo_expansions
+                        );
+                    }
                     if let Some(reach) = repair {
-                        match promote_pinched_core(patches, &mut core, &mut transition, reach) {
+                        let before = core.len();
+                        let repaired =
+                            promote_pinched_core(patches, &mut core, &mut transition, reach);
+                        if crate::construction::cmrc_timing_enabled() {
+                            eprintln!(
+                                "earthmesh_cli: cmrc_detail phase=pinch_repair component={} \
+                                 outcome={:?} promoted={} core={} halo={} of={} repairs={pinch_repairs}",
+                                component.id,
+                                repaired.as_ref().map_err(|_| "error"),
+                                before - core.len(),
+                                core.len(),
+                                halo_expansions,
+                                limits.maximum_halo_expansions
+                            );
+                        }
+                        match repaired {
                             Ok(PinchRepair::Promoted) => {
                                 match reach {
                                     None => halo_expansions += 1,
@@ -492,7 +528,19 @@ fn solve_transition_topology_from_cursor_with_promotion(
                 if reason.starts_with("fine outer boundary:")
                     && halo_expansions < limits.maximum_halo_expansions
                 {
-                    match retain_fine_at_pinches(patches, &core, &mut transition) {
+                    let retained = retain_fine_at_pinches(patches, &core, &mut transition);
+                    if crate::construction::cmrc_timing_enabled() {
+                        eprintln!(
+                            "earthmesh_cli: cmrc_detail phase=fine_pinch_repair component={} \
+                             outcome={:?} transition={} halo={} of={}",
+                            component.id,
+                            retained.as_ref().map_err(|_| "error"),
+                            transition.len(),
+                            halo_expansions,
+                            limits.maximum_halo_expansions
+                        );
+                    }
+                    match retained {
                         Ok(true) => {
                             halo_expansions += 1;
                             continue;
@@ -579,6 +627,11 @@ fn solve_transition_topology_from_cursor_with_promotion(
 
 /// Pinch repairs a failure's promotion may make past the halo budget.
 const MAXIMUM_PINCH_REPAIRS: usize = 3;
+/// Pinch repairs a component's own layout may make past the halo budget,
+/// each within the promotion's reach. Every repair takes parents out of the
+/// core, so the repairs end; the Heihe trial's first layout needed more
+/// rounds than its five rings (guide 11.138).
+const MAXIMUM_LAYOUT_PINCH_REPAIRS: usize = 16;
 
 fn preflight(
     patches: &Patches<'_>,
@@ -3821,6 +3874,66 @@ mod tests {
         let pinched = core_after(&[(pinching, 0)]);
         assert!(!pinched.contains(&worst) && pinched.contains(&pinching));
         assert_eq!(pinched, alone);
+    }
+
+    /// A component's own layout pinched at a vertex is repaired past the
+    /// halo budget when no parent at the pinch lies deeper than a promotion
+    /// may reach (guide 11.138); with a reach that excludes them the
+    /// boundary stays invalid, as before.
+    #[test]
+    fn a_layout_pinch_is_repaired_within_reach_past_the_halo_budget() {
+        let (fine, component, preferred) = pinching_promotion();
+        let patches = Patches::new(&fine);
+        let core = component
+            .core_parents
+            .iter()
+            .copied()
+            .collect::<BTreeSet<_>>();
+        let transition = component
+            .transition_parents
+            .iter()
+            .copied()
+            .collect::<BTreeSet<_>>();
+        let peel = core_boundary(&patches, &core);
+        let segment = preferred_boundary_segment(&patches, &peel, &transition, preferred).unwrap();
+        let pinched_core = core.difference(&segment).copied().collect::<BTreeSet<_>>();
+        let pinched_transition = transition.union(&segment).copied().collect::<BTreeSet<_>>();
+        let reason = boundary(&patches, &pinched_core, &pinched_transition).unwrap_err();
+        assert!(reason.starts_with("coarse inner boundary:"), "{reason}");
+        let pinched = HierarchyComponent {
+            core_parents: pinched_core.iter().copied().collect(),
+            transition_parents: pinched_transition.iter().copied().collect(),
+            ..component.clone()
+        };
+        let depths = pinched
+            .parents
+            .iter()
+            .map(|&parent| (parent, 1))
+            .collect::<BTreeMap<_, _>>();
+        let search = |deepest| {
+            solve_transition_topology_from_cursor_with_promotion(
+                &fine,
+                &pinched,
+                TransitionTopologyLimits {
+                    topology_states: 1_000,
+                    maximum_halo_expansions: 0,
+                },
+                0,
+                RetryRequest {
+                    reach: Some((&depths, deepest)),
+                    ..RetryRequest::default()
+                },
+                true,
+            )
+        };
+        assert!(matches!(
+            search(0),
+            TransitionTopologyOutcome::InvalidBoundary { .. }
+        ));
+        let TransitionTopologyOutcome::Closed(repaired) = search(1) else {
+            panic!("the pinch repaired within reach must close");
+        };
+        assert!(repaired.candidate.core_parents.len() < pinched_core.len());
     }
 
     /// A core of two parents that touch at one corner has nothing left to
