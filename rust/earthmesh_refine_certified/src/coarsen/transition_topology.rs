@@ -1847,9 +1847,9 @@ impl ProductSearch<'_> {
             .budget
             .saturating_mul(variables.len().max(1))
             .saturating_mul(64);
-        // Where the work went when it runs out, for the timing log: the
-        // deepest position the search reached, and how often each position
-        // ran out of choices.
+        // How often each position ran out of choices: a search stuck at one
+        // stops there (`stuck`, guide 11.141), and where it went goes to the
+        // timing log.
         let mut deepest = 0usize;
         let mut dead_ends = vec![0u32; variables.len()];
 
@@ -1956,6 +1956,20 @@ impl ProductSearch<'_> {
             if indices[position] == variables[position].variants.len() {
                 indices[position] = 0;
                 dead_ends[position] = dead_ends[position].saturating_add(1);
+                // Only the states it examined are spent, so a promoted
+                // layout can still fall back to the one before it.
+                if stuck(dead_ends[position], variables.len()) {
+                    log_search_stop(
+                        "search_stuck",
+                        &variables,
+                        &transition,
+                        deepest,
+                        &dead_ends,
+                        feasible_ordinal,
+                    );
+                    *self.states = feasible_ordinal;
+                    return;
+                }
                 if !backtrack(&mut position, &mut forecast, &mut chosen, &variables) {
                     *self.states = feasible_ordinal;
                     *self.enumeration_exhausted = true;
@@ -1967,27 +1981,14 @@ impl ProductSearch<'_> {
             let choice_index = indices[position];
             indices[position] += 1;
             if remaining_work == 0 {
-                if crate::construction::cmrc_timing_enabled() {
-                    let parent = |position: usize| {
-                        variables
-                            .get(position)
-                            .map(|variable| transition[variable.original_position])
-                    };
-                    let (worst, worst_dead_ends) = dead_ends
-                        .iter()
-                        .enumerate()
-                        .max_by_key(|&(position, &count)| (count, Reverse(position)))
-                        .map_or((0, 0), |(position, &count)| (position, count));
-                    eprintln!(
-                        "earthmesh_cli: cmrc_detail phase=search_work_exhausted variables={} \
-                         deepest={deepest} deepest_parent={:?} dead_ends_at_deepest={} \
-                         most_dead_ends={worst_dead_ends} at={worst} parent={:?} states={feasible_ordinal}",
-                        variables.len(),
-                        parent(deepest),
-                        dead_ends.get(deepest).copied().unwrap_or(0),
-                        parent(worst)
-                    );
-                }
+                log_search_stop(
+                    "search_work_exhausted",
+                    &variables,
+                    &transition,
+                    deepest,
+                    &dead_ends,
+                    feasible_ordinal,
+                );
                 *self.states = self.budget;
                 return;
             }
@@ -2039,6 +2040,53 @@ impl ProductSearch<'_> {
         *selection.substrate = Some(hit.clone());
         true
     }
+}
+
+/// Whether a search is stuck at one variable (guide 11.141): it ran out of
+/// choices there more often than one state's worth of the work bound -- 64
+/// tries a variable -- allows. Going back one variable at a time, a search
+/// whose degrees cannot close at one place returns there again and again:
+/// the Heihe trial's frame component, retried at a near miss, did so 8.8
+/// million times at one parent and spent the component's whole state budget,
+/// so its promotion never fell back to the layout before it. A search that
+/// is only slow stays far below the bound: every one in the 10 km trial does.
+fn stuck(dead_ends: u32, variables: usize) -> bool {
+    dead_ends as usize > variables.max(1).saturating_mul(64)
+}
+
+/// Where a search stopped short of an answer, for the timing log: its
+/// deepest position and the position that ran out of choices most often,
+/// with their parents.
+fn log_search_stop(
+    phase: &str,
+    variables: &[SearchVariable],
+    transition: &[TriangleAddress],
+    deepest: usize,
+    dead_ends: &[u32],
+    states: usize,
+) {
+    if !crate::construction::cmrc_timing_enabled() {
+        return;
+    }
+    let parent = |position: usize| {
+        variables
+            .get(position)
+            .map(|variable| transition[variable.original_position])
+    };
+    let (worst, worst_dead_ends) = dead_ends
+        .iter()
+        .enumerate()
+        .max_by_key(|&(position, &count)| (count, Reverse(position)))
+        .map_or((0, 0), |(position, &count)| (position, count));
+    eprintln!(
+        "earthmesh_cli: cmrc_detail phase={phase} variables={} deepest={deepest} \
+         deepest_parent={:?} dead_ends_at_deepest={} most_dead_ends={worst_dead_ends} \
+         at={worst} parent={:?} states={states}",
+        variables.len(),
+        parent(deepest),
+        dead_ends.get(deepest).copied().unwrap_or(0),
+        parent(worst)
+    );
 }
 
 fn fixed_boundary_sources(boundary: &TransitionBoundary) -> BTreeSet<usize> {
@@ -4369,5 +4417,19 @@ mod tests {
         assert_eq!(core.len(), initial_core_len - expected.len());
         assert!(expected.iter().all(|parent| transition.contains(parent)));
         assert!(core.contains(&untouched));
+    }
+
+    /// A search is stuck at a variable that ran out of choices more often
+    /// than one state's worth of work allows (guide 11.141): the Heihe
+    /// frame component's 8.8 million at 9,735 variables is; 389 at 1,575
+    /// variables, where the first version of the rule stopped a 10 km
+    /// search that was only slow, is not.
+    #[test]
+    fn a_search_that_returns_to_one_variable_millions_of_times_is_stuck() {
+        assert!(stuck(8_848_306, 9_735));
+        assert!(!stuck(389, 1_575));
+        assert!(!stuck(64, 1));
+        assert!(stuck(65, 1));
+        assert!(stuck(65, 0));
     }
 }
