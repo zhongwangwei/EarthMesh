@@ -588,18 +588,26 @@ fn solve_transition_topology_from_cursor_with_promotion(
         let local_cursor = topology_states_cursor.saturating_sub(states_examined);
         let window = window_of!();
         whole_level = request.windowed && window.is_none();
-        match solve_once(
-            patches,
-            component.id,
-            core.clone(),
-            transition.clone(),
-            halo_expansions,
-            local_cursor,
-            local_limit,
-            None,
-            window.as_ref(),
-        ) {
-            TransitionTopologyOutcome::Closed(mut trial) => {
+        macro_rules! solve {
+            ($backjump:expr) => {
+                solve_once(
+                    patches,
+                    component.id,
+                    core.clone(),
+                    transition.clone(),
+                    halo_expansions,
+                    local_cursor,
+                    local_limit,
+                    None,
+                    window.as_ref(),
+                    $backjump,
+                )
+            };
+        }
+        // A layout's closed trial, numbered after the layouts before it.
+        macro_rules! closed {
+            ($trial:expr) => {{
+                let mut trial = $trial;
                 trial.window_parents = window.map(|window| window.parents);
                 let layout_topology_states = trial.report.topology_states;
                 trial.candidate.topology_id += states_examined;
@@ -608,30 +616,64 @@ fn solve_transition_topology_from_cursor_with_promotion(
                 trial.report.layout_topology_states = layout_topology_states;
                 trial.report.halo_expansions = halo_expansions;
                 return TransitionTopologyOutcome::Closed(trial);
-            }
+            }};
+        }
+        match solve!(false) {
+            TransitionTopologyOutcome::Closed(trial) => closed!(trial),
             TransitionTopologyOutcome::SearchBudgetExhausted {
                 states_examined: local,
                 ..
             } => {
-                states_examined += local;
-                if states_examined == limits.topology_states {
-                    return TransitionTopologyOutcome::SearchBudgetExhausted {
-                        states_examined,
-                        halo_expansions,
-                    };
-                }
-                let Some(expansion_cost) = promote_core_boundary(
-                    patches,
-                    &mut core,
-                    &mut transition,
-                    preferred_core_promotion.take(),
-                    limits.maximum_halo_expansions - halo_expansions,
-                ) else {
+                let spent = states_examined + local == limits.topology_states;
+                let promoted = if spent {
+                    None
+                } else {
+                    promote_core_boundary(
+                        patches,
+                        &mut core,
+                        &mut transition,
+                        preferred_core_promotion.take(),
+                        limits.maximum_halo_expansions - halo_expansions,
+                    )
+                };
+                let Some(expansion_cost) = promoted else {
+                    // The last layout -- its budget spent, or no promotion
+                    // left and none to fall back from -- ends the search,
+                    // and with it the component. Before that it is searched
+                    // again, jumping back across positions that cannot help
+                    // (guide 11.147): from the same cursor that search meets
+                    // the complete states going back one position at a time
+                    // met, in the same order, and reaches those beyond a
+                    // variable where that ran out of work or stuck.
+                    if spent || unpromoted.is_none() {
+                        let retried = solve!(true);
+                        if crate::construction::cmrc_timing_enabled() {
+                            eprintln!(
+                                "earthmesh_cli: cmrc_detail phase=search_backjump component={} \
+                                 halo={halo_expansions} closed={}",
+                                component.id,
+                                matches!(retried, TransitionTopologyOutcome::Closed(_))
+                            );
+                        }
+                        if let TransitionTopologyOutcome::Closed(trial) = retried {
+                            #[cfg(test)]
+                            tests::BACKJUMP_RETRIES.with(|retries| retries.set(retries.get() + 1));
+                            closed!(trial);
+                        }
+                    }
+                    states_examined += local;
+                    if spent {
+                        return TransitionTopologyOutcome::SearchBudgetExhausted {
+                            states_examined,
+                            halo_expansions,
+                        };
+                    }
                     end_or_fall_back!(TransitionTopologyOutcome::SearchBudgetExhausted {
                         states_examined,
                         halo_expansions,
                     });
                 };
+                states_examined += local;
                 halo_expansions += expansion_cost;
             }
             TransitionTopologyOutcome::InvalidBoundary { reason, .. } => {
@@ -1291,6 +1333,7 @@ fn solve_focused(
         focus.cursor.saturating_add(remaining_states),
         Some(focus),
         window,
+        false,
     ) {
         TransitionTopologyOutcome::Closed(mut trial) => {
             let focused = trial.report.topology_states;
@@ -1397,6 +1440,7 @@ fn solve_once(
     budget: usize,
     focus: Option<&RetryFocus>,
     window: Option<&SearchWindow>,
+    backjump: bool,
 ) -> TransitionTopologyOutcome {
     let source = patches.source;
     let mut states = 0usize;
@@ -1504,6 +1548,7 @@ fn solve_once(
         enumeration_exhausted: &mut enumeration_exhausted,
         focus: plan.as_ref(),
         window,
+        backjump,
     }
     .run();
     if let Some(hit) = closed {
@@ -1751,6 +1796,7 @@ fn select_retirement_substrate(
         enumeration_exhausted: &mut exhausted,
         focus: None,
         window,
+        backjump: false,
     }
     .run();
     substrate
@@ -1996,6 +2042,10 @@ struct ProductSearch<'a> {
     focus: Option<&'a FocusPlan>,
     /// The window its states are built and checked in (`SearchWindow`).
     window: Option<&'a SearchWindow>,
+    /// Whether it jumps back across positions that cannot help
+    /// (`Backjumper`): only a last layout's search, searched again before
+    /// it gives up (guide 11.147).
+    backjump: bool,
 }
 
 struct SubstrateSelection<'a> {
@@ -2066,15 +2116,18 @@ impl ProductSearch<'_> {
         let mut remaining_work = self
             .budget
             .saturating_mul(variables.len().max(1))
-            .saturating_mul(64);
+            .saturating_mul(work_per_variable());
         // How often each position ran out of choices: a search stuck at one
         // stops there (`stuck`, guide 11.141), and where it went goes to the
         // timing log.
         let mut deepest = 0usize;
         let mut dead_ends = vec![0u32; variables.len()];
+        let mut jumper = Backjumper::new(&variables, self.backjump || backjumping_everywhere());
+        jumper.enter(0);
 
         loop {
             if position == variables.len() {
+                jumper.complete();
                 let touched = touched_vertices(&variables, &preassigned_touched);
                 if forecast.can_finish_all(&touched, &suffix_masks, variables.len()) {
                     if feasible_ordinal >= self.budget {
@@ -2190,10 +2243,14 @@ impl ProductSearch<'_> {
                     *self.states = feasible_ordinal;
                     return;
                 }
-                if !backtrack(&mut position, &mut forecast, &mut chosen, &variables) {
+                let Some(target) = jumper.back_to(position) else {
                     *self.states = feasible_ordinal;
                     *self.enumeration_exhausted = true;
                     return;
+                };
+                while position > target {
+                    let moved = backtrack(&mut position, &mut forecast, &mut chosen, &variables);
+                    debug_assert!(moved, "a position above the target can go back");
                 }
                 continue;
             }
@@ -2216,15 +2273,20 @@ impl ProductSearch<'_> {
             let variable = &variables[position];
             let choice = &variable.variants[choice_index];
             forecast.apply_delta(&choice.delta, 1);
-            if forecast.can_finish_all(&variable.touched, &suffix_masks, position + 1) {
-                chosen[variable.original_position] = Some(choice.variant_index);
-                position += 1;
-                deepest = deepest.max(position);
-                if position < indices.len() {
-                    indices[position] = 0;
+            match forecast.first_unfinishable(&variable.touched, &suffix_masks, position + 1) {
+                None => {
+                    chosen[variable.original_position] = Some(choice.variant_index);
+                    position += 1;
+                    deepest = deepest.max(position);
+                    if position < indices.len() {
+                        indices[position] = 0;
+                        jumper.enter(position);
+                    }
                 }
-            } else {
-                forecast.apply_delta(&choice.delta, -1);
+                Some(vertex) => {
+                    forecast.apply_delta(&choice.delta, -1);
+                    jumper.failed_at(position, vertex);
+                }
             }
         }
     }
@@ -2380,8 +2442,20 @@ impl DenseForecast {
         suffix_masks: &SuffixDegreeMasks,
         position: usize,
     ) -> bool {
-        vertices.iter().copied().all(|vertex| {
-            degree_mask_can_finish(self.degrees[vertex], suffix_masks.mask(vertex, position))
+        self.first_unfinishable(vertices, suffix_masks, position)
+            .is_none()
+    }
+
+    /// The first of `vertices` that can no longer reach a valid degree with
+    /// what the variables from `position` on may add to it.
+    fn first_unfinishable(
+        &self,
+        vertices: &[usize],
+        suffix_masks: &SuffixDegreeMasks,
+        position: usize,
+    ) -> Option<usize> {
+        vertices.iter().copied().find(|&vertex| {
+            !degree_mask_can_finish(self.degrees[vertex], suffix_masks.mask(vertex, position))
         })
     }
 
@@ -2393,6 +2467,122 @@ impl DenseForecast {
                     .map(|degree| (site, degree))
             })
             .collect()
+    }
+}
+
+/// Conflict-directed backjumping for the product search (Prosser 1993;
+/// guide 11.147). A choice the degree forecast turns down fails at a vertex,
+/// and only the earlier variables that touch that vertex can change the
+/// verdict: they make up the position's conflict set. A position whose
+/// choices run out goes back to the latest of them, which takes the rest of
+/// the set over, rather than to the position before it -- the variables in
+/// between cannot help, and going back one at a time re-enumerates all
+/// their combinations first: the Heihe trial's frame component ran out of
+/// choices 8.8 million times at one parent that way (guide 11.141).
+///
+/// A complete state found below a position means its subtrees are not all
+/// failures, so such a position goes back one at a time again; every
+/// complete state is enumerated, in the same order, and only subtrees
+/// without one are skipped.
+struct Backjumper {
+    enabled: bool,
+    /// The positions that touch each vertex, in order.
+    touching: HashMap<usize, Vec<usize>>,
+    conflicts: Vec<BTreeSet<usize>>,
+    /// When each position was entered and when the last complete state was
+    /// reached, on one clock.
+    entered: Vec<u64>,
+    last_complete: u64,
+    clock: u64,
+}
+
+impl Backjumper {
+    fn new(variables: &[SearchVariable], enabled: bool) -> Self {
+        let mut touching = HashMap::<usize, Vec<usize>>::new();
+        for (position, variable) in variables.iter().enumerate() {
+            for &vertex in &variable.touched {
+                touching.entry(vertex).or_default().push(position);
+            }
+        }
+        Self {
+            enabled,
+            touching,
+            conflicts: vec![BTreeSet::new(); variables.len()],
+            entered: vec![0; variables.len()],
+            last_complete: 0,
+            clock: 0,
+        }
+    }
+
+    /// The search entered `position` afresh.
+    fn enter(&mut self, position: usize) {
+        if position < self.entered.len() {
+            self.clock += 1;
+            self.entered[position] = self.clock;
+            self.conflicts[position].clear();
+        }
+    }
+
+    /// A choice at `position` left `vertex` unable to finish.
+    fn failed_at(&mut self, position: usize, vertex: usize) {
+        if !self.enabled {
+            return;
+        }
+        if let Some(positions) = self.touching.get(&vertex) {
+            let earlier = positions.iter().take_while(|&&other| other < position);
+            self.conflicts[position].extend(earlier.copied());
+        }
+    }
+
+    /// The search reached a complete state.
+    fn complete(&mut self) {
+        self.clock += 1;
+        self.last_complete = self.clock;
+    }
+
+    /// Where `position`, out of choices, goes back to: the latest position
+    /// of its conflict set, or the one before it when a complete state lies
+    /// below it or backjumping is off. `None` when no earlier position can
+    /// change the outcome: the enumeration is over.
+    fn back_to(&mut self, position: usize) -> Option<usize> {
+        let target = if !self.enabled || self.entered[position] < self.last_complete {
+            position.checked_sub(1)
+        } else {
+            self.conflicts[position].last().copied()
+        }?;
+        let conflicts = std::mem::take(&mut self.conflicts[position]);
+        self.conflicts[target].extend(conflicts.into_iter().filter(|&other| other < target));
+        #[cfg(test)]
+        if target + 1 < position {
+            tests::LONG_JUMPS.with(|jumps| jumps.set(jumps.get() + 1));
+        }
+        Some(target)
+    }
+}
+
+/// Tries a product search may spend per variable and state (64); tests
+/// lower it to run a search out of work.
+fn work_per_variable() -> usize {
+    #[cfg(test)]
+    {
+        tests::WORK_PER_VARIABLE.with(std::cell::Cell::get)
+    }
+    #[cfg(not(test))]
+    {
+        64
+    }
+}
+
+/// Whether every product search jumps back, not just a last layout's
+/// retry: tests compare the two orders of search.
+fn backjumping_everywhere() -> bool {
+    #[cfg(test)]
+    {
+        tests::BACKJUMP_EVERYWHERE.with(std::cell::Cell::get)
+    }
+    #[cfg(not(test))]
+    {
+        false
     }
 }
 
@@ -3282,6 +3472,21 @@ mod tests {
     use super::*;
     use crate::coarsen::ElasticPatch;
 
+    thread_local! {
+        /// Set by a test that has every product search jump back, to compare
+        /// it with going back one position at a time (`backjumping_everywhere`).
+        pub(super) static BACKJUMP_EVERYWHERE: std::cell::Cell<bool> =
+            const { std::cell::Cell::new(false) };
+        /// Jumps across more than one position (`Backjumper::back_to`).
+        pub(super) static LONG_JUMPS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+        /// Last layouts that the retry with backjumping closed.
+        pub(super) static BACKJUMP_RETRIES: std::cell::Cell<usize> =
+            const { std::cell::Cell::new(0) };
+        /// `work_per_variable` in tests.
+        pub(super) static WORK_PER_VARIABLE: std::cell::Cell<usize> =
+            const { std::cell::Cell::new(64) };
+    }
+
     fn outcome_signature(outcome: &TransitionTopologyOutcome) -> String {
         match outcome {
             TransitionTopologyOutcome::Closed(trial) => format!(
@@ -3411,6 +3616,153 @@ mod tests {
         assert!(
             patches_compared > 0,
             "some fixture must grow an elastic patch"
+        );
+    }
+
+    /// Backjumping skips only subtrees without a complete state (guide
+    /// 11.147): on cores with holes, which make the transition's degrees
+    /// conflict, the search finds from every cursor what going back one
+    /// position at a time finds -- and it does jump.
+    #[test]
+    fn backjumping_finds_what_going_back_one_at_a_time_finds() {
+        let fine = MotherGrid::generate(64).unwrap();
+        let coarse = MotherGrid::generate(32).unwrap();
+        let patches = Patches::new(&fine);
+        LONG_JUMPS.with(|jumps| jumps.set(0));
+        let mut closed = 0;
+        for seed in 0..6usize {
+            let core = coarse
+                .triangle_addresses
+                .iter()
+                .flatten()
+                .copied()
+                .filter(|parent| {
+                    let hole = (parent.i * 73_856_093)
+                        ^ (parent.j * 19_349_663)
+                        ^ (seed * 83_492_791)
+                        ^ usize::from(
+                            parent.orientation == crate::mother_grid::TriangleOrientation::Up,
+                        );
+                    parent.base_face == 0
+                        && parent.i >= 6
+                        && parent.j >= 6
+                        && parent.i + parent.j < 26
+                        && hole % 9 != 0
+                })
+                .collect::<BTreeSet<_>>();
+            let transition = core
+                .iter()
+                .flat_map(|&parent| patches.get(parent).unwrap().neighbours)
+                .filter(|parent| !core.contains(parent))
+                .collect::<BTreeSet<_>>();
+            let component = HierarchyComponent {
+                id: 40 + seed as u64,
+                parents: core.union(&transition).copied().collect(),
+                boundary_edges: Vec::new(),
+                core_parents: core.iter().copied().collect(),
+                transition_parents: transition.iter().copied().collect(),
+            };
+            let limits = TransitionTopologyLimits {
+                topology_states: 1_000,
+                maximum_halo_expansions: 5,
+            };
+            for cursor in 0..8 {
+                let search = |everywhere| {
+                    BACKJUMP_EVERYWHERE.with(|flag| flag.set(everywhere));
+                    let outcome =
+                        solve_transition_topology_from_cursor(&fine, &component, limits, cursor);
+                    BACKJUMP_EVERYWHERE.with(|flag| flag.set(false));
+                    outcome
+                };
+                let jumping = search(true);
+                let stepping = search(false);
+                closed += usize::from(matches!(jumping, TransitionTopologyOutcome::Closed(_)));
+
+                assert_eq!(
+                    outcome_signature(&jumping),
+                    outcome_signature(&stepping),
+                    "seed {seed}, cursor {cursor}"
+                );
+            }
+        }
+        assert!(closed > 0, "some fixture must close");
+        assert!(
+            LONG_JUMPS.with(std::cell::Cell::get) > 0,
+            "the fixtures must make the search jump"
+        );
+    }
+
+    /// A last layout that runs out of work going back one position at a
+    /// time is searched again jumping back before the search gives up
+    /// (guide 11.147). With a budget of one state the first layout searched
+    /// is the last, so the search ends where one jumping back throughout
+    /// ends: with the same state, from the same cursor. On the holed cores,
+    /// with the work per variable lowered, some states only the retry finds.
+    #[test]
+    fn a_last_layout_out_of_work_is_searched_again_jumping_back() {
+        let fine = MotherGrid::generate(64).unwrap();
+        let coarse = MotherGrid::generate(32).unwrap();
+        let patches = Patches::new(&fine);
+        BACKJUMP_RETRIES.with(|retries| retries.set(0));
+        for seed in 0..6usize {
+            let core = coarse
+                .triangle_addresses
+                .iter()
+                .flatten()
+                .copied()
+                .filter(|parent| {
+                    let hole = (parent.i * 73_856_093)
+                        ^ (parent.j * 19_349_663)
+                        ^ (seed * 83_492_791)
+                        ^ usize::from(
+                            parent.orientation == crate::mother_grid::TriangleOrientation::Up,
+                        );
+                    parent.base_face == 0
+                        && parent.i >= 6
+                        && parent.j >= 6
+                        && parent.i + parent.j < 26
+                        && hole % 9 != 0
+                })
+                .collect::<BTreeSet<_>>();
+            let transition = core
+                .iter()
+                .flat_map(|&parent| patches.get(parent).unwrap().neighbours)
+                .filter(|parent| !core.contains(parent))
+                .collect::<BTreeSet<_>>();
+            let component = HierarchyComponent {
+                id: 50 + seed as u64,
+                parents: core.union(&transition).copied().collect(),
+                boundary_edges: Vec::new(),
+                core_parents: core.iter().copied().collect(),
+                transition_parents: transition.iter().copied().collect(),
+            };
+            // A budget of one state: the layout that spends it is the last.
+            let limits = TransitionTopologyLimits {
+                topology_states: 1,
+                maximum_halo_expansions: 5,
+            };
+            for work in [1, 2, 4, 8, 16, 64] {
+                WORK_PER_VARIABLE.with(|tries| tries.set(work));
+                let search = |everywhere| {
+                    BACKJUMP_EVERYWHERE.with(|flag| flag.set(everywhere));
+                    let outcome =
+                        solve_transition_topology_from_cursor(&fine, &component, limits, 0);
+                    BACKJUMP_EVERYWHERE.with(|flag| flag.set(false));
+                    outcome
+                };
+                let jumping = search(true);
+                let retried = search(false);
+                assert_eq!(
+                    outcome_signature(&jumping),
+                    outcome_signature(&retried),
+                    "seed {seed}, work {work}"
+                );
+            }
+            WORK_PER_VARIABLE.with(|tries| tries.set(64));
+        }
+        assert!(
+            BACKJUMP_RETRIES.with(std::cell::Cell::get) > 0,
+            "some last layout must run out of work going back one position at a time"
         );
     }
 
