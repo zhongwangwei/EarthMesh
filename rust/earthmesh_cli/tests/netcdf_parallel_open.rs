@@ -31,16 +31,20 @@ fn a_spawned_child_does_not_keep_a_closed_netcdf_writer_locked() {
         let mut command = Command::new("/bin/sleep");
         command.arg("60");
         let fd = child_signal.as_raw_fd();
+        // The C library's own signatures: the standard library links the
+        // same symbols, and Rust 1.99 refuses a declaration that differs.
         unsafe extern "C" {
-            fn write(fd: i32, buf: *const u8, len: usize) -> isize;
-            fn read(fd: i32, buf: *mut u8, len: usize) -> isize;
+            fn write(fd: i32, buf: *const std::ffi::c_void, len: usize) -> isize;
+            fn read(fd: i32, buf: *mut std::ffi::c_void, len: usize) -> isize;
         }
         // SAFETY: child uses only async-signal-safe read/write on an owned
         // socket, with bounded reads; all assertions and locks stay in parent.
         unsafe {
             command.pre_exec(move || {
                 let mut byte = 1_u8;
-                if write(fd, &byte, 1) != 1 || read(fd, &mut byte, 1) != 1 {
+                if write(fd, std::ptr::from_ref(&byte).cast(), 1) != 1
+                    || read(fd, std::ptr::from_mut(&mut byte).cast(), 1) != 1
+                {
                     return Err(std::io::Error::last_os_error());
                 }
                 Ok(())
