@@ -67,6 +67,26 @@ impl HierarchyLeafSet {
         Ok(Self { leaves })
     }
 
+    /// The leaves of `faces` alone -- a search window's (guide 11.144).
+    pub(crate) fn from_faces(grid: &MotherGrid, faces: &BTreeSet<usize>) -> Result<Self, String> {
+        let mut addresses = Vec::with_capacity(faces.len());
+        for &face in faces {
+            addresses.push(
+                grid.triangle_addresses
+                    .get(face)
+                    .and_then(|address| *address)
+                    .ok_or_else(|| format!("window face {face} has no hierarchy address"))?,
+            );
+        }
+        addresses.sort_unstable();
+        if let Some(pair) = addresses.windows(2).find(|pair| pair[0] == pair[1]) {
+            return Err(format!("duplicate window face address {:?}", pair[0]));
+        }
+        Ok(Self {
+            leaves: addresses.into_iter().collect(),
+        })
+    }
+
     pub fn condense_core(&mut self, parents: &[TriangleAddress]) -> Result<usize, String> {
         let unique = parents.iter().copied().collect::<BTreeSet<_>>();
         // A core that holds a large part of the leaves -- a whole region's at
@@ -175,17 +195,30 @@ pub(super) fn rebuild_from_leaf_set_with_custom_triangles(
     custom_parents: &BTreeSet<TriangleAddress>,
     custom_triangles: &[[usize; 3]],
 ) -> Result<HierarchyLeafMesh, String> {
+    rebuild_custom_within(source, leaf_set, custom_parents, custom_triangles, None)
+}
+
+/// `rebuild_from_leaf_set_with_custom_triangles`, over `within` alone when
+/// given (`rebuild_within`).
+pub(super) fn rebuild_custom_within(
+    source: &MotherGrid,
+    leaf_set: &HierarchyLeafSet,
+    custom_parents: &BTreeSet<TriangleAddress>,
+    custom_triangles: &[[usize; 3]],
+    within: Option<&BTreeSet<usize>>,
+) -> Result<HierarchyLeafMesh, String> {
     let mut custom_face_slots = BTreeSet::new();
     for &parent in custom_parents {
         for child in source_faces_under(source, parent)? {
             custom_face_slots.insert(source_face_slot(source, child)?);
         }
     }
-    rebuild_from_leaf_set_with_custom_face_slots(
+    rebuild_within(
         source,
         leaf_set,
         &custom_face_slots,
         custom_triangles,
+        within,
     )
 }
 
@@ -195,7 +228,70 @@ pub(super) fn rebuild_from_leaf_set_with_custom_face_slots(
     custom_face_slots: &BTreeSet<usize>,
     custom_triangles: &[[usize; 3]],
 ) -> Result<HierarchyLeafMesh, String> {
-    let timing = std::env::var("EARTHMESH_CMRC_TIMING").as_deref() == Ok("1");
+    rebuild_within(source, leaf_set, custom_face_slots, custom_triangles, None)
+}
+
+/// Which source faces a rebuild covers, as it claims them: every active one
+/// in a table the size of the mesh, or a window's in a set (guide 11.144).
+enum Coverage<'a> {
+    Whole {
+        covered: Vec<bool>,
+        /// The faces to cover, when a window's.
+        within: Option<&'a BTreeSet<usize>>,
+    },
+    Window {
+        faces: &'a BTreeSet<usize>,
+        claimed: std::collections::HashSet<usize>,
+    },
+}
+
+impl Coverage<'_> {
+    /// Claims `slot`; whether it was claimed already.
+    fn claim(&mut self, slot: usize) -> Result<bool, String> {
+        match self {
+            Coverage::Whole { covered, .. } => Ok(std::mem::replace(&mut covered[slot], true)),
+            Coverage::Window { faces, claimed } => {
+                if !faces.contains(&slot) {
+                    return Err(format!("source face {slot} lies outside the search window"));
+                }
+                Ok(!claimed.insert(slot))
+            }
+        }
+    }
+
+    /// The first face to cover that is not.
+    fn first_uncovered(&self, source: &MotherGrid) -> Option<usize> {
+        match self {
+            Coverage::Whole {
+                covered,
+                within: None,
+            } => source
+                .mesh
+                .active_triangle_slots()
+                .find(|&face| !covered[face]),
+            Coverage::Whole {
+                covered,
+                within: Some(faces),
+            } => faces.iter().copied().find(|&face| !covered[face]),
+            Coverage::Window { faces, claimed } => {
+                faces.iter().copied().find(|face| !claimed.contains(face))
+            }
+        }
+    }
+}
+
+/// The mesh of `leaf_set` and the custom triangles, covering every active
+/// source face, or with `within` only those faces -- a search window's, open
+/// along its edge (guide 11.144). A window's sites and faces are numbered as
+/// the whole mesh numbers them, in the same order.
+pub(super) fn rebuild_within(
+    source: &MotherGrid,
+    leaf_set: &HierarchyLeafSet,
+    custom_face_slots: &BTreeSet<usize>,
+    custom_triangles: &[[usize; 3]],
+    within: Option<&BTreeSet<usize>>,
+) -> Result<HierarchyLeafMesh, String> {
+    let timing = std::env::var("EARTHMESH_CMRC_TIMING").as_deref() == Ok("1") && within.is_none();
     let mut started = Instant::now();
     // Nested materialization detail: never add these durations to component totals.
     let mut log_detail = |phase: &str| {
@@ -212,8 +308,20 @@ pub(super) fn rebuild_from_leaf_set_with_custom_face_slots(
         return Err("source mother subdivision must be positive".into());
     }
 
-    let source_faces = source.mesh.triangles().len();
-    let mut covered = vec![false; source_faces];
+    // A window of a sixteenth of the level or more is kept in tables the
+    // size of the level, as the whole is; a smaller one in sets.
+    let sparse =
+        within.is_some_and(|faces| faces.len().saturating_mul(16) < source.mesh.triangles().len());
+    let mut covered = match within {
+        Some(faces) if sparse => Coverage::Window {
+            faces,
+            claimed: std::collections::HashSet::with_capacity(faces.len()),
+        },
+        _ => Coverage::Whole {
+            covered: vec![false; source.mesh.triangles().len()],
+            within,
+        },
+    };
     let mut leaf_triangles = Vec::<[usize; 3]>::new();
     let mut leaf_addresses = Vec::<Option<TriangleAddress>>::new();
 
@@ -221,7 +329,7 @@ pub(super) fn rebuild_from_leaf_set_with_custom_face_slots(
         if !source.mesh.is_triangle_live(slot) {
             return Err(format!("custom source face {slot} is not active"));
         }
-        if std::mem::replace(&mut covered[slot], true) {
+        if covered.claim(slot)? {
             return Err(format!("source face {slot} is covered more than once"));
         }
     }
@@ -229,7 +337,7 @@ pub(super) fn rebuild_from_leaf_set_with_custom_face_slots(
     for &leaf in &leaf_set.leaves {
         if source_has_face(source, leaf) {
             let slot = source_face_slot(source, leaf)?;
-            if std::mem::replace(&mut covered[slot], true) {
+            if covered.claim(slot)? {
                 return Err(format!("source face {slot} is covered more than once"));
             }
             leaf_triangles.push(source.mesh.triangles()[slot]);
@@ -239,7 +347,7 @@ pub(super) fn rebuild_from_leaf_set_with_custom_face_slots(
         let mut corner_counts = std::collections::BTreeMap::<usize, usize>::new();
         for child in source_faces_under(source, leaf)? {
             let slot = source_face_slot(source, child)?;
-            if std::mem::replace(&mut covered[slot], true) {
+            if covered.claim(slot)? {
                 return Err(format!("source face {slot} is covered more than once"));
             }
             for site in source.mesh.triangles()[slot] {
@@ -274,16 +382,13 @@ pub(super) fn rebuild_from_leaf_set_with_custom_face_slots(
         leaf_addresses.push(None);
     }
 
-    for face in source.mesh.active_triangle_slots() {
-        if !covered[face] {
-            return Err(format!(
-                "active source face {face} is not covered by the hierarchy leaves"
-            ));
-        }
+    if let Some(face) = covered.first_uncovered(source) {
+        return Err(format!(
+            "active source face {face} is not covered by the hierarchy leaves"
+        ));
     }
     log_detail("coverage");
 
-    let mut used_sites = vec![false; source.mesh.vertices().len()];
     for site in leaf_triangles
         .iter()
         .flat_map(|triangle| triangle.iter().copied())
@@ -291,26 +396,52 @@ pub(super) fn rebuild_from_leaf_set_with_custom_face_slots(
         if !source.mesh.is_vertex_live(site) {
             return Err(format!("hierarchy leaf uses inactive source site {site}"));
         }
-        used_sites[site] = true;
     }
-    let mut old_to_new = vec![None; source.mesh.vertices().len()];
+    // Sites numbered in source order from 2, as the whole mesh numbers them.
     let mut vertices = vec![CartesianPoint::new(0.0, 0.0, 0.0); 2];
     let mut source_vertex_slots = vec![None, None];
-    for old in source.mesh.active_vertex_slots() {
-        if used_sites[old] {
-            old_to_new[old] = Some(vertices.len());
+    let new_of = |old: usize, new: &std::collections::HashMap<usize, usize>| new[&old];
+    let mut triangles = vec![[1usize; 3]; 2];
+    let mut triangle_addresses = vec![None, None];
+    if !sparse {
+        let mut used_sites = vec![false; source.mesh.vertices().len()];
+        for site in leaf_triangles
+            .iter()
+            .flat_map(|triangle| triangle.iter().copied())
+        {
+            used_sites[site] = true;
+        }
+        let mut old_to_new = vec![None; source.mesh.vertices().len()];
+        for old in source.mesh.active_vertex_slots() {
+            if used_sites[old] {
+                old_to_new[old] = Some(vertices.len());
+                vertices.push(source.mesh.vertices()[old]);
+                source_vertex_slots.push(Some(old));
+            }
+        }
+        log_detail("compact");
+        for (triangle, address) in leaf_triangles.into_iter().zip(leaf_addresses) {
+            let tri = triangle.map(|old| old_to_new[old].expect("used source site was compacted"));
+            push_oriented(&mut triangles, &vertices, tri)?;
+            triangle_addresses.push(address);
+        }
+    } else {
+        let used_sites = leaf_triangles
+            .iter()
+            .flat_map(|triangle| triangle.iter().copied())
+            .collect::<BTreeSet<_>>();
+        let mut old_to_new = std::collections::HashMap::with_capacity(used_sites.len());
+        for old in used_sites {
+            old_to_new.insert(old, vertices.len());
             vertices.push(source.mesh.vertices()[old]);
             source_vertex_slots.push(Some(old));
         }
-    }
-    log_detail("compact");
-
-    let mut triangles = vec![[1usize; 3]; 2];
-    let mut triangle_addresses = vec![None, None];
-    for (triangle, address) in leaf_triangles.into_iter().zip(leaf_addresses) {
-        let tri = triangle.map(|old| old_to_new[old].expect("used source site was compacted"));
-        push_oriented(&mut triangles, &vertices, tri)?;
-        triangle_addresses.push(address);
+        log_detail("compact");
+        for (triangle, address) in leaf_triangles.into_iter().zip(leaf_addresses) {
+            let tri = triangle.map(|old| new_of(old, &old_to_new));
+            push_oriented(&mut triangles, &vertices, tri)?;
+            triangle_addresses.push(address);
+        }
     }
     log_detail("orient");
 

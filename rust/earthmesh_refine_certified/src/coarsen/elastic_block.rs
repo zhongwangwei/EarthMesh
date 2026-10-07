@@ -240,17 +240,20 @@ pub struct GeometryFailureWitness {
     pub patch: ElasticPatch,
 }
 
+/// A certified solve. `geometry` is what certified it: the whole mesh's
+/// certificate, unless the caller certified only the faces that changed
+/// (`solve_elastic_patch_scoped`, guide 11.143).
 #[derive(Debug, Clone, PartialEq)]
-pub struct ElasticBlockTrial {
+pub struct ElasticBlockTrial<G = GeometryCertificateReport> {
     pub mesh: HierarchyLeafMesh,
     pub patch: ElasticPatch,
-    pub geometry: GeometryCertificateReport,
+    pub geometry: G,
     pub report: ElasticBlockReport,
 }
 
 #[derive(Debug, Clone, PartialEq)]
-pub enum ElasticBlockOutcome {
-    Certified(Box<ElasticBlockTrial>),
+pub enum ElasticBlockOutcome<G = GeometryCertificateReport> {
+    Certified(Box<ElasticBlockTrial<G>>),
     ElasticNoImprovement {
         elastic_iterations: usize,
         initial_energy: f64,
@@ -1255,7 +1258,16 @@ pub(super) fn solve_elastic_patch_with_contract(
     limits: ElasticBlockLimits,
     angle_contract: AngleContractId,
 ) -> ElasticBlockOutcome {
-    solve_elastic_patch_scoped(source, patch, limits, angle_contract, None)
+    solve_elastic_patch_impl(
+        source,
+        patch,
+        limits,
+        GeometryStartId::MaterializedSource,
+        ElasticSolverMode::FiniteDifferenceElastic,
+        1.0,
+        angle_contract,
+        None,
+    )
 }
 
 /// The mesh of a built region, open along the region's edge: the vertices
@@ -1267,14 +1279,36 @@ pub struct GeometryScope {
     pub euler: isize,
 }
 
+/// A component transaction's solve. With `changed` -- the faces the
+/// candidate changed, the mesh beyond them certified already
+/// (`CommitCertification::Changed`, guide 11.143) -- a solution is
+/// certified on those faces and every face round a movable vertex, and
+/// carries no whole-mesh certificate; without, on the whole mesh. Faces
+/// that reach a region's open edge are certified whole, as there.
 pub(super) fn solve_elastic_patch_scoped(
     source: &HierarchyLeafMesh,
     patch: ElasticPatch,
     limits: ElasticBlockLimits,
     angle_contract: AngleContractId,
     scope: Option<&GeometryScope>,
-) -> ElasticBlockOutcome {
-    solve_elastic_patch_impl(
+    changed: Option<&BTreeSet<usize>>,
+) -> ElasticBlockOutcome<Option<GeometryCertificateReport>> {
+    let faces = changed
+        .map(|changed| {
+            let mut faces = changed.clone();
+            faces.extend(patch.guard_faces.iter().copied());
+            faces
+        })
+        .filter(|faces| {
+            scope.is_none_or(|scope| {
+                !source
+                    .mesh
+                    .sites_touching(faces)
+                    .keys()
+                    .any(|site| scope.edge_sites.contains(site))
+            })
+        });
+    solve_elastic_patch_certifying(
         source,
         patch,
         limits,
@@ -1283,6 +1317,12 @@ pub(super) fn solve_elastic_patch_scoped(
         1.0,
         angle_contract,
         scope,
+        &|certificate, mesh| match &faces {
+            None => verify_scoped(certificate, mesh, scope).map(Some),
+            Some(faces) => certificate
+                .verify_geometry_region(mesh, faces)
+                .map(|_| None),
+        },
     )
 }
 
@@ -1400,6 +1440,35 @@ fn solve_elastic_patch_impl(
     angle_contract: AngleContractId,
     scope: Option<&GeometryScope>,
 ) -> ElasticBlockOutcome {
+    solve_elastic_patch_certifying(
+        source,
+        patch,
+        limits,
+        start_id,
+        solver_mode,
+        trust_fraction,
+        angle_contract,
+        scope,
+        &|certificate, mesh| verify_scoped(certificate, mesh, scope),
+    )
+}
+
+/// The solve, a solution certified by `certify`: the whole mesh's
+/// certificate (`solve_elastic_patch_impl`), or its changed faces'
+/// (`solve_elastic_patch_scoped`). Failures are explained against the whole
+/// mesh either way.
+#[allow(clippy::too_many_arguments)]
+fn solve_elastic_patch_certifying<G>(
+    source: &HierarchyLeafMesh,
+    patch: ElasticPatch,
+    limits: ElasticBlockLimits,
+    start_id: GeometryStartId,
+    solver_mode: ElasticSolverMode,
+    trust_fraction: f64,
+    angle_contract: AngleContractId,
+    scope: Option<&GeometryScope>,
+    certify: &dyn Fn(&Certificate, &MeshState) -> Result<G, CertificateError>,
+) -> ElasticBlockOutcome<G> {
     if !trust_fraction.is_finite()
         || !(0.0..=1.0).contains(&trust_fraction)
         || trust_fraction == 0.0
@@ -1417,7 +1486,7 @@ fn solve_elastic_patch_impl(
         return ElasticBlockOutcome::InvalidPatch { reason };
     }
     let input_positions = source.mesh.vertices().to_vec();
-    if let Ok(geometry) = verify_scoped(&certificate, &current.mesh, scope) {
+    if let Ok(geometry) = certify(&certificate, &current.mesh) {
         return certified(current, patch, geometry, 0, 0.0, 0.0, &input_positions);
     }
 
@@ -1653,7 +1722,7 @@ fn solve_elastic_patch_impl(
             &context.guard_faces,
             context.degrees_pass,
         ) {
-            if let Ok(geometry) = verify_scoped(&certificate, &current.mesh, scope) {
+            if let Ok(geometry) = certify(&certificate, &current.mesh) {
                 return certified(
                     current,
                     patch,
@@ -2641,15 +2710,15 @@ fn validate_patch(mesh: &HierarchyLeafMesh, patch: &ElasticPatch) -> Result<(), 
     Ok(())
 }
 
-fn certified(
+fn certified<G>(
     mesh: HierarchyLeafMesh,
     patch: ElasticPatch,
-    geometry: GeometryCertificateReport,
+    geometry: G,
     elastic_iterations: usize,
     initial_energy: f64,
     final_energy: f64,
     input_positions: &[CartesianPoint],
-) -> ElasticBlockOutcome {
+) -> ElasticBlockOutcome<G> {
     let moved_compact_vertices = patch
         .movable_compact_vertices
         .iter()

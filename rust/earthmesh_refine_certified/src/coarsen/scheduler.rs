@@ -1,6 +1,6 @@
 use super::{
     angle_atlas::validate_spatial_context,
-    component_transaction::solve_component_transaction_at_level,
+    component_transaction::{solve_component_transaction_at_level, CommitCertification},
     plan_hierarchy_components_from_parent_requirements, ComponentRollbackReport,
     ComponentTransactionLimits, ComponentTransactionOutcome, ComponentTransactionState,
     DomainQualityRejectReason, ExplicitParentRequirement, HierarchyComponent, RegionComponent,
@@ -179,8 +179,9 @@ pub struct ElasticCmrcReport {
 pub struct ElasticCmrcResult {
     pub state: ComponentTransactionState,
     pub report: ElasticCmrcReport,
-    /// The remap the last committed component certified, from the source
-    /// mother to `state`'s mesh; `None` when nothing was committed.
+    /// The remap from the source mother to `state`'s mesh, certified at the
+    /// end of the last level that committed a component; `None` when
+    /// nothing was committed.
     pub final_remap: Option<ConservativeRemap>,
 }
 
@@ -474,7 +475,9 @@ fn run_elastic_component_epochs_impl(
         }
         _ => VoronoiRemapSource::new(&grid.mesh),
     };
-    let mut final_remap = None;
+    // Whether any component committed: the remap the delivery needs is
+    // made once, after the last level, when one did (guide 11.145).
+    let mut committed_any = false;
     // The settled region: its finest interior vertices, counted, and its
     // current level (it coarsens with the component that reaches it).
     let settled_vertices =
@@ -485,7 +488,9 @@ fn run_elastic_component_epochs_impl(
     let initial_vertices = grid.mesh.vertex_count() + settled_vertices(grid.subdivision);
     let mut remaining_topology_states = config.total_transition_states;
     let mut next_component_id = 0u64;
-    let source_active_sites = grid.mesh.active_vertex_slots().collect::<Vec<_>>();
+    // The level field's own sites, which `validate_inputs` matched with the
+    // grid's: each component's preflight then sees the very same list.
+    let source_active_sites = source_levels.active_sites();
     let mut report = ElasticCmrcReport {
         initial_faces,
         final_faces: initial_faces,
@@ -627,7 +632,6 @@ fn run_elastic_component_epochs_impl(
         let mut committed = 0usize;
         let mut promoted = 0usize;
         let mut exhausted = 0usize;
-        let mut certified_state_fingerprint = None;
         let mut quality_stats = CoarseningScheduleStats::default();
         let planning_elapsed = level_started.elapsed();
         let components_started = Instant::now();
@@ -675,7 +679,7 @@ fn run_elastic_component_epochs_impl(
                 source_levels,
                 &mut state,
                 level_grid,
-                &source_active_sites,
+                source_active_sites,
                 &level_source_slots,
                 &component,
                 target_level,
@@ -683,9 +687,19 @@ fn run_elastic_component_epochs_impl(
                 limits,
                 config.angle_contract,
                 region.map(|region| &region.scope),
+                // Each commit certifies what it changed; the level is
+                // certified whole below (guide 11.143).
+                CommitCertification::Changed,
             );
             let mut component_record = match outcome {
-                ComponentTransactionOutcome::Certified(mut commit) => {
+                ComponentTransactionOutcome::Certified(commit) => {
+                    // A gate reads the whole mesh, which a commit built in a
+                    // window leaves to be rebuilt (guide 11.146).
+                    if quality_gate.is_some() {
+                        if let Err(reason) = state.refresh(grid) {
+                            return ElasticCmrcOutcome::InvalidInput { reason };
+                        }
+                    }
                     let rejection = quality_gate
                         .as_mut()
                         .and_then(|gate| gate(&component, &state));
@@ -722,8 +736,6 @@ fn run_elastic_component_epochs_impl(
                         report.total_topology_states += commit.topology_states;
                         report.total_elastic_iterations += commit.elastic_iterations;
                         report.total_interval_boxes += commit.interval_boxes;
-                        certified_state_fingerprint = Some(commit.after_fingerprint);
-                        final_remap = commit.remap_matrix.take();
                         remaining_topology_states =
                             remaining_topology_states.saturating_sub(commit.topology_states);
                         ElasticComponentRecord {
@@ -820,26 +832,28 @@ fn run_elastic_component_epochs_impl(
             quality_stats.components_rejected_for_global_hard;
         report.components_rejected_for_target_quality +=
             quality_stats.components_rejected_for_target_quality;
-        let reused_component_certificate = certified_state_fingerprint == Some(state.fingerprint());
-        if !reused_component_certificate {
-            if let Err(reason) = certify_stage(
-                grid,
-                &source_remap,
-                source_levels,
-                &state,
-                config.max_adjacent_level_delta,
-                config.angle_contract,
-                region.map(|region| &region.scope),
-            ) {
-                return ElasticCmrcOutcome::NotCertifiable {
-                    reason: format!("stage {source_level}->{target_level}: {reason}"),
-                };
-            }
+        // Every commit certified only the faces and cells it changed, so the
+        // level's geometry is certified whole here, once (guide 11.143);
+        // commits built in windows left the whole mesh to be rebuilt, once,
+        // now (guide 11.146).
+        if let Err(reason) = state.refresh(grid) {
+            return ElasticCmrcOutcome::InvalidInput { reason };
         }
+        if let Err(reason) = certify_stage_geometry(
+            grid,
+            &state,
+            config.angle_contract,
+            region.map(|region| &region.scope),
+        ) {
+            return ElasticCmrcOutcome::NotCertifiable {
+                reason: format!("stage {source_level}->{target_level}: {reason}"),
+            };
+        }
+        committed_any |= committed > 0;
         let certification_elapsed = certification_started.elapsed();
         if timing_enabled {
             eprintln!(
-                "earthmesh_cli: cmrc_timing phase=elastic_level source_level={source_level} target_level={target_level} planning_ms={} components_ms={} certification_ms={} reused_component_certificate={reused_component_certificate} total_ms={}",
+                "earthmesh_cli: cmrc_timing phase=elastic_level source_level={source_level} target_level={target_level} planning_ms={} components_ms={} certification_ms={} total_ms={}",
                 planning_elapsed.as_millis(),
                 components_elapsed.as_millis(),
                 certification_elapsed.as_millis(),
@@ -869,6 +883,38 @@ fn run_elastic_component_epochs_impl(
         report.delivered_histogram = delivered_histogram;
     }
 
+    // The remap the delivery needs, from the source mother to the mesh the
+    // levels left, and the requirements of every cell: each commit
+    // certified the rows and requirements of the cells it changed, and the
+    // whole remap is made and certified here, once (guide 11.145). Nothing
+    // committed leaves every cell its own.
+    let final_remap = if committed_any {
+        let started = Instant::now();
+        let remap = match certify_stage_cells(
+            grid,
+            &source_remap,
+            source_levels,
+            &state,
+            config.max_adjacent_level_delta,
+            region.map(|region| &region.scope),
+        ) {
+            Ok(remap) => remap,
+            Err(reason) => {
+                return ElasticCmrcOutcome::NotCertifiable {
+                    reason: format!("after the last level: {reason}"),
+                };
+            }
+        };
+        if std::env::var("EARTHMESH_CMRC_TIMING").as_deref() == Ok("1") {
+            eprintln!(
+                "earthmesh_cli: cmrc_timing phase=elastic_final_cells elapsed_ms={}",
+                started.elapsed().as_millis()
+            );
+        }
+        Some(remap)
+    } else {
+        None
+    };
     let settled_n = grid.subdivision >> (config.max_level - settled_level);
     report.final_faces = state.mesh().mesh.triangle_count() + settled_faces(settled_n);
     report.final_vertices = state.mesh().mesh.vertex_count() + settled_vertices(settled_n);
@@ -1143,12 +1189,11 @@ fn rollback_record(
     }
 }
 
-fn certify_stage(
+/// A level's geometry, certified whole: the internal and the final-delivery
+/// certificate, on the whole sphere or the built region.
+fn certify_stage_geometry(
     source: &MotherGrid,
-    source_remap: &VoronoiRemapSource<'_>,
-    source_levels: &SourceLevelField,
     state: &ComponentTransactionState,
-    max_adjacent_level_delta: usize,
     angle_contract: AngleContractId,
     scope: Option<&super::RegionScope>,
 ) -> Result<(), String> {
@@ -1163,6 +1208,19 @@ fn certify_stage(
         .map_err(|error| format!("internal geometry: {error:?}"))?;
     verify(Certificate::final_delivery_for(angle_contract))
         .map_err(|error| format!("final geometry: {error:?}"))?;
+    Ok(())
+}
+
+/// The remap from the source mother to the state's mesh and every cell's
+/// requirements, certified whole; the remap.
+fn certify_stage_cells(
+    source: &MotherGrid,
+    source_remap: &VoronoiRemapSource<'_>,
+    source_levels: &SourceLevelField,
+    state: &ComponentTransactionState,
+    max_adjacent_level_delta: usize,
+    scope: Option<&super::RegionScope>,
+) -> Result<ConservativeRemap, String> {
     let target_levels = state.target_levels()?;
     let remap = match scope {
         None => source_remap.remap_to(&state.mesh().mesh)?,
@@ -1185,7 +1243,7 @@ fn certify_stage(
         remap.certify_spherical_overlap(source_levels.levels().len(), target_levels.levels().len());
     FinalCertificationEvidence::from_final_cells(&final_cells, remap_certificate)
         .map_err(|reason| format!("remap: {reason}"))?;
-    Ok(())
+    Ok(remap)
 }
 
 fn histogram(levels: impl IntoIterator<Item = usize>) -> BTreeMap<usize, usize> {

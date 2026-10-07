@@ -137,7 +137,8 @@ pub use combined_recovery::{
     WorkingMeshCandidate, WorkingMeshHardGates, WorkingMeshRejectReason, WorkingMeshStep,
 };
 pub use component_transaction::{
-    solve_component_transaction, solve_component_transaction_with_contract, ComponentCommitReport,
+    solve_component_transaction, solve_component_transaction_with_contract, ChangedCellsReport,
+    CommitCells, CommitCertification, CommitGeometry, ComponentCommitReport,
     ComponentRollbackReport, ComponentTransactionLimits, ComponentTransactionOutcome,
     ComponentTransactionStage, ComponentTransactionState, RegionScope,
 };

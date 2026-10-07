@@ -429,6 +429,20 @@ impl ConservativeRemap {
         }
     }
 
+    /// No rows, for none of `whole_cells` cells.
+    fn empty_rows(whole_cells: usize) -> Self {
+        Self {
+            rows: Vec::new(),
+            coverage_error: 0.0,
+            source_fingerprint: None,
+            target_fingerprint: None,
+            covered_targets: Some(PartialCoverage {
+                targets: Vec::new(),
+                whole_cells,
+            }),
+        }
+    }
+
     /// The target cells the rows cover, when they cover only a region.
     pub fn covered_targets(&self) -> Option<&[usize]> {
         self.covered_targets
@@ -544,6 +558,9 @@ pub(crate) struct VoronoiRemapSource<'a> {
     /// Sites of a built region's edge: open fans, no cell.
     cellless: Option<&'a std::collections::BTreeSet<usize>>,
     prepared: OnceLock<Result<PreparedRemapSource, String>>,
+    /// The source mesh's fingerprint, hashed once: every remap and every
+    /// component transaction of a scheduler run reads it.
+    fingerprint: OnceLock<u64>,
 }
 
 struct PreparedRemapSource {
@@ -560,6 +577,7 @@ impl<'a> VoronoiRemapSource<'a> {
             mesh,
             cellless: None,
             prepared: OnceLock::new(),
+            fingerprint: OnceLock::new(),
         }
     }
 
@@ -573,7 +591,18 @@ impl<'a> VoronoiRemapSource<'a> {
             mesh,
             cellless: Some(cellless),
             prepared: OnceLock::new(),
+            fingerprint: OnceLock::new(),
         }
+    }
+
+    /// The fingerprint of the source mesh.
+    pub(crate) fn source_fingerprint(&self) -> u64 {
+        *self.fingerprint.get_or_init(|| mesh_fingerprint(self.mesh))
+    }
+
+    /// Whether `mesh` is this remap's source mesh, the very one.
+    pub(crate) fn is_source(&self, mesh: &MeshState) -> bool {
+        std::ptr::eq(self.mesh, mesh)
     }
 
     fn prepared(&self) -> Result<&PreparedRemapSource, String> {
@@ -620,7 +649,7 @@ impl<'a> VoronoiRemapSource<'a> {
             targets,
             None,
         )?;
-        remap.source_fingerprint = Some(mesh_fingerprint(self.mesh));
+        remap.source_fingerprint = Some(self.source_fingerprint());
         remap.target_fingerprint = Some(mesh_fingerprint(target));
         Ok(remap)
     }
@@ -650,10 +679,46 @@ impl<'a> VoronoiRemapSource<'a> {
             targets,
             Some(&target_ids),
         )?;
-        remap.source_fingerprint = Some(mesh_fingerprint(self.mesh));
+        remap.source_fingerprint = Some(self.source_fingerprint());
         remap.target_fingerprint = Some(mesh_fingerprint(target));
         remap.covered_targets = Some(PartialCoverage {
             targets: target_ids,
+            whole_cells,
+        });
+        Ok(remap)
+    }
+
+    /// Rows for the cells of `sites` alone, each given with a face round it
+    /// and in ascending order -- the cells a commit changed (guide 11.145).
+    /// `ids` numbers them as among all the target's cells, and `whole_cells`
+    /// is the cell count the certificate's tolerances scale with, so each
+    /// row is, and passes or fails as, the one the whole mesh's remap holds.
+    /// Neither mesh is fingerprinted: the rows bind to no whole mesh.
+    pub(crate) fn remap_sites_to(
+        &self,
+        target: &MeshState,
+        sites: &[(usize, usize)],
+        ids: Vec<usize>,
+        whole_cells: usize,
+    ) -> Result<ConservativeRemap, String> {
+        // No changed cell is certified one by one: no rows.
+        if sites.is_empty() {
+            return Ok(ConservativeRemap::empty_rows(whole_cells));
+        }
+        let source = self.prepared()?;
+        let target_cells = voronoi_rings_at(target, sites)?;
+        let targets = prepare_cells(&target_cells)?;
+        let mut remap = ConservativeRemap::overlap_prepared(
+            &source.cells,
+            &source.polygons,
+            source.ids.as_deref(),
+            &source.index,
+            &target_cells,
+            targets,
+            Some(&ids),
+        )?;
+        remap.covered_targets = Some(PartialCoverage {
+            targets: ids,
             whole_cells,
         });
         Ok(remap)
@@ -705,20 +770,7 @@ pub(crate) fn voronoi_rings_selected(
             if !mesh.is_triangle_live(triangle) {
                 return Ok(());
             }
-            let point = mesh.circumcentre(triangle).map_err(|error| {
-                format!("Voronoi triangle {triangle} cannot be remapped: {error}")
-            })?;
-            let radius = (point.x * point.x + point.y * point.y + point.z * point.z).sqrt();
-            if !radius.is_finite() || radius <= 0.0 {
-                return Err(format!(
-                    "Voronoi triangle {triangle} has a non-finite corner"
-                ));
-            }
-            let point = [point.x / radius, point.y / radius, point.z / radius];
-            *corner = (
-                point[1].atan2(point[0]).to_degrees(),
-                point[2].clamp(-1.0, 1.0).asin().to_degrees(),
-            );
+            *corner = voronoi_corner(mesh, triangle)?;
             Ok(())
         },
     )?;
@@ -744,6 +796,54 @@ pub(crate) fn voronoi_rings_selected(
         })
         .collect::<Result<Vec<_>, String>>()?;
     Ok((rings, ids))
+}
+
+/// The corner a face gives the Voronoi cells round it: its circumcentre, in
+/// degrees of longitude and latitude.
+fn voronoi_corner(mesh: &MeshState, triangle: usize) -> Result<(f64, f64), String> {
+    let point = mesh
+        .circumcentre(triangle)
+        .map_err(|error| format!("Voronoi triangle {triangle} cannot be remapped: {error}"))?;
+    let radius = (point.x * point.x + point.y * point.y + point.z * point.z).sqrt();
+    if !radius.is_finite() || radius <= 0.0 {
+        return Err(format!(
+            "Voronoi triangle {triangle} has a non-finite corner"
+        ));
+    }
+    let point = [point.x / radius, point.y / radius, point.z / radius];
+    Ok((
+        point[1].atan2(point[0]).to_degrees(),
+        point[2].clamp(-1.0, 1.0).asin().to_degrees(),
+    ))
+}
+
+/// The Voronoi rings of `sites`, each given with a face round it, as
+/// `voronoi_rings_selected` makes them for the whole mesh: the fan from the
+/// lowest face slot round the site, its corners the faces' circumcentres.
+/// Only the faces round the sites are read (guide 11.145).
+pub(crate) fn voronoi_rings_at(
+    mesh: &MeshState,
+    sites: &[(usize, usize)],
+) -> Result<Rings, String> {
+    sites
+        .par_iter()
+        .map(|&(site, face)| {
+            let fan_from = |seed: usize| {
+                mesh.triangle_fan_from(site, seed)
+                    .map_err(|error| format!("Voronoi cell {site} cannot be remapped: {error}"))
+            };
+            let fan = fan_from(face)?;
+            let seed = fan
+                .iter()
+                .copied()
+                .min()
+                .ok_or_else(|| format!("Voronoi cell {site} is in no triangle"))?;
+            let fan = if seed == face { fan } else { fan_from(seed)? };
+            fan.into_iter()
+                .map(|triangle| voronoi_corner(mesh, triangle))
+                .collect()
+        })
+        .collect()
 }
 
 /// Caps binned for overlap queries (guide 11.120). Each cap lies on the level
@@ -1234,6 +1334,67 @@ mod tests {
                 );
             }
         }
+    }
+
+    /// The rows of some cells, made from the faces round them alone, are the
+    /// whole remap's rows for those cells, whichever face round a site they
+    /// start from, and certify with its tolerances (guide 11.145).
+    #[test]
+    fn rows_of_some_cells_are_the_whole_remaps_rows() {
+        let source = MotherGrid::generate(4).unwrap();
+        let cached = VoronoiRemapSource::new(&source.mesh);
+        let mut target = MotherGrid::generate(3).unwrap().mesh;
+        let moved = target.active_vertex_slots().nth(7).unwrap();
+        let mut point = target.vertices()[moved];
+        point.x += 0.01;
+        target.move_vertex(moved, point);
+        let whole = cached.remap_to(&target).unwrap();
+        let source_cells = source.mesh.active_vertex_slots().count();
+        let cells = target.active_vertex_slots().count();
+        // Each site starts from the last face round it, not the first.
+        let mut last_face = BTreeMap::new();
+        for face in target.active_triangle_slots() {
+            for site in target.triangles()[face] {
+                last_face.insert(site, face);
+            }
+        }
+        let (sites, ids): (Vec<_>, Vec<_>) = target
+            .active_vertex_slots()
+            .enumerate()
+            .filter(|(cell, _)| cell % 3 == 0)
+            .map(|(cell, site)| ((site, last_face[&site]), cell))
+            .unzip();
+        let some = cached
+            .remap_sites_to(&target, &sites, ids.clone(), cells)
+            .unwrap();
+        assert_eq!(some.rows().len(), ids.len());
+        for (row, &cell) in some.rows().iter().zip(&ids) {
+            assert_eq!(row, &whole.rows()[cell]);
+        }
+        let certificate = some.certify_spherical_overlap(source_cells, cells);
+        let whole_certificate = whole.certify_spherical_overlap(source_cells, cells);
+        assert_eq!(certificate.rows(), ids.len());
+        assert_eq!(
+            certificate.closure_tolerance(),
+            whole_certificate.closure_tolerance()
+        );
+        assert_eq!(
+            certificate.negative_weights()
+                + certificate.bad_row_sums()
+                + certificate.bad_lineage_rows(),
+            0
+        );
+        // No cells: no rows, and nothing to fail.
+        let none = cached
+            .remap_sites_to(&target, &[], Vec::new(), cells)
+            .unwrap();
+        assert!(none.rows().is_empty());
+        let empty = none.certify_spherical_overlap(source_cells, cells);
+        assert_eq!(
+            empty.negative_weights() + empty.bad_row_sums() + empty.bad_lineage_rows(),
+            0
+        );
+        assert!(empty.global_area_closure_error() <= empty.closure_tolerance());
     }
 
     #[test]

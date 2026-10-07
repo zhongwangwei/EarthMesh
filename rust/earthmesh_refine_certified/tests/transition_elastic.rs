@@ -207,6 +207,7 @@ fn transition_trial_entry_derives_the_same_coordinate_only_block() {
             transition_parent_count: 1,
             ..TransitionTopologyReport::default()
         },
+        window_parents: None,
     };
     assert!(matches!(
         solve_elastic_transition_block(&transition, REPAIR_LIMITS),

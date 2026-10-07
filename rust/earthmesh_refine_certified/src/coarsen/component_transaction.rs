@@ -17,15 +17,15 @@ use super::{
 };
 use crate::{
     certificate::{
-        AngleContractId, Certificate, FinalCertificateReport, GeometryCertificateReport,
-        GeometryRegionCertificateReport,
+        AngleContractId, Certificate, CertificateError, FinalCertificateReport,
+        GeometryCertificateReport, GeometryRegionCertificateReport,
     },
     fingerprint::mesh_fingerprint,
     mother_grid::{MotherGrid, TriangleAddress},
     outcome::{FinalCertificationEvidence, GeometryCertifiedMotherGrid},
-    remap::{ConservativeRemap, RemapCertificate, VoronoiRemapSource},
+    remap::{RemapCertificate, VoronoiRemapSource},
     requirement::{
-        certify_final_cell_requirements_with_remap, FinalCellRequirementError,
+        certify_final_cell_requirements_with_remap, row_required_level, FinalCellRequirementError,
         FinalCellRequirementReport, SourceLevelField, TargetLevelField,
     },
 };
@@ -175,7 +175,7 @@ fn retry_places(
 
 /// What an elastic solve did, for the timing log: how it ended, its
 /// iterations and last phase, and the patch it moved.
-fn log_elastic_outcome(component: u64, outcome: &ElasticBlockOutcome, patch: (usize, usize)) {
+fn log_elastic_outcome<G>(component: u64, outcome: &ElasticBlockOutcome<G>, patch: (usize, usize)) {
     let (kind, iterations, phase) = match outcome {
         ElasticBlockOutcome::Certified(trial) => {
             ("Certified", trial.report.elastic_iterations, None)
@@ -330,6 +330,14 @@ pub struct ComponentTransactionState {
     source_positions: Vec<CartesianPoint>,
     source_delivered_levels: Vec<Option<usize>>,
     mesh: HierarchyLeafMesh,
+    /// Whether `mesh` lags the leaves, transition triangles and positions:
+    /// a commit built in a window changes those alone, and the whole mesh
+    /// is rebuilt once, before it is next read (`refresh`, guide 11.146).
+    stale: bool,
+    /// The whole mesh's active vertices and faces, kept as commits change
+    /// them.
+    vertex_count: usize,
+    face_count: usize,
     source_fingerprint: u64,
     source_subdivision: usize,
     claimed_parent_subdivision: Option<usize>,
@@ -351,6 +359,9 @@ impl ComponentTransactionState {
                 .enumerate()
                 .map(|(slot, _)| source.mesh.is_vertex_live(slot).then_some(initial_level))
                 .collect(),
+            stale: false,
+            vertex_count: mesh.mesh.vertex_count(),
+            face_count: mesh.mesh.triangle_count(),
             mesh,
             source_fingerprint: mesh_fingerprint(&source.mesh),
             source_subdivision: source.subdivision,
@@ -359,14 +370,56 @@ impl ComponentTransactionState {
         })
     }
 
+    /// The whole mesh. Only a state `refresh`ed since its last windowed
+    /// commit has one.
     pub fn mesh(&self) -> &HierarchyLeafMesh {
+        assert!(
+            !self.stale,
+            "a transaction state's mesh is read before it is rebuilt (refresh)"
+        );
         &self.mesh
+    }
+
+    /// Whether the whole mesh must be rebuilt (`refresh`) before it is read.
+    pub fn is_stale(&self) -> bool {
+        self.stale
+    }
+
+    /// Rebuilds the whole mesh from the leaves, transition triangles and
+    /// positions when commits built in windows left it behind (guide
+    /// 11.146): the mesh a commit built whole would have left.
+    pub fn refresh(&mut self, source: &MotherGrid) -> Result<(), String> {
+        if !self.stale {
+            return Ok(());
+        }
+        let (custom_parents, custom_triangles) = custom_parts(&self.custom_transition_triangles);
+        let mut mesh = rebuild_from_leaf_set_with_custom_triangles(
+            source,
+            &self.leaf_set,
+            &custom_parents,
+            &custom_triangles,
+        )?;
+        apply_source_positions(&mut mesh, &self.source_positions);
+        if (mesh.mesh.vertex_count(), mesh.mesh.triangle_count())
+            != (self.vertex_count, self.face_count)
+        {
+            return Err(format!(
+                "the rebuilt mesh has {} vertices and {} faces, the commits left {} and {}",
+                mesh.mesh.vertex_count(),
+                mesh.mesh.triangle_count(),
+                self.vertex_count,
+                self.face_count
+            ));
+        }
+        self.mesh = mesh;
+        self.stale = false;
+        Ok(())
     }
 
     pub fn target_levels(&self) -> Result<TargetLevelField, String> {
         target_levels_for(
-            &self.mesh.mesh,
-            &self.mesh.source_vertex_slots,
+            &self.mesh().mesh,
+            &self.mesh().source_vertex_slots,
             &self.source_delivered_levels,
         )
     }
@@ -376,7 +429,7 @@ impl ComponentTransactionState {
     }
 
     pub fn fingerprint(&self) -> u64 {
-        mesh_fingerprint(&self.mesh.mesh)
+        mesh_fingerprint(&self.mesh().mesh)
     }
 
     pub(super) fn custom_transition_triangles(
@@ -407,7 +460,7 @@ impl ComponentTransactionState {
         }
         let mut slots = vec![None; level_grid.mesh.vertices().len()];
         let live_sources = self
-            .mesh
+            .mesh()
             .source_vertex_slots
             .iter()
             .flatten()
@@ -466,8 +519,10 @@ pub struct ComponentRollbackReport {
     pub component_id: u64,
     pub stage: ComponentTransactionStage,
     pub reason: String,
-    pub before_fingerprint: u64,
-    pub restored_fingerprint: u64,
+    /// The whole mesh's fingerprints, when the transaction certifies it
+    /// whole (`CommitCertification::Whole`).
+    pub before_fingerprint: Option<u64>,
+    pub restored_fingerprint: Option<u64>,
     pub pre_vertices: usize,
     pub pre_faces: usize,
     pub topology_states: usize,
@@ -479,8 +534,10 @@ pub struct ComponentRollbackReport {
 #[derive(Debug, Clone)]
 pub struct ComponentCommitReport {
     pub component_id: u64,
-    pub before_fingerprint: u64,
-    pub after_fingerprint: u64,
+    /// The whole mesh's fingerprints, when the transaction certifies it
+    /// whole (`CommitCertification::Whole`).
+    pub before_fingerprint: Option<u64>,
+    pub after_fingerprint: Option<u64>,
     pub pre_vertices: usize,
     pub pre_faces: usize,
     pub post_vertices: usize,
@@ -494,14 +551,10 @@ pub struct ComponentCommitReport {
     pub interval_boxes: usize,
     pub halo_expansions: usize,
     pub local_geometry: GeometryRegionCertificateReport,
-    pub global_geometry: GeometryCertificateReport,
-    pub final_certificate: FinalCertificateReport,
-    pub final_cells: FinalCellRequirementReport,
-    pub remap: RemapCertificate,
-    /// The certified remap itself, from the source mother to the committed
-    /// mesh: the scheduler hands the last one on rather than have it computed
-    /// again (`ElasticCmrcResult::final_remap`).
-    pub remap_matrix: Option<ConservativeRemap>,
+    /// What certified the committed geometry (`CommitCertification`).
+    pub geometry: CommitGeometry,
+    /// What certified the committed cells: their requirements and remap.
+    pub cells: CommitCells,
     pub elastic: Option<ElasticBlockReport>,
 }
 
@@ -514,6 +567,72 @@ pub enum ComponentTransactionOutcome {
     RequiresWiderHalo(ComponentRollbackReport),
     NotCertifiable(ComponentRollbackReport),
     InvalidInput(ComponentRollbackReport),
+}
+
+/// How a component transaction certifies what it commits (guide 11.143).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CommitCertification {
+    /// The whole mesh, against the internal and the final-delivery
+    /// certificates, and the final certificate built from them: what a
+    /// transaction on its own owes.
+    Whole,
+    /// The faces the candidate changed or whose corners it moved, against
+    /// both certificates. The rest of the mesh is as the last commit left
+    /// it, and the caller certifies the whole once its components are done
+    /// -- the scheduler at the end of each level. Every check the whole
+    /// mesh's certificate makes is local to a face, an edge's two faces or a
+    /// site's fan, so those faces decide it alone; the counts it adds up are
+    /// left to the level's certificate. A candidate whose faces reach a
+    /// region's open edge, where the whole mesh's checks spare the sites,
+    /// is certified whole.
+    Changed,
+}
+
+/// The geometry evidence a commit carries (`CommitCertification`).
+#[derive(Debug, Clone, PartialEq)]
+pub enum CommitGeometry {
+    Whole {
+        internal: GeometryCertificateReport,
+        final_certificate: FinalCertificateReport,
+    },
+    Changed {
+        internal: GeometryRegionCertificateReport,
+        final_delivery: GeometryRegionCertificateReport,
+    },
+    /// A window's, when the faces that changed reach a region's edge: the
+    /// window certified as a region is, open along its edges (guide
+    /// 11.146).
+    Window {
+        internal: GeometryCertificateReport,
+        final_delivery: GeometryCertificateReport,
+    },
+}
+
+/// The cell evidence a commit carries (`CommitCertification`).
+#[derive(Debug, Clone, PartialEq)]
+pub enum CommitCells {
+    /// Every cell's requirements, and the remap of every cell.
+    Whole {
+        final_cells: FinalCellRequirementReport,
+        remap: RemapCertificate,
+    },
+    /// The requirements and the remap rows of the cells the candidate
+    /// changed, and the balance of every edge at their sites (guide
+    /// 11.145). The remap the delivery needs is the scheduler's, made at
+    /// the end of the level.
+    Changed {
+        remap: RemapCertificate,
+        cells: ChangedCellsReport,
+    },
+}
+
+/// What a commit's changed cells were checked for (`CommitCells::Changed`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ChangedCellsReport {
+    /// Cells whose remap rows were made and whose requirements were met.
+    pub cells: usize,
+    /// Edges at the changed sites whose balance was met.
+    pub edges: usize,
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -572,6 +691,7 @@ pub fn solve_component_transaction_with_contract(
         limits,
         angle_contract,
         None,
+        CommitCertification::Whole,
     )
 }
 
@@ -590,11 +710,18 @@ pub(super) fn solve_component_transaction_at_level(
     limits: ComponentTransactionLimits,
     angle_contract: AngleContractId,
     scope: Option<&RegionScope>,
+    certification: CommitCertification,
 ) -> ComponentTransactionOutcome {
     let timing_enabled = std::env::var("EARTHMESH_CMRC_TIMING").as_deref() == Ok("1");
-    let before_fingerprint = state.fingerprint();
-    let pre_vertices = state.mesh.mesh.vertex_count();
-    let pre_faces = state.mesh.mesh.triangle_count();
+    // A transaction certified whole reads, and fingerprints, the whole mesh;
+    // one certified where it changed builds its candidates in the window
+    // its search used, and leaves the whole mesh to be rebuilt once for the
+    // level (guide 11.146).
+    let whole = certification == CommitCertification::Whole;
+    let refreshed = if whole { state.refresh(source) } else { Ok(()) };
+    let before_fingerprint = (whole && !state.is_stale()).then(|| state.fingerprint());
+    let pre_vertices = state.vertex_count;
+    let pre_faces = state.face_count;
     let mut counters = Counters::default();
 
     // A component left as it was says why in the timing log: a search that
@@ -618,7 +745,7 @@ pub(super) fn solve_component_transaction_at_level(
                 stage,
                 reason,
                 before_fingerprint,
-                restored_fingerprint: state.fingerprint(),
+                restored_fingerprint: before_fingerprint.map(|_| state.fingerprint()),
                 pre_vertices,
                 pre_faces,
                 topology_states: counters.topology_states,
@@ -629,6 +756,9 @@ pub(super) fn solve_component_transaction_at_level(
         }};
     }
 
+    if let Err(reason) = refreshed {
+        return fail!(InvalidInput, ComponentTransactionStage::Preflight, reason);
+    }
     let Some(parent_subdivision) = component.parents.first().map(|parent| parent.n) else {
         return fail!(
             InvalidInput,
@@ -637,9 +767,14 @@ pub(super) fn solve_component_transaction_at_level(
         );
     };
 
-    if let Err(reason) =
-        validate_preflight(source, source_levels, state, component, source_active_sites)
-    {
+    if let Err(reason) = validate_preflight(
+        source,
+        source_remap,
+        source_levels,
+        state,
+        component,
+        source_active_sites,
+    ) {
         return fail!(InvalidInput, ComponentTransactionStage::Preflight, reason);
     }
     if let Err(reason) = validate_level_mapping(source, level_grid, level_source_slots, component) {
@@ -651,7 +786,6 @@ pub(super) fn solve_component_transaction_at_level(
         return fail!(NotCertifiable, ComponentTransactionStage::Physical, reason);
     }
 
-    let pre_sources = active_source_mask(&state.mesh, source.mesh.vertices().len());
     let mut topology_cursor = 0usize;
     let mut saw_candidate = false;
     let mut last_retry: Option<(ComponentTransactionStage, String)> = None;
@@ -723,6 +857,9 @@ pub(super) fn solve_component_transaction_at_level(
                 also: &other_promotions_with_cost,
                 reach: Some((&promotion_depths, limits.halo_expansions)),
                 focus: focus.as_ref().filter(|_| limits.retry_at_failure),
+                // A component's candidates are built and checked in a window
+                // round it, not over the whole level (guide 11.144).
+                windowed: true,
             },
             limits.retry_at_failure,
         );
@@ -897,44 +1034,111 @@ pub(super) fn solve_component_transaction_at_level(
             );
         }
         let exact_core_candidate = transition.candidate.custom_transition_triangles.is_empty();
-        let mut candidate_state = state.clone();
+        // The candidate is built in the window its search used, or whole.
+        let window_parents = transition.window_parents.as_ref().filter(|_| !whole);
+        // Tests narrow it to the component's own parents.
+        #[cfg(test)]
+        let narrowed = tests::NARROW_WINDOWS.with(std::cell::Cell::get).then(|| {
+            transition
+                .candidate
+                .core_parents
+                .iter()
+                .chain(&transition.boundary.halo_parents)
+                .copied()
+                .collect::<BTreeSet<_>>()
+        });
+        #[cfg(test)]
+        let window_parents = window_parents.and(narrowed.as_ref()).or(window_parents);
+        let work = match window_parents {
+            Some(parents) => Work::window(source, state, parents),
+            None => state.refresh(source).map(|()| Work::whole(state)),
+        };
+        let mut work = match work {
+            Ok(work) => work,
+            Err(reason) => {
+                return fail!(
+                    InvalidInput,
+                    ComponentTransactionStage::InstallDelta,
+                    reason
+                )
+            }
+        };
         log_component_phase(
             timing_enabled,
             component.id,
             "state_clone",
             &mut phase_started,
         );
-        candidate_state.prepare_parent_level(parent_subdivision);
-        match certify_candidate(
-            source,
-            source_remap,
-            source_levels,
-            &mut candidate_state,
-            component,
-            coarse_level,
-            max_adjacent_level_delta,
-            &transition,
-            limits.elastic_iterations,
-            warm_start.as_ref().filter(|_| limits.retry_at_failure),
-            limits
-                .interval_boxes
-                .saturating_sub(counters.interval_boxes),
-            before_fingerprint,
-            pre_vertices,
-            pre_faces,
-            &pre_sources,
-            angle_contract,
-            scope,
-            &mut phase_started,
-        ) {
-            Ok(mut report) => {
+        macro_rules! certify {
+            () => {
+                certify_candidate(
+                    source,
+                    source_remap,
+                    source_levels,
+                    state,
+                    &mut work,
+                    component,
+                    coarse_level,
+                    max_adjacent_level_delta,
+                    &transition,
+                    limits.elastic_iterations,
+                    warm_start.as_ref().filter(|_| limits.retry_at_failure),
+                    limits
+                        .interval_boxes
+                        .saturating_sub(counters.interval_boxes),
+                    before_fingerprint,
+                    pre_vertices,
+                    pre_faces,
+                    angle_contract,
+                    scope,
+                    certification,
+                    &mut phase_started,
+                )
+            };
+        }
+        let mut certified = certify!();
+        // A candidate whose checks would read past its window's edge is
+        // built again on the whole state, as it would have been without one.
+        if let Some(failure) = certified.as_ref().err().filter(|failure| {
+            work.within.is_some() && failure.disposition == CandidateFailureDisposition::Whole
+        }) {
+            if timing_enabled {
+                eprintln!(
+                    "earthmesh_cli: cmrc_detail phase=window_cut component={} stage={:?} reason={}",
+                    component.id, failure.stage, failure.reason
+                );
+            }
+            #[cfg(test)]
+            tests::WINDOW_CUTS.with(|cuts| cuts.set(cuts.get() + 1));
+            work = match state.refresh(source).map(|()| Work::whole(state)) {
+                Ok(work) => work,
+                Err(reason) => {
+                    return fail!(
+                        InvalidInput,
+                        ComponentTransactionStage::InstallDelta,
+                        reason
+                    )
+                }
+            };
+            certified = certify!();
+        }
+        match certified {
+            Ok((mut report, counts)) => {
                 counters.elastic_iterations += report.elastic_iterations;
                 counters.interval_boxes += report.interval_boxes;
                 report.topology_states = counters.topology_states;
                 report.elastic_iterations = counters.elastic_iterations;
                 report.interval_boxes = counters.interval_boxes;
                 report.halo_expansions = counters.halo_expansions;
-                *state = candidate_state;
+                if let Err(reason) =
+                    work.commit(state, &transition.candidate, parent_subdivision, counts)
+                {
+                    return fail!(
+                        InvalidInput,
+                        ComponentTransactionStage::InstallDelta,
+                        reason
+                    );
+                }
                 return ComponentTransactionOutcome::Certified(Box::new(report));
             }
             Err(mut failure) => {
@@ -949,7 +1153,7 @@ pub(super) fn solve_component_transaction_at_level(
                         component.id,
                         failure.stage,
                         failure.reason,
-                        failed_face_place(&candidate_state.mesh, failure.failed_guard_face)
+                        failed_face_place(&work.mesh, failure.failed_guard_face)
                     );
                 }
                 // certify_candidate uses this same timer for completed phases;
@@ -963,7 +1167,7 @@ pub(super) fn solve_component_transaction_at_level(
                 counters.elastic_iterations += failure.elastic_iterations;
                 counters.interval_boxes += failure.interval_boxes;
                 preferred_core_promotion = failure.failed_guard_face.and_then(|face| {
-                    preferred_core_promotion_for_face(&candidate_state.mesh, &transition, face)
+                    preferred_core_promotion_for_face(&work.mesh, &transition, face)
                 });
                 // A near miss is retried at every place it missed, not one
                 // a candidate (guide 11.137).
@@ -982,7 +1186,7 @@ pub(super) fn solve_component_transaction_at_level(
                         .copied()
                         .collect::<BTreeSet<_>>();
                     retry_places(missed, stalled, preferred_core_promotion, |face| {
-                        nearest_core_parent(&candidate_state.mesh, &core, face)
+                        nearest_core_parent(&work.mesh, &core, face)
                     })
                 });
                 // Retried at that many places, the next candidate differs
@@ -999,7 +1203,7 @@ pub(super) fn solve_component_transaction_at_level(
                          preferred={:?} depth={:?} halo_offset={} halo_budget={}",
                         component.id,
                         failed_face_neighbourhood(
-                            &candidate_state.mesh,
+                            &work.mesh,
                             &transition,
                             failure.failed_guard_face
                         ),
@@ -1015,10 +1219,11 @@ pub(super) fn solve_component_transaction_at_level(
                 let focused = transition.report.focus_topology_states.is_some();
                 let failed_place = failure
                     .failed_guard_face
-                    .and_then(|face| face_centroid(&candidate_state.mesh.mesh, face));
+                    .and_then(|face| face_centroid(&work.mesh.mesh, face));
                 last_failure = Some((failure.stage.clone(), failure.reason.clone()));
                 match failure.disposition {
-                    CandidateFailureDisposition::InvalidInput => {
+                    CandidateFailureDisposition::InvalidInput
+                    | CandidateFailureDisposition::Whole => {
                         return fail!(InvalidInput, failure.stage, failure.reason)
                     }
                     CandidateFailureDisposition::BudgetExhausted => {
@@ -1171,6 +1376,10 @@ enum CandidateFailureDisposition {
     Retry,
     InvalidInput,
     BudgetExhausted,
+    /// The candidate, or the faces its checks read round it, reached the
+    /// edge of its window: it is built again on the whole state (guide
+    /// 11.146).
+    Whole,
 }
 
 #[derive(Debug, PartialEq)]
@@ -1216,6 +1425,19 @@ impl CandidateAttemptFailure {
         }
     }
 
+    fn whole(stage: ComponentTransactionStage, reason: impl Into<String>) -> Self {
+        Self {
+            disposition: CandidateFailureDisposition::Whole,
+            stage,
+            reason: reason.into(),
+            elastic_iterations: 0,
+            interval_boxes: 0,
+            failed_guard_face: None,
+            warm_positions: None,
+            missed: None,
+        }
+    }
+
     fn budget(stage: ComponentTransactionStage, reason: impl Into<String>) -> Self {
         Self {
             disposition: CandidateFailureDisposition::BudgetExhausted,
@@ -1235,7 +1457,8 @@ fn certify_candidate(
     source: &MotherGrid,
     source_remap: &VoronoiRemapSource<'_>,
     source_levels: &SourceLevelField,
-    state: &mut ComponentTransactionState,
+    state: &ComponentTransactionState,
+    work: &mut Work,
     component: &HierarchyComponent,
     coarse_level: usize,
     max_adjacent_level_delta: usize,
@@ -1243,23 +1466,29 @@ fn certify_candidate(
     remaining_elastic_iterations: usize,
     warm_start: Option<&BTreeMap<usize, CartesianPoint>>,
     remaining_interval_boxes: usize,
-    before_fingerprint: u64,
+    before_fingerprint: Option<u64>,
     pre_vertices: usize,
     pre_faces: usize,
-    pre_sources: &[bool],
     angle_contract: AngleContractId,
     scope: Option<&RegionScope>,
+    certification: CommitCertification,
     phase_started: &mut Instant,
-) -> Result<ComponentCommitReport, CandidateAttemptFailure> {
+) -> Result<(ComponentCommitReport, (usize, usize)), CandidateAttemptFailure> {
     let timing_enabled = std::env::var("EARTHMESH_CMRC_TIMING").as_deref() == Ok("1");
     let candidate = transition.candidate.clone();
-    install_delta(source, state, &candidate).map_err(|reason| {
+    work.install(source, &candidate).map_err(|reason| {
         CandidateAttemptFailure::invalid(ComponentTransactionStage::InstallDelta, reason)
     })?;
-    apply_source_positions(&mut state.mesh, &state.source_positions);
+    work.apply_positions(state);
     // On a built region, the checks of the whole sphere become the region's
-    // (`verify_geometry_within`); its numbering is fixed from here on.
-    let geometry_scope = scope.map(|scope| scope.geometry_scope(source, &state.mesh));
+    // (`verify_geometry_within`), and in a window the window's, open along
+    // its edge (guide 11.146); the numbering is fixed from here on.
+    let geometry_scope = match work.edge_scope() {
+        Some(edge) => Some(edge.map_err(|reason| {
+            CandidateAttemptFailure::whole(ComponentTransactionStage::InstallDelta, reason)
+        })?),
+        None => scope.map(|scope| scope.geometry_scope(source, &work.mesh)),
+    };
     let verify = |certificate: Certificate, mesh: &MeshState| match &geometry_scope {
         None => certificate.verify_geometry(mesh),
         Some(region) => certificate.verify_geometry_within(mesh, &region.edge_sites, region.euler),
@@ -1268,7 +1497,15 @@ fn certify_candidate(
 
     let mut elastic_iterations = 0usize;
     let mut elastic_report = None;
-    let guard_faces = affected_faces(source, &state.mesh, &candidate);
+    // The faces round every vertex an elastic solve may have moved.
+    let mut moved_faces = Vec::new();
+    let guard_faces = affected_faces(source, &work.mesh, &candidate);
+    if work.reaches_cut(guard_faces.iter().copied()) {
+        return Err(CandidateAttemptFailure::whole(
+            ComponentTransactionStage::InstallDelta,
+            "the candidate's faces reach the edge of its window",
+        ));
+    }
     let interval_boxes = guard_faces.len().saturating_mul(3);
     log_component_phase(timing_enabled, component.id, "prepare_guard", phase_started);
     if interval_boxes > remaining_interval_boxes {
@@ -1280,7 +1517,7 @@ fn certify_candidate(
         return Err(failure);
     }
     let geometry_passes = Certificate::internal_for(angle_contract)
-        .geometry_region_passes(&state.mesh.mesh, &guard_faces);
+        .geometry_region_passes(&work.mesh.mesh, &guard_faces);
     log_component_phase(
         timing_enabled,
         component.id,
@@ -1295,10 +1532,16 @@ fn certify_candidate(
             ));
         }
         let patch =
-            elastic_patch_for_state(transition, &state.mesh, angle_contract).map_err(|reason| {
+            elastic_patch_for_state(transition, &work.mesh, angle_contract).map_err(|reason| {
                 CandidateAttemptFailure::retry(ComponentTransactionStage::Elastic, reason)
             })?;
         log_component_phase(timing_enabled, component.id, "prepare_patch", phase_started);
+        if work.reaches_cut(patch.guard_faces.iter().copied()) {
+            return Err(CandidateAttemptFailure::whole(
+                ComponentTransactionStage::Elastic,
+                "the elastic patch reaches the edge of its window",
+            ));
+        }
         let patch_size = (
             patch.movable_compact_vertices.len(),
             patch.guard_faces.len(),
@@ -1307,21 +1550,22 @@ fn certify_candidate(
             // The patch's targets come from the unmoved mesh; only the start
             // moves, and only for the vertices the failed solve moved too.
             for &compact in &patch.movable_compact_vertices {
-                if let Some(&point) = state.mesh.source_vertex_slots[compact]
-                    .and_then(|source| positions.get(&source))
+                if let Some(&point) =
+                    work.mesh.source_vertex_slots[compact].and_then(|source| positions.get(&source))
                 {
-                    state.mesh.mesh.move_vertex(compact, point);
+                    work.mesh.mesh.move_vertex(compact, point);
                 }
             }
         }
         let outcome = solve_elastic_patch_scoped(
-            &state.mesh,
+            &work.mesh,
             patch,
             ElasticBlockLimits {
                 elastic_iterations: remaining_elastic_iterations,
             },
             angle_contract,
             geometry_scope.as_ref(),
+            (certification == CommitCertification::Changed).then_some(&guard_faces),
         );
         // Include rejected candidates in solve timing, not in a generic failure tail.
         log_component_phase(timing_enabled, component.id, "elastic_solve", phase_started);
@@ -1422,20 +1666,22 @@ fn certify_candidate(
             }
         };
         elastic_iterations = elastic.report.elastic_iterations;
-        apply_elastic(state, &elastic);
+        moved_faces.clone_from(&elastic.patch.guard_faces);
+        work.apply_elastic(state, &elastic);
         elastic_report = Some(elastic.report.clone());
         log_component_phase(timing_enabled, component.id, "elastic_apply", phase_started);
     }
 
     lower_covered_source_levels(
         source,
+        work,
         state,
         &candidate,
         &transition.boundary,
         coarse_level,
     );
     let local_geometry = Certificate::internal_for(angle_contract)
-        .verify_geometry_region(&state.mesh.mesh, &guard_faces)
+        .verify_geometry_region(&work.mesh.mesh, &guard_faces)
         .map_err(|error| {
             let mut failure = CandidateAttemptFailure::retry(
                 ComponentTransactionStage::LocalGeometry,
@@ -1452,120 +1698,240 @@ fn certify_candidate(
         phase_started,
     );
 
-    let global_geometry = verify(Certificate::internal_for(angle_contract), &state.mesh.mesh)
-        .map_err(|error| {
-            let mut failure = CandidateAttemptFailure::retry(
-                ComponentTransactionStage::GlobalGeometry,
-                format!("{error:?}"),
-            );
-            failure.interval_boxes = interval_boxes;
-            failure
-        })?;
-    log_component_phase(
-        timing_enabled,
-        component.id,
-        "internal_geometry",
-        phase_started,
-    );
-    let final_geometry = verify(
-        Certificate::final_delivery_for(angle_contract),
-        &state.mesh.mesh,
-    )
-    .map_err(|error| {
-        let mut failure = CandidateAttemptFailure::retry(
-            ComponentTransactionStage::FinalGeometry,
-            format!("{error:?}"),
-        );
+    let geometry_failure = |stage: ComponentTransactionStage, error: CertificateError| {
+        let mut failure = CandidateAttemptFailure::retry(stage, format!("{error:?}"));
         failure.interval_boxes = interval_boxes;
         failure
-    })?;
-    log_component_phase(
-        timing_enabled,
-        component.id,
-        "final_geometry",
-        phase_started,
-    );
-
-    let target_levels = state.target_levels().map_err(|reason| {
-        let mut failure =
-            CandidateAttemptFailure::invalid(ComponentTransactionStage::FinalCells, reason);
-        failure.interval_boxes = interval_boxes;
-        failure
-    })?;
-    let remap = match scope {
-        None => source_remap.remap_to(&state.mesh.mesh),
-        Some(scope) => source_remap.remap_region_to(
-            &state.mesh.mesh,
-            |site| scope.certifies(&state.mesh, site),
-            scope.whole_cells,
-        ),
-    }
-    .map_err(|reason| {
-        let mut failure = CandidateAttemptFailure::retry(ComponentTransactionStage::Remap, reason);
-        failure.interval_boxes = interval_boxes;
-        failure
-    })?;
-    let remap_certificate =
-        remap.certify_spherical_overlap(source_levels.levels().len(), target_levels.levels().len());
-    log_component_phase(timing_enabled, component.id, "remap", phase_started);
-    let final_cells = match certify_final_cell_requirements_with_remap(
-        &source.mesh,
-        source_levels,
-        &state.mesh.mesh,
-        &target_levels,
-        max_adjacent_level_delta,
-        &remap,
-    ) {
-        Ok(report) => report,
-        Err(FinalCellRequirementError::InvalidInput(reason)) => {
-            let mut failure =
-                CandidateAttemptFailure::invalid(ComponentTransactionStage::FinalCells, reason);
-            failure.interval_boxes = interval_boxes;
-            return Err(failure);
-        }
-        Err(FinalCellRequirementError::Residuals(report)) => {
-            let mut failure = CandidateAttemptFailure::retry(
-                ComponentTransactionStage::FinalCells,
-                format!(
-                    "{} physical and {} balance residual(s)",
-                    report.physical_residuals(),
-                    report.balance_residuals()
-                ),
-            );
-            failure.interval_boxes = interval_boxes;
-            return Err(failure);
-        }
     };
-    log_component_phase(timing_enabled, component.id, "final_cells", phase_started);
-    let final_evidence =
-        FinalCertificationEvidence::from_final_cells(&final_cells, remap_certificate.clone())
+    // Only the faces that changed, when the mesh round them was certified
+    // before and is certified whole later (`CommitCertification::Changed`).
+    // Faces that reach an edge -- a region's, where the whole mesh's checks
+    // spare the sites -- are certified with the window round them, or whole.
+    let changed_faces = (certification == CommitCertification::Changed).then(|| {
+        let mut faces = guard_faces.clone();
+        faces.extend(moved_faces.iter().copied());
+        faces
+    });
+    let at_edge = changed_faces.as_ref().is_some_and(|faces| {
+        geometry_scope.as_ref().is_some_and(|scope| {
+            work.mesh
+                .mesh
+                .sites_touching(faces)
+                .keys()
+                .any(|site| scope.edge_sites.contains(site))
+        })
+    });
+    // The whole mesh's counts after the candidate: a window's change is the
+    // whole mesh's.
+    let (after_vertices, after_faces) = work.counts();
+    let post_vertices = (pre_vertices + after_vertices).saturating_sub(work.counts_before.0);
+    let post_faces = (pre_faces + after_faces).saturating_sub(work.counts_before.1);
+    let level = |source: usize| work.level(state, source);
+    let (geometry, cells) = match &changed_faces {
+        Some(faces) if !at_edge => {
+            let internal = Certificate::internal_for(angle_contract)
+                .verify_geometry_region(&work.mesh.mesh, faces)
+                .map_err(|error| {
+                    geometry_failure(ComponentTransactionStage::GlobalGeometry, error)
+                })?;
+            log_component_phase(
+                timing_enabled,
+                component.id,
+                "internal_geometry",
+                phase_started,
+            );
+            let final_delivery = Certificate::final_delivery_for(angle_contract)
+                .verify_geometry_region(&work.mesh.mesh, faces)
+                .map_err(|error| {
+                    geometry_failure(ComponentTransactionStage::FinalGeometry, error)
+                })?;
+            log_component_phase(
+                timing_enabled,
+                component.id,
+                "final_geometry",
+                phase_started,
+            );
+            let (remap, cells) = certify_changed_cells(
+                source_remap,
+                source_levels,
+                &work.mesh,
+                &level,
+                post_vertices,
+                faces,
+                scope,
+                max_adjacent_level_delta,
+                (timing_enabled, component.id),
+                phase_started,
+            )
+            .map_err(|mut failure| {
+                failure.interval_boxes = interval_boxes;
+                failure
+            })?;
+            (
+                CommitGeometry::Changed {
+                    internal,
+                    final_delivery,
+                },
+                CommitCells::Changed { remap, cells },
+            )
+        }
+        Some(faces) if work.within.is_some() => {
+            let internal = verify(Certificate::internal_for(angle_contract), &work.mesh.mesh)
+                .map_err(|error| {
+                    geometry_failure(ComponentTransactionStage::GlobalGeometry, error)
+                })?;
+            log_component_phase(
+                timing_enabled,
+                component.id,
+                "internal_geometry",
+                phase_started,
+            );
+            let final_delivery = verify(
+                Certificate::final_delivery_for(angle_contract),
+                &work.mesh.mesh,
+            )
+            .map_err(|error| geometry_failure(ComponentTransactionStage::FinalGeometry, error))?;
+            log_component_phase(
+                timing_enabled,
+                component.id,
+                "final_geometry",
+                phase_started,
+            );
+            let (remap, cells) = certify_changed_cells(
+                source_remap,
+                source_levels,
+                &work.mesh,
+                &level,
+                post_vertices,
+                faces,
+                scope,
+                max_adjacent_level_delta,
+                (timing_enabled, component.id),
+                phase_started,
+            )
+            .map_err(|mut failure| {
+                failure.interval_boxes = interval_boxes;
+                failure
+            })?;
+            (
+                CommitGeometry::Window {
+                    internal,
+                    final_delivery,
+                },
+                CommitCells::Changed { remap, cells },
+            )
+        }
+        _ => {
+            let internal = verify(Certificate::internal_for(angle_contract), &work.mesh.mesh)
+                .map_err(|error| {
+                    geometry_failure(ComponentTransactionStage::GlobalGeometry, error)
+                })?;
+            log_component_phase(
+                timing_enabled,
+                component.id,
+                "internal_geometry",
+                phase_started,
+            );
+            let final_delivery = verify(
+                Certificate::final_delivery_for(angle_contract),
+                &work.mesh.mesh,
+            )
+            .map_err(|error| geometry_failure(ComponentTransactionStage::FinalGeometry, error))?;
+            log_component_phase(
+                timing_enabled,
+                component.id,
+                "final_geometry",
+                phase_started,
+            );
+            let target_levels = target_levels_for(
+                &work.mesh.mesh,
+                &work.mesh.source_vertex_slots,
+                &work.delivered_levels(state),
+            )
+            .map_err(|reason| {
+                let mut failure =
+                    CandidateAttemptFailure::invalid(ComponentTransactionStage::FinalCells, reason);
+                failure.interval_boxes = interval_boxes;
+                failure
+            })?;
+            let remap = match scope {
+                None => source_remap.remap_to(&work.mesh.mesh),
+                Some(scope) => source_remap.remap_region_to(
+                    &work.mesh.mesh,
+                    |site| scope.certifies(&work.mesh, site),
+                    scope.whole_cells,
+                ),
+            }
             .map_err(|reason| {
                 let mut failure =
                     CandidateAttemptFailure::retry(ComponentTransactionStage::Remap, reason);
                 failure.interval_boxes = interval_boxes;
                 failure
             })?;
-
-    let geometry = GeometryCertifiedMotherGrid::new(state.mesh.mesh.clone(), final_geometry);
-    let final_mesh = match remap.covered_targets() {
-        None => crate::finalize_geometry_certified_mother(geometry, final_evidence),
-        Some(covered) => {
-            crate::api::finalize_region_geometry(geometry, final_evidence, covered.len())
+            let remap_certificate = remap.certify_spherical_overlap(
+                source_levels.levels().len(),
+                target_levels.levels().len(),
+            );
+            log_component_phase(timing_enabled, component.id, "remap", phase_started);
+            let final_cells = match certify_final_cell_requirements_with_remap(
+                &source.mesh,
+                source_levels,
+                &work.mesh.mesh,
+                &target_levels,
+                max_adjacent_level_delta,
+                &remap,
+            ) {
+                Ok(report) => report,
+                Err(FinalCellRequirementError::InvalidInput(reason)) => {
+                    let mut failure = CandidateAttemptFailure::invalid(
+                        ComponentTransactionStage::FinalCells,
+                        reason,
+                    );
+                    failure.interval_boxes = interval_boxes;
+                    return Err(failure);
+                }
+                Err(FinalCellRequirementError::Residuals(report)) => {
+                    let mut failure = CandidateAttemptFailure::retry(
+                        ComponentTransactionStage::FinalCells,
+                        residuals_reason(report.physical_residuals(), report.balance_residuals()),
+                    );
+                    failure.interval_boxes = interval_boxes;
+                    return Err(failure);
+                }
+            };
+            log_component_phase(timing_enabled, component.id, "final_cells", phase_started);
+            let final_evidence = FinalCertificationEvidence::from_final_cells(
+                &final_cells,
+                remap_certificate.clone(),
+            )
+            .map_err(|reason| {
+                let mut failure =
+                    CandidateAttemptFailure::retry(ComponentTransactionStage::Remap, reason);
+                failure.interval_boxes = interval_boxes;
+                failure
+            })?;
+            let geometry = GeometryCertifiedMotherGrid::new(work.mesh.mesh.clone(), final_delivery);
+            let final_mesh = match remap.covered_targets() {
+                None => crate::finalize_geometry_certified_mother(geometry, final_evidence),
+                Some(covered) => {
+                    crate::api::finalize_region_geometry(geometry, final_evidence, covered.len())
+                }
+            }
+            .map_err(|error| geometry_failure(ComponentTransactionStage::FinalGeometry, error))?;
+            (
+                CommitGeometry::Whole {
+                    internal,
+                    final_certificate: final_mesh.certificate().clone(),
+                },
+                CommitCells::Whole {
+                    final_cells,
+                    remap: remap_certificate,
+                },
+            )
         }
-    }
-    .map_err(|error| {
-        let mut failure = CandidateAttemptFailure::retry(
-            ComponentTransactionStage::FinalGeometry,
-            format!("{error:?}"),
-        );
-        failure.interval_boxes = interval_boxes;
-        failure
-    })?;
-    let final_certificate = final_mesh.certificate().clone();
+    };
     log_component_phase(timing_enabled, component.id, "finalize", phase_started);
 
-    let post_vertices = state.mesh.mesh.vertex_count();
-    let post_faces = state.mesh.mesh.triangle_count();
     if post_vertices >= pre_vertices || post_faces >= pre_faces {
         let mut failure = CandidateAttemptFailure::retry(
             ComponentTransactionStage::Postcondition,
@@ -1574,45 +1940,207 @@ fn certify_candidate(
         failure.interval_boxes = interval_boxes;
         return Err(failure);
     }
-    state
-        .claimed_parents
-        .extend(candidate.core_parents.iter().copied());
-    state
-        .claimed_parents
-        .extend(candidate.custom_transition_triangles.keys().copied());
-    let post_sources = active_source_mask(&state.mesh, source.mesh.vertices().len());
-    let core_sources = source_site_mask_for_parents(source, candidate.core_parents.iter().copied());
-    let core_vertices_removed = pre_sources
+    // Core sites the candidate removed: those before and not after, both
+    // in ascending order.
+    let core_sources = source_sites_for_parents(source, candidate.core_parents.iter().copied());
+    let mut after = work
+        .mesh
+        .source_vertex_slots
         .iter()
-        .zip(&post_sources)
-        .zip(&core_sources)
-        .filter(|&((&before, &after), &core)| before && !after && core)
-        .count();
+        .flatten()
+        .copied()
+        .peekable();
+    let mut core_vertices_removed = 0usize;
+    for &before in &work.sources_before {
+        while after.next_if(|&site| site < before).is_some() {}
+        if after.peek() != Some(&before) && core_sources.contains(&before) {
+            core_vertices_removed += 1;
+        }
+    }
 
-    Ok(ComponentCommitReport {
-        component_id: component.id,
-        before_fingerprint,
-        after_fingerprint: state.fingerprint(),
-        pre_vertices,
-        pre_faces,
-        post_vertices,
-        post_faces,
-        removed_vertices: pre_vertices - post_vertices,
-        removed_faces: pre_faces - post_faces,
-        core_vertices_removed,
-        core_search_states: 0,
-        topology_states: transition.report.topology_states,
-        elastic_iterations,
-        interval_boxes,
-        halo_expansions: transition.report.halo_expansions,
-        local_geometry,
-        global_geometry,
-        final_certificate,
-        final_cells,
-        remap: remap_certificate,
-        remap_matrix: Some(remap),
-        elastic: elastic_report,
-    })
+    Ok((
+        ComponentCommitReport {
+            component_id: component.id,
+            before_fingerprint,
+            after_fingerprint: (certification == CommitCertification::Whole)
+                .then(|| mesh_fingerprint(&work.mesh.mesh)),
+            pre_vertices,
+            pre_faces,
+            post_vertices,
+            post_faces,
+            removed_vertices: pre_vertices - post_vertices,
+            removed_faces: pre_faces - post_faces,
+            core_vertices_removed,
+            core_search_states: 0,
+            topology_states: transition.report.topology_states,
+            elastic_iterations,
+            interval_boxes,
+            halo_expansions: transition.report.halo_expansions,
+            local_geometry,
+            geometry,
+            cells,
+            elastic: elastic_report,
+        },
+        (post_vertices, post_faces),
+    ))
+}
+
+/// Why a candidate's cells failed their requirements.
+fn residuals_reason(physical: usize, balance: usize) -> String {
+    format!("{physical} physical and {balance} balance residual(s)")
+}
+
+/// The level the cell of `site` delivers, as
+/// `ComponentTransactionState::target_levels` gives it.
+fn delivered_level(
+    mesh: &HierarchyLeafMesh,
+    level: &dyn Fn(usize) -> Option<usize>,
+    site: usize,
+) -> Result<usize, String> {
+    let source = mesh
+        .source_vertex_slots
+        .get(site)
+        .and_then(|slot| *slot)
+        .ok_or_else(|| format!("active target site {site} has no source slot"))?;
+    level(source).ok_or_else(|| format!("source site {source} has no delivered level"))
+}
+
+/// The sites joined to `site` by an edge, found by walking the faces round
+/// it from `face`, whether they close round it or not.
+fn sites_round(mesh: &MeshState, site: usize, face: usize) -> BTreeSet<usize> {
+    let mut seen = BTreeSet::from([face]);
+    let mut stack = vec![face];
+    let mut around = BTreeSet::new();
+    while let Some(current) = stack.pop() {
+        let corners = mesh.triangles()[current];
+        let Some(corner) = corners.iter().position(|&other| other == site) else {
+            continue;
+        };
+        around.insert(corners[(corner + 1) % 3]);
+        around.insert(corners[(corner + 2) % 3]);
+        // The two edges at `site` lie opposite its other corners.
+        for across in [(corner + 1) % 3, (corner + 2) % 3] {
+            let next = mesh.neighbours()[current][across];
+            if next != 0 && mesh.is_triangle_live(next) && seen.insert(next) {
+                stack.push(next);
+            }
+        }
+    }
+    around
+}
+
+/// The cells a candidate changed, certified as the whole mesh's are (guide
+/// 11.145). A Voronoi cell, a delivered level or an edge the candidate
+/// changed belongs to a site of `faces` -- every face it made or moved a
+/// corner of -- so those sites' remap rows (the ones `scope` certifies),
+/// made as the whole remap makes them and certified with its tolerances,
+/// their requirements and the balance of every edge at them decide the
+/// commit. Every other row, requirement and edge is as the commit that
+/// last changed it, or the level's certificate, left it.
+#[allow(clippy::too_many_arguments)]
+fn certify_changed_cells(
+    source_remap: &VoronoiRemapSource<'_>,
+    source_levels: &SourceLevelField,
+    transaction: &HierarchyLeafMesh,
+    level: &dyn Fn(usize) -> Option<usize>,
+    whole_cells: usize,
+    faces: &BTreeSet<usize>,
+    scope: Option<&RegionScope>,
+    max_adjacent_level_delta: usize,
+    (timing_enabled, component): (bool, u64),
+    phase_started: &mut Instant,
+) -> Result<(RemapCertificate, ChangedCellsReport), CandidateAttemptFailure> {
+    let invalid = |reason: String| {
+        CandidateAttemptFailure::invalid(ComponentTransactionStage::FinalCells, reason)
+    };
+    let mesh = &transaction.mesh;
+    // Each changed site with a face round it, the edges at them, and the
+    // levels at both ends, read first as the whole mesh's levels are.
+    let mut sites = BTreeMap::new();
+    for &face in faces {
+        for site in mesh.triangles()[face] {
+            sites.entry(site).or_insert(face);
+        }
+    }
+    let mut edges = BTreeSet::new();
+    for (&site, &face) in &sites {
+        for other in sites_round(mesh, site, face) {
+            edges.insert((site.min(other), site.max(other)));
+        }
+    }
+    let mut levels = BTreeMap::new();
+    for &(left, right) in &edges {
+        for site in [left, right] {
+            if let std::collections::btree_map::Entry::Vacant(entry) = levels.entry(site) {
+                entry.insert(delivered_level(transaction, level, site).map_err(invalid)?);
+            }
+        }
+    }
+    // The rows, in the order of the mesh's cells, whose number among the
+    // whole mesh's they bound; a window's are fewer.
+    let mut cells = Vec::new();
+    let mut ids = Vec::new();
+    for (id, site) in mesh.active_vertex_slots().enumerate() {
+        if let Some(&face) = sites.get(&site) {
+            if scope.is_none_or(|scope| scope.certifies(transaction, site)) {
+                cells.push((site, face));
+                ids.push(id);
+            }
+        }
+    }
+    let remap = source_remap
+        .remap_sites_to(
+            mesh,
+            &cells,
+            ids,
+            scope.map_or(whole_cells, |scope| scope.whole_cells),
+        )
+        .map_err(|reason| {
+            CandidateAttemptFailure::retry(ComponentTransactionStage::Remap, reason)
+        })?;
+    let certificate = remap.certify_spherical_overlap(source_levels.levels().len(), whole_cells);
+    log_component_phase(timing_enabled, component, "remap", phase_started);
+    if certificate.negative_weights() + certificate.bad_row_sums() + certificate.bad_lineage_rows()
+        != 0
+        || certificate.constant_closure_error() > certificate.closure_tolerance()
+        || certificate.global_area_closure_error() > certificate.closure_tolerance()
+    {
+        return Err(invalid(format!(
+            "Voronoi overlap remap failed certification: negative={}, bad_rows={}, bad_lineage={}, constant_error={}, area_error={}, tolerance={}",
+            certificate.negative_weights(),
+            certificate.bad_row_sums(),
+            certificate.bad_lineage_rows(),
+            certificate.constant_closure_error(),
+            certificate.global_area_closure_error(),
+            certificate.closure_tolerance(),
+        )));
+    }
+    let mut physical = 0usize;
+    for (row, &(site, _)) in remap.rows().iter().zip(&cells) {
+        let (required, _) = row_required_level(row, source_levels.levels())
+            .map_err(|reason| invalid(reason.to_string()))?;
+        if levels[&site] < required {
+            physical += 1;
+        }
+    }
+    let balance = edges
+        .iter()
+        .filter(|(left, right)| levels[left].abs_diff(levels[right]) > max_adjacent_level_delta)
+        .count();
+    log_component_phase(timing_enabled, component, "final_cells", phase_started);
+    if physical + balance != 0 {
+        return Err(CandidateAttemptFailure::retry(
+            ComponentTransactionStage::FinalCells,
+            residuals_reason(physical, balance),
+        ));
+    }
+    Ok((
+        certificate,
+        ChangedCellsReport {
+            cells: cells.len(),
+            edges: edges.len(),
+        },
+    ))
 }
 
 #[derive(Clone, Copy, Default)]
@@ -2038,17 +2566,31 @@ fn mapped_source_site(
 
 fn validate_preflight(
     source: &MotherGrid,
+    source_remap: &VoronoiRemapSource<'_>,
     source_levels: &SourceLevelField,
     state: &ComponentTransactionState,
     component: &HierarchyComponent,
     source_active_sites: &[usize],
 ) -> Result<(), String> {
-    if state.source_fingerprint != mesh_fingerprint(&source.mesh)
+    // The remap source hashes the source mesh once for every component of a
+    // run; a whole fine mother hashed per component cost as much as a small
+    // component's search.
+    let source_fingerprint = if source_remap.is_source(&source.mesh) {
+        source_remap.source_fingerprint()
+    } else {
+        mesh_fingerprint(&source.mesh)
+    };
+    if state.source_fingerprint != source_fingerprint
         || state.source_subdivision != source.subdivision
     {
         return Err("transaction state belongs to a different source mesh".into());
     }
-    if source_levels.active_sites() != source_active_sites {
+    // A scheduler passes the level field's own list, matched with the source
+    // once for the run: compared again, every component paid for a sweep of
+    // the fine mother's sites.
+    if !std::ptr::eq(source_levels.active_sites(), source_active_sites)
+        && source_levels.active_sites() != source_active_sites
+    {
         return Err("source level field active sites do not match source mesh".into());
     }
     let parents = component.parents.iter().copied().collect::<BTreeSet<_>>();
@@ -2125,14 +2667,339 @@ fn visit_source_descendant_faces(
     Ok(())
 }
 
-fn install_delta(
-    source: &MotherGrid,
-    state: &mut ComponentTransactionState,
+/// What a candidate is built and certified on (guide 11.146): the whole
+/// state's leaves, transition triangles and mesh, or those of a window of
+/// parents round the component, rebuilt from the state with every site and
+/// face in the order the whole mesh has them. The source positions and
+/// delivered levels a candidate changes are kept apart until it commits.
+struct Work {
+    /// The fine source faces under the window's parents, when it is one.
+    within: Option<BTreeSet<usize>>,
+    leaf_set: HierarchyLeafSet,
+    custom_transition_triangles: BTreeMap<TriangleAddress, Vec<[usize; 3]>>,
+    mesh: HierarchyLeafMesh,
+    /// Before the candidate: the mesh's source sites, ascending, and its
+    /// active vertices and faces.
+    sources_before: Vec<usize>,
+    counts_before: (usize, usize),
+    /// A window's edge, before the candidate: the source sites on it, open
+    /// as a region's edge is, and the window's Euler characteristic.
+    edge: Option<(BTreeSet<usize>, isize)>,
+    /// The sites of that edge that are not the region's: faces with a
+    /// corner there lack neighbours the whole mesh has.
+    cut: BTreeSet<usize>,
+    moved: BTreeMap<usize, CartesianPoint>,
+    lowered: Lowered,
+}
+
+/// The delivered levels a candidate lowers (`lower_covered_source_levels`):
+/// apart from the state's in a window; in a copy of them for the whole
+/// state, whose candidates lower every site under a core that can hold
+/// most of the mesh.
+enum Lowered {
+    Window(BTreeMap<usize, usize>),
+    Whole(Vec<Option<usize>>),
+}
+
+impl Work {
+    /// The whole state, cloned.
+    fn whole(state: &ComponentTransactionState) -> Self {
+        Self {
+            within: None,
+            leaf_set: state.leaf_set.clone(),
+            custom_transition_triangles: state.custom_transition_triangles.clone(),
+            mesh: state.mesh().clone(),
+            sources_before: state
+                .mesh()
+                .source_vertex_slots
+                .iter()
+                .flatten()
+                .copied()
+                .collect(),
+            counts_before: (state.vertex_count, state.face_count),
+            edge: None,
+            cut: BTreeSet::new(),
+            moved: BTreeMap::new(),
+            lowered: Lowered::Whole(state.source_delivered_levels.clone()),
+        }
+    }
+
+    /// The state under `parents`: their leaves and transition triangles,
+    /// and the mesh of those alone, open along the window's edge.
+    fn window(
+        source: &MotherGrid,
+        state: &ComponentTransactionState,
+        parents: &BTreeSet<TriangleAddress>,
+    ) -> Result<Self, String> {
+        let mut leaves = Vec::new();
+        let mut custom = BTreeMap::new();
+        let mut within = Vec::new();
+        let mut stack = Vec::new();
+        for &parent in parents {
+            for face in super::core_condensation::source_faces_under(source, parent)? {
+                within.push(source_face_slot(source, face)?);
+            }
+            stack.push(parent);
+            while let Some(face) = stack.pop() {
+                if state.leaf_set.leaves.contains(&face) {
+                    leaves.push(face);
+                } else if let Some(triangles) = state.custom_transition_triangles.get(&face) {
+                    custom.insert(face, triangles.clone());
+                } else if face.n >= source.subdivision {
+                    return Err(format!(
+                        "window face {face:?} is neither a leaf nor a transition parent"
+                    ));
+                } else {
+                    stack.extend(
+                        face.children_2_to_1()
+                            .ok_or_else(|| format!("invalid hierarchy address {face:?}"))?,
+                    );
+                }
+            }
+        }
+        leaves.sort_unstable();
+        let leaf_set = HierarchyLeafSet {
+            leaves: leaves.into_iter().collect(),
+        };
+        let within = within.into_iter().collect::<BTreeSet<_>>();
+        let (custom_parents, custom_triangles) = custom_parts(&custom);
+        let mut mesh = super::core_condensation::rebuild_custom_within(
+            source,
+            &leaf_set,
+            &custom_parents,
+            &custom_triangles,
+            Some(&within),
+        )?;
+        apply_source_positions(&mut mesh, &state.source_positions);
+        let (open, euler) = open_sites_and_euler(&mesh.mesh);
+        let edge = open
+            .into_iter()
+            .map(|site| {
+                mesh.source_vertex_slots[site]
+                    .ok_or_else(|| format!("window site {site} has no source slot"))
+            })
+            .collect::<Result<BTreeSet<_>, _>>()?;
+        let cut = match &source.region {
+            Some(region) => edge.difference(region.outer_boundary()).copied().collect(),
+            None => edge.clone(),
+        };
+        Ok(Self {
+            within: Some(within),
+            leaf_set,
+            custom_transition_triangles: custom,
+            sources_before: mesh.source_vertex_slots.iter().flatten().copied().collect(),
+            counts_before: (mesh.mesh.vertex_count(), mesh.mesh.triangle_count()),
+            mesh,
+            edge: Some((edge, euler)),
+            cut,
+            moved: BTreeMap::new(),
+            lowered: Lowered::Window(BTreeMap::new()),
+        })
+    }
+
+    /// `candidate` installed: its core condensed, its transition parents'
+    /// children replaced by its triangles, and the mesh rebuilt.
+    fn install(
+        &mut self,
+        source: &MotherGrid,
+        candidate: &TransitionTopologyCandidate,
+    ) -> Result<(), String> {
+        install_leaves(
+            &mut self.leaf_set,
+            &mut self.custom_transition_triangles,
+            candidate,
+        )?;
+        let (custom_parents, custom_triangles) = custom_parts(&self.custom_transition_triangles);
+        self.mesh = super::core_condensation::rebuild_custom_within(
+            source,
+            &self.leaf_set,
+            &custom_parents,
+            &custom_triangles,
+            self.within.as_ref(),
+        )?;
+        Ok(())
+    }
+
+    /// Where `source` lies: as the candidate moved it, or as the state has it.
+    fn position(&self, state: &ComponentTransactionState, source: usize) -> CartesianPoint {
+        self.moved
+            .get(&source)
+            .copied()
+            .unwrap_or(state.source_positions[source])
+    }
+
+    /// The level `source` delivers: as the candidate lowered it, or as the
+    /// state has it.
+    fn level(&self, state: &ComponentTransactionState, source: usize) -> Option<usize> {
+        match &self.lowered {
+            Lowered::Window(lowered) => lowered
+                .get(&source)
+                .copied()
+                .or_else(|| state.source_delivered_levels.get(source).copied().flatten()),
+            Lowered::Whole(levels) => levels.get(source).copied().flatten(),
+        }
+    }
+
+    /// `source` delivers `level` once the candidate commits.
+    fn lower(&mut self, source: usize, level: usize) {
+        match &mut self.lowered {
+            Lowered::Window(lowered) => {
+                lowered.insert(source, level);
+            }
+            Lowered::Whole(levels) => levels[source] = Some(level),
+        }
+    }
+
+    /// The mesh's vertices where the state, and the candidate, put them.
+    fn apply_positions(&mut self, state: &ComponentTransactionState) {
+        for compact in 0..self.mesh.source_vertex_slots.len() {
+            if let Some(source) = self.mesh.source_vertex_slots[compact] {
+                let position = self.position(state, source);
+                self.mesh.mesh.move_vertex(compact, position);
+            }
+        }
+    }
+
+    /// The elastic solve's mesh, and the positions it moved.
+    fn apply_elastic<G>(
+        &mut self,
+        state: &ComponentTransactionState,
+        elastic: &ElasticBlockTrial<G>,
+    ) {
+        self.mesh = elastic.mesh.clone();
+        for (compact, source) in self.mesh.source_vertex_slots.iter().copied().enumerate() {
+            let Some(source) = source else {
+                continue;
+            };
+            let position = self.mesh.mesh.vertices()[compact];
+            let known = self.position(state, source);
+            if [position.x, position.y, position.z].map(f64::to_bits)
+                != [known.x, known.y, known.z].map(f64::to_bits)
+            {
+                self.moved.insert(source, position);
+            }
+        }
+    }
+
+    /// Every source site's delivered level, the candidate's changes made.
+    fn delivered_levels<'a>(
+        &'a self,
+        state: &ComponentTransactionState,
+    ) -> std::borrow::Cow<'a, [Option<usize>]> {
+        match &self.lowered {
+            Lowered::Window(lowered) => {
+                let mut levels = state.source_delivered_levels.clone();
+                for (&source, &level) in lowered {
+                    levels[source] = Some(level);
+                }
+                std::borrow::Cow::Owned(levels)
+            }
+            Lowered::Whole(levels) => std::borrow::Cow::Borrowed(levels),
+        }
+    }
+
+    /// Whether a corner of `faces`, whose fans the checks read, lies on the
+    /// window's own edge.
+    fn reaches_cut(&self, faces: impl IntoIterator<Item = usize>) -> bool {
+        !self.cut.is_empty()
+            && faces.into_iter().any(|face| {
+                self.mesh.mesh.triangles()[face].iter().any(|&site| {
+                    self.mesh.source_vertex_slots[site]
+                        .is_some_and(|source| self.cut.contains(&source))
+                })
+            })
+    }
+
+    /// The mesh's active vertices and faces now.
+    fn counts(&self) -> (usize, usize) {
+        (
+            self.mesh.mesh.vertex_count(),
+            self.mesh.mesh.triangle_count(),
+        )
+    }
+
+    /// The edge of a window as the mesh now numbers it: `None` for the
+    /// whole state, or when the candidate removed a site on the edge -- it
+    /// reached past the window.
+    fn edge_scope(&self) -> Option<Result<GeometryScope, String>> {
+        let (edge, euler) = self.edge.as_ref()?;
+        let edge_sites = self
+            .mesh
+            .source_vertex_slots
+            .iter()
+            .enumerate()
+            .filter(|(_, source)| source.is_some_and(|source| edge.contains(&source)))
+            .map(|(compact, _)| compact)
+            .collect::<BTreeSet<_>>();
+        Some(if edge_sites.len() == edge.len() {
+            Ok(GeometryScope {
+                edge_sites,
+                euler: *euler,
+            })
+        } else {
+            Err("the candidate reached the edge of its window".to_string())
+        })
+    }
+
+    /// Commits the candidate to `state`: a whole work replaces the state's
+    /// leaves, triangles and mesh; a window's changes are made to the
+    /// state's leaves and triangles, and the whole mesh is left to be
+    /// rebuilt (`ComponentTransactionState::refresh`).
+    fn commit(
+        self,
+        state: &mut ComponentTransactionState,
+        candidate: &TransitionTopologyCandidate,
+        parent_subdivision: usize,
+        counts: (usize, usize),
+    ) -> Result<(), String> {
+        match self.within {
+            None => {
+                state.leaf_set = self.leaf_set;
+                state.custom_transition_triangles = self.custom_transition_triangles;
+                state.mesh = self.mesh;
+            }
+            Some(_) => {
+                install_leaves(
+                    &mut state.leaf_set,
+                    &mut state.custom_transition_triangles,
+                    candidate,
+                )?;
+                state.stale = true;
+            }
+        }
+        for (source, position) in self.moved {
+            state.source_positions[source] = position;
+        }
+        match self.lowered {
+            Lowered::Window(lowered) => {
+                for (source, level) in lowered {
+                    state.source_delivered_levels[source] = Some(level);
+                }
+            }
+            Lowered::Whole(levels) => state.source_delivered_levels = levels,
+        }
+        (state.vertex_count, state.face_count) = counts;
+        state.prepare_parent_level(parent_subdivision);
+        state
+            .claimed_parents
+            .extend(candidate.core_parents.iter().copied());
+        state
+            .claimed_parents
+            .extend(candidate.custom_transition_triangles.keys().copied());
+        Ok(())
+    }
+}
+
+/// `candidate`'s core condensed in `leaf_set` and its transition parents'
+/// children replaced by their triangles.
+fn install_leaves(
+    leaf_set: &mut HierarchyLeafSet,
+    custom: &mut BTreeMap<TriangleAddress, Vec<[usize; 3]>>,
     candidate: &TransitionTopologyCandidate,
 ) -> Result<(), String> {
-    state.leaf_set.condense_core(&candidate.core_parents)?;
+    leaf_set.condense_core(&candidate.core_parents)?;
     for (&parent, triangles) in &candidate.custom_transition_triangles {
-        if state.custom_transition_triangles.contains_key(&parent) {
+        if custom.contains_key(&parent) {
             return Err(format!(
                 "custom transition parent {parent:?} is already installed"
             ));
@@ -2141,29 +3008,48 @@ fn install_delta(
             .children_2_to_1()
             .ok_or_else(|| format!("invalid custom transition parent {parent:?}"))?
         {
-            state.leaf_set.leaves.remove(&child);
+            leaf_set.leaves.remove(&child);
         }
-        state
-            .custom_transition_triangles
-            .insert(parent, triangles.clone());
+        custom.insert(parent, triangles.clone());
     }
-    let custom_parents = state
-        .custom_transition_triangles
-        .keys()
-        .copied()
-        .collect::<BTreeSet<_>>();
-    let custom_triangles = state
-        .custom_transition_triangles
-        .values()
-        .flat_map(|triangles| triangles.iter().copied())
-        .collect::<Vec<_>>();
-    state.mesh = rebuild_from_leaf_set_with_custom_triangles(
-        source,
-        &state.leaf_set,
-        &custom_parents,
-        &custom_triangles,
-    )?;
     Ok(())
+}
+
+/// The sites on a mesh's open edges, and its Euler characteristic.
+fn open_sites_and_euler(mesh: &MeshState) -> (BTreeSet<usize>, isize) {
+    let mut open = BTreeSet::new();
+    let (mut faces, mut open_edges) = (0usize, 0usize);
+    for face in mesh.active_triangle_slots() {
+        faces += 1;
+        let corners = mesh.triangles()[face];
+        // The edge across `neighbours()[face][k]` lies opposite corner k.
+        for (corner, &neighbour) in mesh.neighbours()[face].iter().enumerate() {
+            if neighbour == 0 || !mesh.is_triangle_live(neighbour) {
+                open_edges += 1;
+                open.insert(corners[(corner + 1) % 3]);
+                open.insert(corners[(corner + 2) % 3]);
+            }
+        }
+    }
+    let edges = (3 * faces + open_edges) / 2;
+    (
+        open,
+        mesh.vertex_count() as isize - edges as isize + faces as isize,
+    )
+}
+
+/// The transition parents and their triangles in the order a rebuild
+/// appends them.
+fn custom_parts(
+    custom: &BTreeMap<TriangleAddress, Vec<[usize; 3]>>,
+) -> (BTreeSet<TriangleAddress>, Vec<[usize; 3]>) {
+    (
+        custom.keys().copied().collect(),
+        custom
+            .values()
+            .flat_map(|triangles| triangles.iter().copied())
+            .collect(),
+    )
 }
 
 fn elastic_patch_for_state(
@@ -2234,18 +3120,10 @@ fn apply_source_positions(mesh: &mut HierarchyLeafMesh, positions: &[CartesianPo
     }
 }
 
-fn apply_elastic(state: &mut ComponentTransactionState, elastic: &ElasticBlockTrial) {
-    state.mesh = elastic.mesh.clone();
-    for (compact, source) in state.mesh.source_vertex_slots.iter().copied().enumerate() {
-        if let Some(source_slot) = source {
-            state.source_positions[source_slot] = state.mesh.mesh.vertices()[compact];
-        }
-    }
-}
-
 fn lower_covered_source_levels(
     source: &MotherGrid,
-    state: &mut ComponentTransactionState,
+    work: &mut Work,
+    state: &ComponentTransactionState,
     candidate: &TransitionTopologyCandidate,
     boundary: &super::TransitionBoundary,
     coarse_level: usize,
@@ -2266,27 +3144,13 @@ fn lower_covered_source_levels(
                 if fixed_fine.contains(&source_site) {
                     continue;
                 }
-                if let Some(level) = state
-                    .source_delivered_levels
-                    .get_mut(source_site)
-                    .and_then(Option::as_mut)
-                {
-                    *level = (*level).min(coarse_level);
+                if let Some(level) = work.level(state, source_site) {
+                    work.lower(source_site, level.min(coarse_level));
                 }
             }
             Ok(())
         });
     }
-}
-
-fn active_source_mask(mesh: &HierarchyLeafMesh, source_slots: usize) -> Vec<bool> {
-    let mut active = vec![false; source_slots];
-    for source in mesh.source_vertex_slots.iter().flatten().copied() {
-        if let Some(slot) = active.get_mut(source) {
-            *slot = true;
-        }
-    }
-    active
 }
 
 fn affected_faces(
@@ -2338,22 +3202,6 @@ fn source_sites_for_parents(
     sources
 }
 
-fn source_site_mask_for_parents(
-    source: &MotherGrid,
-    parents: impl IntoIterator<Item = TriangleAddress>,
-) -> Vec<bool> {
-    let mut sources = vec![false; source.mesh.vertices().len()];
-    for parent in parents {
-        let _ = visit_source_descendant_faces(source, parent, &mut |face| {
-            for site in source.mesh.triangles()[face] {
-                sources[site] = true;
-            }
-            Ok(())
-        });
-    }
-    sources
-}
-
 fn target_levels_for(
     mesh: &MeshState,
     source_slots: &[Option<usize>],
@@ -2378,6 +3226,16 @@ fn target_levels_for(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    thread_local! {
+        /// Candidates built again whole after reaching their window's edge.
+        pub(super) static WINDOW_CUTS: std::cell::Cell<usize> =
+            const { std::cell::Cell::new(0) };
+        /// Whether a transaction's window is narrowed to the component's
+        /// own parents.
+        pub(super) static NARROW_WINDOWS: std::cell::Cell<bool> =
+            const { std::cell::Cell::new(false) };
+    }
 
     /// A disk of movable vertices, eight edges across from its centre, on a
     /// near-equilateral grid: every face well inside the window.
@@ -2592,6 +3450,173 @@ mod tests {
         );
     }
 
+    /// A core parent and the two rings of parents round it as its
+    /// transition: a candidate changes a small part of the sphere.
+    fn ringed_component(source: &MotherGrid, coarse_n: usize) -> HierarchyComponent {
+        let core = TriangleAddress {
+            base_face: 0,
+            i: 1,
+            j: 1,
+            n: coarse_n,
+            orientation: crate::mother_grid::TriangleOrientation::Down,
+        };
+        let mut transition = BTreeSet::new();
+        let mut frontier = vec![core];
+        for _ in 0..2 {
+            let mut next = Vec::new();
+            for parent in frontier {
+                for neighbour in hierarchy_parent_neighbours(source, parent).unwrap() {
+                    if neighbour != core && transition.insert(neighbour) {
+                        next.push(neighbour);
+                    }
+                }
+            }
+            frontier = next;
+        }
+        let mut parents = transition.iter().copied().collect::<Vec<_>>();
+        parents.push(core);
+        parents.sort_unstable();
+        HierarchyComponent {
+            id: 7,
+            parents,
+            boundary_edges: Vec::new(),
+            core_parents: vec![core],
+            transition_parents: transition.into_iter().collect(),
+        }
+    }
+
+    fn solve_certifying(
+        source: &MotherGrid,
+        state: &mut ComponentTransactionState,
+        component: &HierarchyComponent,
+        certification: CommitCertification,
+    ) -> ComponentTransactionOutcome {
+        let levels = SourceLevelField::from_active_voronoi_cells(
+            &source.mesh,
+            vec![2; source.mesh.active_vertex_slots().count()],
+        )
+        .unwrap();
+        let active_sites = source.mesh.active_vertex_slots().collect::<Vec<_>>();
+        let level_source_slots = source
+            .mesh
+            .vertices()
+            .iter()
+            .enumerate()
+            .map(|(site, _)| source.mesh.is_vertex_live(site).then_some(site))
+            .collect::<Vec<_>>();
+        solve_component_transaction_at_level(
+            source,
+            &VoronoiRemapSource::new(&source.mesh),
+            &levels,
+            state,
+            source,
+            &active_sites,
+            &level_source_slots,
+            component,
+            2,
+            1,
+            ComponentTransactionLimits {
+                topology_states: 10_000,
+                elastic_iterations: 1_024,
+                interval_boxes: 1_000_000,
+                halo_expansions: 0,
+                retry_at_failure: true,
+            },
+            AngleContractId::DomainQuality38To82V1,
+            None,
+            certification,
+        )
+    }
+
+    /// Certifying only what a commit changed (guide 11.143, 11.145), in the
+    /// window its search used (11.146), commits what certifying the whole
+    /// mesh commits: the same mesh, with its geometry and its cells checked
+    /// where the candidate changed them -- the remap rows with the whole
+    /// remap's tolerances.
+    #[test]
+    fn a_commit_certified_where_it_changed_is_the_commit_certified_whole() {
+        let source = MotherGrid::generate(16).unwrap();
+        let component = ringed_component(&source, 8);
+        let initial = ComponentTransactionState::new(&source, 3).unwrap();
+        let mut whole_state = initial.clone();
+        let whole = solve_certifying(
+            &source,
+            &mut whole_state,
+            &component,
+            CommitCertification::Whole,
+        );
+        let mut changed_state = initial.clone();
+        let changed = solve_certifying(
+            &source,
+            &mut changed_state,
+            &component,
+            CommitCertification::Changed,
+        );
+        let (
+            ComponentTransactionOutcome::Certified(whole),
+            ComponentTransactionOutcome::Certified(changed),
+        ) = (whole, changed)
+        else {
+            panic!("the ringed component certifies either way")
+        };
+        // Built in the window its search used, the commit left the whole
+        // mesh to be rebuilt (guide 11.146): rebuilt, it is the whole commit's.
+        assert!(changed_state.is_stale());
+        changed_state.refresh(&source).unwrap();
+        assert_eq!(whole_state, changed_state);
+        assert!(matches!(changed.geometry, CommitGeometry::Changed { .. }));
+        let (
+            CommitCells::Whole {
+                remap: whole_remap, ..
+            },
+            CommitCells::Changed { remap, cells },
+        ) = (&whole.cells, &changed.cells)
+        else {
+            panic!("each commit carries its own cell evidence")
+        };
+        let all_cells = changed_state.mesh.mesh.vertex_count();
+        assert!(cells.cells > 0 && cells.cells < all_cells / 2);
+        assert!(cells.edges > cells.cells);
+        assert_eq!(remap.rows(), cells.cells);
+        assert_eq!(whole_remap.rows(), all_cells);
+        assert_eq!(remap.closure_tolerance(), whole_remap.closure_tolerance());
+        assert!(remap.constant_closure_error() <= whole_remap.constant_closure_error());
+    }
+
+    /// A window too narrow for its candidate -- here the component's own
+    /// parents, no rings round them -- has the candidate's faces or elastic
+    /// patch reach its edge, where the window's mesh lacks the neighbours
+    /// the checks read: the candidate is built again on the whole state
+    /// (guide 11.146), and the commit is the whole commit.
+    #[test]
+    fn a_candidate_that_reaches_its_windows_edge_is_built_whole() {
+        let source = MotherGrid::generate(16).unwrap();
+        let component = ringed_component(&source, 8);
+        let initial = ComponentTransactionState::new(&source, 3).unwrap();
+        let mut whole_state = initial.clone();
+        let whole = solve_certifying(
+            &source,
+            &mut whole_state,
+            &component,
+            CommitCertification::Whole,
+        );
+        NARROW_WINDOWS.with(|narrow| narrow.set(true));
+        WINDOW_CUTS.with(|cuts| cuts.set(0));
+        let mut changed_state = initial.clone();
+        let changed = solve_certifying(
+            &source,
+            &mut changed_state,
+            &component,
+            CommitCertification::Changed,
+        );
+        NARROW_WINDOWS.with(|narrow| narrow.set(false));
+        assert!(WINDOW_CUTS.with(std::cell::Cell::get) > 0);
+        assert!(matches!(whole, ComponentTransactionOutcome::Certified(_)));
+        assert!(matches!(changed, ComponentTransactionOutcome::Certified(_)));
+        changed_state.refresh(&source).unwrap();
+        assert_eq!(whole_state, changed_state);
+    }
+
     #[test]
     fn mixed_component_certifies_only_its_transition_neighbourhood() {
         let source = MotherGrid::generate(4).unwrap();
@@ -2773,6 +3798,7 @@ mod tests {
                 source_degree_forecast: BTreeMap::new(),
             },
             report: super::super::TransitionTopologyReport::default(),
+            window_parents: None,
         };
 
         assert_eq!(

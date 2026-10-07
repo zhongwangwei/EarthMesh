@@ -39,6 +39,130 @@ pub(super) struct RetryRequest<'a> {
     /// transition there, the search offers only transitions that change it
     /// at the failure and keep it as the candidate had it farther away.
     pub focus: Option<&'a RetryFocus>,
+    /// Whether the search builds and checks its candidates in a window round
+    /// the component (`SearchWindow`) rather than over the whole level.
+    pub windowed: bool,
+}
+
+/// Parent rings a search window adds round its component (guide 11.144). A
+/// candidate changes the component's parents only; the elastic patch that
+/// grows from its transition takes two rings of fine vertices and the faces
+/// round them, and the hard gate reads the fans of the changed faces' sites
+/// -- all within two parent rings. Four leave a margin.
+const WINDOW_PARENT_RINGS: usize = 4;
+
+/// The part of a level a component's search builds and checks (guide
+/// 11.144): the component's parents and `WINDOW_PARENT_RINGS` rings round
+/// them, the source faces under them, and their edge before any candidate
+/// changes them -- the sites on it, open in the window's mesh, and the
+/// window's Euler characteristic. Outside the window a candidate's mesh is
+/// the level's own, which the hard gate passes, so the window alone decides
+/// it; with the same order of sites and faces, the window's mesh is the
+/// level's restricted to it.
+pub(super) struct SearchWindow {
+    /// The component's parents and the rings round them.
+    parents: BTreeSet<TriangleAddress>,
+    faces: BTreeSet<usize>,
+    /// Source sites of the window's edge.
+    edge_sites: BTreeSet<usize>,
+    euler: isize,
+}
+
+impl SearchWindow {
+    /// The window round `core` and `transition`; `None` when it would cover
+    /// the whole level, which is then built whole.
+    fn around(
+        patches: &Patches<'_>,
+        core: &BTreeSet<TriangleAddress>,
+        transition: &BTreeSet<TriangleAddress>,
+    ) -> Result<Option<Self>, String> {
+        let source = patches.source;
+        // Past half the level a window costs more than the level built
+        // whole. Distinct parents have distinct faces under them, so the
+        // count gives up there, before the rings are walked out or any set
+        // is built -- a component the size of the level asks for a window
+        // with every layout.
+        let half = source.mesh.triangles().len() / 2;
+        let mut faces = Vec::new();
+        let mut parents = core.union(transition).copied().collect::<BTreeSet<_>>();
+        for &parent in &parents {
+            push_faces_under(source, parent, &mut faces)?;
+            if faces.len() > half {
+                return Ok(None);
+            }
+        }
+        let mut frontier = parents.iter().copied().collect::<Vec<_>>();
+        for _ in 0..WINDOW_PARENT_RINGS {
+            let mut next = Vec::new();
+            for parent in frontier {
+                for neighbour in patches.get(parent)?.neighbours {
+                    if !neighbour.is_outside() && parents.insert(neighbour) {
+                        push_faces_under(source, neighbour, &mut faces)?;
+                        next.push(neighbour);
+                    }
+                }
+                if faces.len() > half {
+                    return Ok(None);
+                }
+            }
+            frontier = next;
+        }
+        let faces = faces.into_iter().collect::<BTreeSet<_>>();
+        // The window's edge and Euler characteristic, read off the level's
+        // own faces: an edge is on the edge when the face across it is not
+        // in the window.
+        let mut sites = BTreeSet::new();
+        let mut edge_sites = BTreeSet::new();
+        let mut open_edges = 0usize;
+        for &face in &faces {
+            let corners = source.mesh.triangles()[face];
+            sites.extend(corners);
+            for (corner, &neighbour) in source.mesh.neighbours()[face].iter().enumerate() {
+                if neighbour == 0
+                    || !source.mesh.is_triangle_live(neighbour)
+                    || !faces.contains(&neighbour)
+                {
+                    open_edges += 1;
+                    edge_sites.insert(corners[(corner + 1) % 3]);
+                    edge_sites.insert(corners[(corner + 2) % 3]);
+                }
+            }
+        }
+        let edges = (3 * faces.len() + open_edges) / 2;
+        let euler = sites.len() as isize - edges as isize + faces.len() as isize;
+        Ok(Some(Self {
+            parents,
+            faces,
+            edge_sites,
+            euler,
+        }))
+    }
+}
+
+/// `outcome` with the parents of the window its candidate was built in.
+fn in_window(
+    outcome: TransitionTopologyOutcome,
+    window: Option<&SearchWindow>,
+) -> TransitionTopologyOutcome {
+    match outcome {
+        TransitionTopologyOutcome::Closed(mut trial) => {
+            trial.window_parents = window.map(|window| window.parents.clone());
+            TransitionTopologyOutcome::Closed(trial)
+        }
+        other => other,
+    }
+}
+
+/// Appends the source faces under `parent`.
+fn push_faces_under(
+    source: &MotherGrid,
+    parent: TriangleAddress,
+    faces: &mut Vec<usize>,
+) -> Result<(), String> {
+    for child in super::core_condensation::source_faces_under(source, parent)? {
+        faces.push(super::core_condensation::source_face_slot(source, child)?);
+    }
+    Ok(())
 }
 
 /// A failed candidate's custom transition and the place it failed (guide
@@ -136,6 +260,10 @@ pub struct TransitionTopologyTrial {
     pub boundary: TransitionBoundary,
     pub candidate: TransitionTopologyCandidate,
     pub report: TransitionTopologyReport,
+    /// The parents of the window the candidate was built in, when it was
+    /// built in one (`SearchWindow`): the transaction builds and certifies
+    /// it in the same parents (guide 11.146).
+    pub window_parents: Option<BTreeSet<TriangleAddress>>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -317,6 +445,9 @@ fn solve_transition_topology_from_cursor_with_promotion(
             preferred_core_promotion = None;
         }
     }
+    // Whether a layout of this search covered more than half the level
+    // (`window_of`).
+    let mut whole_level = false;
     macro_rules! end_or_fall_back {
         ($outcome:expr) => {{
             let outcome = $outcome;
@@ -331,9 +462,43 @@ fn solve_transition_topology_from_cursor_with_promotion(
                 (core, transition) = (kept_core, kept_transition);
                 halo_expansions = 0;
                 states_examined = 0;
+                whole_level = false;
                 continue;
             }
             return outcome;
+        }};
+    }
+    // The window this layout's candidates are built and checked in, when the
+    // caller asks for one (guide 11.144). A layout's parents only grow as
+    // the search promotes, so once they cover more than half the level the
+    // later layouts are built whole without asking again, until a fall-back
+    // returns to the first layout (`whole_level`).
+    macro_rules! window_of {
+        () => {{
+            if request.windowed && !whole_level {
+                let started = std::time::Instant::now();
+                let window = match SearchWindow::around(patches, &core, &transition) {
+                    Ok(window) => window,
+                    Err(reason) => {
+                        end_or_fall_back!(invalid(states_examined, halo_expansions, reason))
+                    }
+                };
+                if crate::construction::cmrc_timing_enabled() {
+                    eprintln!(
+                        "earthmesh_cli: cmrc_detail phase=search_window component={} \
+                         faces={} elapsed_ms={}",
+                        component.id,
+                        window.as_ref().map_or_else(
+                            || "level".to_string(),
+                            |window| window.faces.len().to_string()
+                        ),
+                        started.elapsed().as_millis()
+                    );
+                }
+                window
+            } else {
+                None
+            }
         }};
     }
 
@@ -358,7 +523,17 @@ fn solve_transition_topology_from_cursor_with_promotion(
             })
             .collect::<BTreeSet<_>>();
         if uncovered.is_empty() && transition.is_empty() {
-            return pure_core(patches, component.id, &core, halo_expansions);
+            let window = window_of!();
+            return in_window(
+                pure_core(
+                    patches,
+                    component.id,
+                    &core,
+                    halo_expansions,
+                    window.as_ref(),
+                ),
+                window.as_ref(),
+            );
         }
         if !uncovered.is_empty() {
             if uncovered.len() == core.len() || halo_expansions == limits.maximum_halo_expansions {
@@ -391,14 +566,19 @@ fn solve_transition_topology_from_cursor_with_promotion(
             .focus
             .filter(|_| unpromoted.is_none() && halo_expansions == 0)
         {
-            return solve_focused(
-                patches,
-                component.id,
-                &core,
-                &transition,
-                focus,
-                topology_states_cursor,
-                limits.topology_states - topology_states_cursor,
+            let window = window_of!();
+            return in_window(
+                solve_focused(
+                    patches,
+                    component.id,
+                    &core,
+                    &transition,
+                    focus,
+                    topology_states_cursor,
+                    limits.topology_states - topology_states_cursor,
+                    window.as_ref(),
+                ),
+                window.as_ref(),
             );
         }
 
@@ -406,6 +586,8 @@ fn solve_transition_topology_from_cursor_with_promotion(
         let remaining_halos = limits.maximum_halo_expansions - halo_expansions + 1;
         let local_limit = remaining_states.div_ceil(remaining_halos);
         let local_cursor = topology_states_cursor.saturating_sub(states_examined);
+        let window = window_of!();
+        whole_level = request.windowed && window.is_none();
         match solve_once(
             patches,
             component.id,
@@ -415,8 +597,10 @@ fn solve_transition_topology_from_cursor_with_promotion(
             local_cursor,
             local_limit,
             None,
+            window.as_ref(),
         ) {
             TransitionTopologyOutcome::Closed(mut trial) => {
+                trial.window_parents = window.map(|window| window.parents);
                 let layout_topology_states = trial.report.topology_states;
                 trial.candidate.topology_id += states_examined;
                 states_examined += trial.report.topology_states;
@@ -1009,25 +1193,43 @@ fn branched_boundary_vertices(edges: Vec<(usize, usize)>) -> BTreeSet<usize> {
         .collect()
 }
 
+/// The level's leaves, or a search window's alone.
+fn leaf_set_for(
+    source: &MotherGrid,
+    window: Option<&SearchWindow>,
+) -> Result<HierarchyLeafSet, String> {
+    match window {
+        None => HierarchyLeafSet::from_mother_grid(source),
+        Some(window) => HierarchyLeafSet::from_faces(source, &window.faces),
+    }
+}
+
 fn pure_core(
     patches: &Patches<'_>,
     component_id: u64,
     core: &BTreeSet<TriangleAddress>,
     halo_expansions: usize,
+    window: Option<&SearchWindow>,
 ) -> TransitionTopologyOutcome {
     let source = patches.source;
-    let mut leaf_set = match HierarchyLeafSet::from_mother_grid(source) {
+    let mut leaf_set = match leaf_set_for(source, window) {
         Ok(v) => v,
         Err(reason) => return invalid(0, halo_expansions, reason),
     };
     if let Err(reason) = leaf_set.condense_core(&core.iter().copied().collect::<Vec<_>>()) {
         return invalid(0, halo_expansions, reason);
     }
-    let mesh = match super::core_condensation::rebuild_from_leaf_set(source, &leaf_set) {
+    let mesh = match super::core_condensation::rebuild_within(
+        source,
+        &leaf_set,
+        &BTreeSet::new(),
+        &[],
+        window.map(|window| &window.faces),
+    ) {
         Ok(mesh) => mesh,
         Err(reason) => return invalid(0, halo_expansions, reason),
     };
-    if let Err(reason) = hard_gate(source, &mesh) {
+    if let Err(reason) = hard_gate_within(source, &mesh, window) {
         return TransitionTopologyOutcome::ProvenInfeasible {
             states_examined: 0,
             halo_expansions,
@@ -1060,6 +1262,7 @@ fn pure_core(
             focus_topology_states: None,
             retired_vertex: false,
         },
+        window_parents: None,
     }))
 }
 
@@ -1067,6 +1270,7 @@ fn pure_core(
 /// every custom parent off the focus as the failed candidate had it,
 /// enumerated from the focus's cursor. The layout's own cursor stays where
 /// it was; the candidate reports its focused states separately.
+#[allow(clippy::too_many_arguments)]
 fn solve_focused(
     patches: &Patches<'_>,
     component_id: u64,
@@ -1075,6 +1279,7 @@ fn solve_focused(
     focus: &RetryFocus,
     layout_cursor: usize,
     remaining_states: usize,
+    window: Option<&SearchWindow>,
 ) -> TransitionTopologyOutcome {
     match solve_once(
         patches,
@@ -1085,6 +1290,7 @@ fn solve_focused(
         focus.cursor,
         focus.cursor.saturating_add(remaining_states),
         Some(focus),
+        window,
     ) {
         TransitionTopologyOutcome::Closed(mut trial) => {
             let focused = trial.report.topology_states;
@@ -1190,10 +1396,11 @@ fn solve_once(
     start_index: usize,
     budget: usize,
     focus: Option<&RetryFocus>,
+    window: Option<&SearchWindow>,
 ) -> TransitionTopologyOutcome {
     let source = patches.source;
     let mut states = 0usize;
-    let mut leaf_set = match HierarchyLeafSet::from_mother_grid(source) {
+    let mut leaf_set = match leaf_set_for(source, window) {
         Ok(v) => v,
         Err(reason) => return invalid(states, halo_expansions, reason),
     };
@@ -1296,6 +1503,7 @@ fn solve_once(
         substrate_selection: None,
         enumeration_exhausted: &mut enumeration_exhausted,
         focus: plan.as_ref(),
+        window,
     }
     .run();
     if let Some(hit) = closed {
@@ -1331,6 +1539,7 @@ fn solve_once(
         &forecast,
         &fixed_sources,
         states,
+        window,
     ) else {
         return TransitionTopologyOutcome::ProvenInfeasible {
             states_examined: states,
@@ -1350,6 +1559,7 @@ fn solve_once(
         start_index.saturating_sub(states),
         budget.saturating_sub(states),
         halo_expansions,
+        window,
     ) {
         Some(outcome) => outcome,
         None => TransitionTopologyOutcome::ProvenInfeasible {
@@ -1397,6 +1607,7 @@ fn closed_trial(
             focus_topology_states: None,
             retired_vertex: hit.retired,
         },
+        window_parents: None,
     }))
 }
 
@@ -1413,6 +1624,7 @@ fn solve_retirement_family(
     start_index: usize,
     budget: usize,
     halo_expansions: usize,
+    window: Option<&SearchWindow>,
 ) -> Option<TransitionTopologyOutcome> {
     if start_index >= budget {
         return Some(TransitionTopologyOutcome::SearchBudgetExhausted {
@@ -1444,6 +1656,7 @@ fn solve_retirement_family(
                 base_hit,
                 candidate,
                 report,
+                window,
             ) {
                 Ok(hit)
                     if fixed_custom_face_angles_are_repairable(
@@ -1506,6 +1719,7 @@ fn solve_retirement_family(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn select_retirement_substrate(
     source: &MotherGrid,
     leaf_set: &HierarchyLeafSet,
@@ -1514,6 +1728,7 @@ fn select_retirement_substrate(
     forecast: &BTreeMap<usize, isize>,
     fixed_sources: &BTreeSet<usize>,
     base_states: usize,
+    window: Option<&SearchWindow>,
 ) -> Option<SearchHit> {
     let mut states = 0;
     let mut closed = None;
@@ -1535,6 +1750,7 @@ fn select_retirement_substrate(
         }),
         enumeration_exhausted: &mut exhausted,
         focus: None,
+        window,
     }
     .run();
     substrate
@@ -1548,6 +1764,7 @@ fn retirement_hit(
     base_hit: &SearchHit,
     candidate: &MeshState,
     report: &earthmesh_mesh::RetirementReport,
+    window: Option<&SearchWindow>,
 ) -> Result<SearchHit, String> {
     let mut affected = base_hit
         .triangles_by_parent
@@ -1602,13 +1819,14 @@ fn retirement_hit(
     }
 
     let custom_parents = affected.clone();
-    let mesh = super::core_condensation::rebuild_from_leaf_set_with_custom_triangles(
+    let mesh = super::core_condensation::rebuild_custom_within(
         source,
         &leaf_set,
         &custom_parents,
         &triangles,
+        window.map(|window| &window.faces),
     )?;
-    hard_gate(source, &mesh)?;
+    hard_gate_within(source, &mesh, window)?;
 
     let mut triangles_by_parent = BTreeMap::new();
     let first = *affected.first().expect("affected is non-empty");
@@ -1776,6 +1994,8 @@ struct ProductSearch<'a> {
     /// A focused search's plan (`focus_variants`): its order, and the
     /// configurations it counts but never offers.
     focus: Option<&'a FocusPlan>,
+    /// The window its states are built and checked in (`SearchWindow`).
+    window: Option<&'a SearchWindow>,
 }
 
 struct SubstrateSelection<'a> {
@@ -1885,19 +2105,19 @@ impl ProductSearch<'_> {
                     }
                     let chosen_by_parent = self.chosen_by_parent(&chosen);
                     let chosen_triangles = flatten_custom_triangles(&chosen_by_parent);
-                    let rebuilt =
-                        super::core_condensation::rebuild_from_leaf_set_with_custom_triangles(
-                            self.source,
-                            self.leaf_set,
-                            self.transition,
-                            &chosen_triangles,
-                        );
+                    let rebuilt = super::core_condensation::rebuild_custom_within(
+                        self.source,
+                        self.leaf_set,
+                        self.transition,
+                        &chosen_triangles,
+                        self.window.map(|window| &window.faces),
+                    );
                     // Why a degree-feasible state was turned down: the
                     // first few per search, for the timing log.
                     let gate = rebuilt
                         .as_ref()
                         .map_err(|reason| format!("rebuild: {reason}"))
-                        .and_then(|mesh| hard_gate(self.source, mesh));
+                        .and_then(|mesh| hard_gate_within(self.source, mesh, self.window));
                     if let Err(reason) = &gate {
                         if crate::construction::cmrc_timing_enabled() && gate_failures < 3 {
                             gate_failures += 1;
@@ -2904,7 +3124,19 @@ pub(super) fn cycles_from_edges(edges: Vec<(usize, usize)>) -> Result<Vec<Vec<us
     Ok(cycles)
 }
 
+#[cfg(test)]
 fn hard_gate(source: &MotherGrid, mesh: &HierarchyLeafMesh) -> Result<(), String> {
+    hard_gate_within(source, mesh, None)
+}
+
+/// `hard_gate` for a search window's mesh (`SearchWindow`): open along the
+/// window's edge as well as the region's, its Euler characteristic the
+/// window's before the search.
+fn hard_gate_within(
+    source: &MotherGrid,
+    mesh: &HierarchyLeafMesh,
+    window: Option<&SearchWindow>,
+) -> Result<(), String> {
     let state = &mesh.mesh;
     state.validate().map_err(|errors| {
         errors
@@ -2916,19 +3148,21 @@ fn hard_gate(source: &MotherGrid, mesh: &HierarchyLeafMesh) -> Result<(), String
     // A built region's mesh is open along the region's edge, and only there;
     // vertices there have open fans and are settled by construction.
     let outer = source.region.as_ref().map(|region| region.outer_boundary());
+    // A search window's mesh is open along the window's edge as well.
     let on_edge = |vertex: usize| {
-        outer.is_some_and(|outer| {
-            mesh.source_vertex_slots
-                .get(vertex)
-                .copied()
-                .flatten()
-                .is_some_and(|slot| outer.contains(&slot))
-        })
+        mesh.source_vertex_slots
+            .get(vertex)
+            .copied()
+            .flatten()
+            .is_some_and(|slot| {
+                outer.is_some_and(|outer| outer.contains(&slot))
+                    || window.is_some_and(|window| window.edge_sites.contains(&slot))
+            })
     };
-    if outer.is_none() && state.open_edge_count() != 0 {
+    if outer.is_none() && window.is_none() && state.open_edge_count() != 0 {
         return Err(format!("mesh has {} open edges", state.open_edge_count()));
     }
-    if outer.is_some() {
+    if outer.is_some() || window.is_some() {
         for face in state.active_triangle_slots() {
             let corners = state.triangles()[face];
             for (corner, &neighbour) in state.neighbours()[face].iter().enumerate() {
@@ -2971,7 +3205,17 @@ fn hard_gate(source: &MotherGrid, mesh: &HierarchyLeafMesh) -> Result<(), String
     // and the closed-edge check above, each edge has exactly two face claims:
     // 3F = 2E. Reuse that invariant instead of hashing every edge again.
     let faces = state.triangle_count();
-    if outer.is_none() {
+    if let Some(window) = window {
+        // Re-triangulating inside the window keeps the window's surface.
+        let edges = (3 * faces + state.open_edge_count()) / 2;
+        let euler = state.vertex_count() as isize - edges as isize + faces as isize;
+        if euler != window.euler {
+            return Err(format!(
+                "Euler characteristic is {euler}, expected the search window's {}",
+                window.euler
+            ));
+        }
+    } else if outer.is_none() {
         let edges = faces * 3 / 2;
         let euler = state.vertex_count() as isize - edges as isize + faces as isize;
         if euler != 2 {
@@ -3037,6 +3281,138 @@ fn hard_gate(source: &MotherGrid, mesh: &HierarchyLeafMesh) -> Result<(), String
 mod tests {
     use super::*;
     use crate::coarsen::ElasticPatch;
+
+    fn outcome_signature(outcome: &TransitionTopologyOutcome) -> String {
+        match outcome {
+            TransitionTopologyOutcome::Closed(trial) => format!(
+                "closed id={} states={} halo={} core={:?} custom={:?}",
+                trial.candidate.topology_id,
+                trial.report.topology_states,
+                trial.report.halo_expansions,
+                trial.candidate.core_parents,
+                trial.candidate.custom_transition_triangles,
+            ),
+            other => format!("{other:?}"),
+        }
+    }
+
+    /// A component's candidates built and checked in a window round it are
+    /// the whole level's (guide 11.144): from every cursor the same
+    /// outcome, the window's faces among the whole mesh's, and the same
+    /// elastic patch grown from them.
+    #[test]
+    fn a_search_window_finds_what_the_whole_level_finds() {
+        let fine = MotherGrid::generate(64).unwrap();
+        let coarse = MotherGrid::generate(32).unwrap();
+        let patches = Patches::new(&fine);
+        let (mut compared, mut patches_compared) = (0, 0);
+        // The last core is a whole base face: its window is past a sixteenth
+        // of the level, kept in tables (`rebuild_within`).
+        for seed in 0..5usize {
+            let core = coarse
+                .triangle_addresses
+                .iter()
+                .flatten()
+                .copied()
+                .filter(|parent| {
+                    let hole = (parent.i * 73_856_093)
+                        ^ (parent.j * 19_349_663)
+                        ^ (seed * 83_492_791)
+                        ^ usize::from(
+                            parent.orientation == crate::mother_grid::TriangleOrientation::Up,
+                        );
+                    parent.base_face == 0
+                        && (seed == 4
+                            || parent.i >= 6
+                                && parent.j >= 6
+                                && parent.i + parent.j < 26
+                                && (seed == 0 || hole % 9 != 0))
+                })
+                .collect::<BTreeSet<_>>();
+            let transition = core
+                .iter()
+                .flat_map(|&parent| patches.get(parent).unwrap().neighbours)
+                .filter(|parent| !core.contains(parent))
+                .collect::<BTreeSet<_>>();
+            let component = HierarchyComponent {
+                id: 60 + seed as u64,
+                parents: core.union(&transition).copied().collect(),
+                boundary_edges: Vec::new(),
+                core_parents: core.iter().copied().collect(),
+                transition_parents: transition.iter().copied().collect(),
+            };
+            let limits = TransitionTopologyLimits {
+                topology_states: 1_000,
+                maximum_halo_expansions: 5,
+            };
+            for cursor in 0..4 {
+                let search = |windowed| {
+                    solve_transition_topology_from_cursor_with_promotion(
+                        &fine,
+                        &component,
+                        limits,
+                        cursor,
+                        RetryRequest {
+                            windowed,
+                            ..RetryRequest::default()
+                        },
+                        true,
+                    )
+                };
+                let (whole, window) = (search(false), search(true));
+                assert_eq!(
+                    outcome_signature(&whole),
+                    outcome_signature(&window),
+                    "seed {seed}, cursor {cursor}"
+                );
+                let (
+                    TransitionTopologyOutcome::Closed(whole),
+                    TransitionTopologyOutcome::Closed(window),
+                ) = (&whole, &window)
+                else {
+                    continue;
+                };
+                assert!(window.mesh.mesh.triangle_count() < whole.mesh.mesh.triangle_count());
+                let faces = |trial: &TransitionTopologyTrial| {
+                    trial
+                        .mesh
+                        .mesh
+                        .active_triangle_slots()
+                        .map(|face| {
+                            let mut corners = trial.mesh.mesh.triangles()[face]
+                                .map(|site| trial.mesh.source_vertex_slots[site].unwrap());
+                            corners.sort_unstable();
+                            corners
+                        })
+                        .collect::<BTreeSet<_>>()
+                };
+                assert!(faces(window).is_subset(&faces(whole)));
+                // The patch -- or the reason there is none -- is the same.
+                let movable = |trial: &TransitionTopologyTrial| {
+                    ElasticPatch::from_transition_with_domain(
+                        trial,
+                        crate::coarsen::GeometryDomainId::PlusTwoOrdinaryRings,
+                    )
+                    .map(|patch| {
+                        patch
+                            .movable_compact_vertices
+                            .iter()
+                            .map(|&compact| trial.mesh.source_vertex_slots[compact].unwrap())
+                            .collect::<BTreeSet<_>>()
+                    })
+                };
+                let (window_patch, whole_patch) = (movable(window), movable(whole));
+                patches_compared += usize::from(whole_patch.is_ok());
+                assert_eq!(window_patch, whole_patch, "seed {seed}, cursor {cursor}");
+                compared += 1;
+            }
+        }
+        assert!(compared > 0, "some fixture must close");
+        assert!(
+            patches_compared > 0,
+            "some fixture must grow an elastic patch"
+        );
+    }
 
     #[test]
     fn hard_gate_preserves_topology_checks_and_first_failure() {
@@ -3697,6 +4073,7 @@ mod tests {
             0,
             42,
             0,
+            None,
         ) else {
             panic!("synthetic transition halo must enter retirement family");
         };
@@ -3749,6 +4126,7 @@ mod tests {
                 0,
                 0,
                 0,
+                None
             ),
             Some(TransitionTopologyOutcome::SearchBudgetExhausted { .. })
         ));
@@ -3765,6 +4143,7 @@ mod tests {
             trial.candidate.topology_id + 1 - base_states,
             42,
             0,
+            None,
         ) {
             assert!(next.candidate.topology_id > trial.candidate.topology_id);
         }
@@ -3793,6 +4172,7 @@ mod tests {
             0,
             block + 1,
             0,
+            None,
         );
         assert!(
             matches!(
@@ -4207,6 +4587,7 @@ mod tests {
                     promotion: Some((preferred, 1)),
                     reach,
                     focus: None,
+                    windowed: false,
                 },
                 true,
             )

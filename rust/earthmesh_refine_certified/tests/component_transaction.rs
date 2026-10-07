@@ -2,9 +2,9 @@ use std::collections::BTreeSet;
 
 use earthmesh_refine_certified::{
     coarsen::{
-        solve_component_transaction, solve_component_transaction_with_contract,
-        ComponentTransactionLimits, ComponentTransactionOutcome, ComponentTransactionStage,
-        ComponentTransactionState, HierarchyComponent,
+        solve_component_transaction, solve_component_transaction_with_contract, CommitCells,
+        CommitGeometry, ComponentTransactionLimits, ComponentTransactionOutcome,
+        ComponentTransactionStage, ComponentTransactionState, HierarchyComponent,
     },
     AngleContractId, MotherGrid, SourceLevelField, TriangleAddress, TriangleOrientation,
 };
@@ -163,7 +163,7 @@ fn certified_component_commit_reduces_mesh_and_is_deterministic() {
     };
 
     assert_eq!(first, second);
-    assert_eq!(first.fingerprint(), first_report.after_fingerprint);
+    assert_eq!(Some(first.fingerprint()), first_report.after_fingerprint);
     assert_eq!(
         first_report.before_fingerprint,
         second_report.before_fingerprint
@@ -173,12 +173,8 @@ fn certified_component_commit_reduces_mesh_and_is_deterministic() {
         second_report.after_fingerprint
     );
     assert_eq!(first_report.local_geometry, second_report.local_geometry);
-    assert_eq!(first_report.global_geometry, second_report.global_geometry);
-    assert_eq!(
-        first_report.final_certificate,
-        second_report.final_certificate
-    );
-    assert_eq!(first_report.remap, second_report.remap);
+    assert_eq!(first_report.geometry, second_report.geometry);
+    assert_eq!(first_report.cells, second_report.cells);
     assert_eq!(first_report.core_search_states, 0);
     assert_eq!(first_report.topology_states, 0);
     assert!(first_report.interval_boxes > 0);
@@ -198,19 +194,24 @@ fn certified_component_commit_reduces_mesh_and_is_deterministic() {
         first_report.pre_faces - first_report.post_faces,
         first_report.removed_faces
     );
-    first_report
-        .final_certificate
-        .require_final_gates()
-        .unwrap();
-    assert_eq!(first_report.final_cells.physical_residuals(), 0);
-    assert_eq!(first_report.final_cells.balance_residuals(), 0);
-    assert_eq!(first_report.remap.negative_weights(), 0);
-    assert_eq!(first_report.remap.bad_row_sums(), 0);
-    assert_eq!(first_report.remap.bad_lineage_rows(), 0);
-    assert!(first_report.remap.constant_closure_error() <= first_report.remap.closure_tolerance());
-    assert!(
-        first_report.remap.global_area_closure_error() <= first_report.remap.closure_tolerance()
-    );
+    // A transaction on its own certifies the whole mesh.
+    let CommitGeometry::Whole {
+        final_certificate, ..
+    } = &first_report.geometry
+    else {
+        panic!("a transaction on its own certifies the whole mesh")
+    };
+    final_certificate.require_final_gates().unwrap();
+    let CommitCells::Whole { final_cells, remap } = &first_report.cells else {
+        panic!("a transaction on its own certifies every cell")
+    };
+    assert_eq!(final_cells.physical_residuals(), 0);
+    assert_eq!(final_cells.balance_residuals(), 0);
+    assert_eq!(remap.negative_weights(), 0);
+    assert_eq!(remap.bad_row_sums(), 0);
+    assert_eq!(remap.bad_lineage_rows(), 0);
+    assert!(remap.constant_closure_error() <= remap.closure_tolerance());
+    assert!(remap.global_area_closure_error() <= remap.closure_tolerance());
     assert!(first
         .target_levels()
         .unwrap()
@@ -412,12 +413,15 @@ fn dqx_mixed_component_uses_the_expanded_geometry_domain() {
     let ComponentTransactionOutcome::Certified(report) = outcome else {
         panic!("the DQX geometry domain should certify the mixed component: {outcome:?}")
     };
+    let CommitGeometry::Whole { internal, .. } = &report.geometry else {
+        panic!("a transaction on its own certifies the whole mesh")
+    };
     assert_eq!(
-        report.global_geometry.angle_contract_id,
+        internal.angle_contract_id,
         AngleContractId::DomainQuality38To82V1
     );
-    assert!(report.global_geometry.min_angle_degrees >= 38.0);
-    assert!(report.global_geometry.max_angle_degrees <= 82.0);
+    assert!(internal.min_angle_degrees >= 38.0);
+    assert!(internal.max_angle_degrees <= 82.0);
     assert!(report.elastic.as_ref().is_some_and(|elastic| {
         elastic.moved_compact_vertices.len() > component.transition_parents.len()
     }));

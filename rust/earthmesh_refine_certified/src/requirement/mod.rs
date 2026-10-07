@@ -563,20 +563,7 @@ fn maximum_overlapping_levels(
             if row.target >= target_cells {
                 return Err("remap target row is outside target level field");
             }
-            let mut required = 0;
-            let mut source_for_row = None;
-            for &(source, weight) in &row.sources {
-                if weight <= 0.0 {
-                    continue;
-                }
-                let level = *source_levels
-                    .get(source)
-                    .ok_or("remap source row is outside source level field")?;
-                if level > required {
-                    required = level;
-                    source_for_row = Some(source);
-                }
-            }
+            let (required, source_for_row) = row_required_level(row, source_levels)?;
             Ok((row.target, required, source_for_row))
         })
         .collect::<Vec<_>>();
@@ -591,6 +578,29 @@ fn maximum_overlapping_levels(
         }
     }
     Ok((required_levels, source_for_target))
+}
+
+/// The level a remap row's target cell requires: the highest of the
+/// sources it overlaps, and the first source with it.
+pub(crate) fn row_required_level(
+    row: &crate::remap::RemapRow,
+    source_levels: &[usize],
+) -> Result<(usize, Option<usize>), &'static str> {
+    let mut required = 0;
+    let mut source_for_row = None;
+    for &(source, weight) in &row.sources {
+        if weight <= 0.0 {
+            continue;
+        }
+        let level = *source_levels
+            .get(source)
+            .ok_or("remap source row is outside source level field")?;
+        if level > required {
+            required = level;
+            source_for_row = Some(source);
+        }
+    }
+    Ok((required, source_for_row))
 }
 
 fn final_report_from_required_levels(
