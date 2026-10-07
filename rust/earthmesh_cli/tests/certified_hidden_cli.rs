@@ -1461,10 +1461,17 @@ fn mixed_uniform_delivery_fails_closed_or_uses_an_explicitly_named_safe_fallback
     )
     .unwrap();
 
+    // No transition on a sphere this coarse keeps the legacy 40-80 degree
+    // window, whatever the search budget: the mixed request cannot be met.
+    // (A budget of one state used to do it, while the state the search
+    // built first left an icosahedron vertex at degree 6; guide 11.148.)
     let path = root.join("cmrc.nml");
     let reverse = specified_circle_namelist(&root, "mixed_incomplete", &prefix)
         .replace("safe_mother_only", "reverse_coarsening")
-        .replace("NL%search_budget=100", "NL%search_budget=1");
+        .replace(
+            "NL%search_budget=100",
+            "NL%angle_contract='legacy_strict_40_to_80'\n  NL%search_budget=100",
+        );
     fs::write(&path, reverse).unwrap();
     let error = earthmesh_cli::run_refine_pipeline_namelist(&path, &root, 1_000, None)
         .expect_err("mixed request with uniform delivery must fail closed");

@@ -546,6 +546,13 @@ fn solve_transition_topology_from_cursor_with_promotion(
             halo_expansions += 1;
             continue;
         }
+        // An icosahedron vertex on the core's edge finishes at degree 5 only
+        // inside the transition (guide 11.148).
+        match promote_core_at_pentagons(patches, &mut core, &mut transition) {
+            Ok(true) => continue,
+            Ok(false) => {}
+            Err(reason) => end_or_fall_back!(invalid(states_examined, halo_expansions, reason)),
+        }
 
         if topology_states_cursor >= limits.topology_states {
             return TransitionTopologyOutcome::SearchBudgetExhausted {
@@ -1221,6 +1228,64 @@ fn retain_fine_at_pinches(
     Ok(true)
 }
 
+/// Moves into the transition the core parents round each icosahedron vertex
+/// that core and transition parents share (guide 11.148). The vertex
+/// finishes at degree 5 only when no transition triangle fans from it, and a
+/// transition parent between core parents, whose edges at the vertex lose
+/// their midpoints, must fan from it once its far edge keeps one; with every
+/// parent round it in the transition, the midpoints at the vertex can stay.
+/// A vertex on the region's edge, where the hard gate spares open fans, is
+/// left as it is.
+fn promote_core_at_pentagons(
+    patches: &Patches<'_>,
+    core: &mut BTreeSet<TriangleAddress>,
+    transition: &mut BTreeSet<TriangleAddress>,
+) -> Result<bool, String> {
+    #[cfg(test)]
+    if tests::UNPROTECTED.with(std::cell::Cell::get) {
+        return Ok(false);
+    }
+    let source = patches.source;
+    let outer = source.region.as_ref().map(|region| region.outer_boundary());
+    let mut pentagons = BTreeMap::new();
+    for &parent in transition.iter() {
+        for corner in patches.get(parent)?.corners {
+            if matches!(
+                source.addresses.get(corner).and_then(Option::as_ref),
+                Some(VertexAddress::IcosahedronVertex(_))
+            ) && !outer.is_some_and(|outer| outer.contains(&corner))
+            {
+                pentagons.entry(corner).or_insert(parent);
+            }
+        }
+    }
+    let mut promoted = BTreeSet::new();
+    for (pentagon, start) in pentagons {
+        // The parents round the vertex, from one to the next across the
+        // edges that end at it.
+        let mut around = BTreeSet::from([start]);
+        let mut stack = vec![start];
+        while let Some(parent) = stack.pop() {
+            for neighbour in patches.get(parent)?.neighbours {
+                if !around.contains(&neighbour)
+                    && patches
+                        .get(neighbour)
+                        .is_ok_and(|patch| patch.corners.contains(&pentagon))
+                {
+                    around.insert(neighbour);
+                    stack.push(neighbour);
+                }
+            }
+        }
+        promoted.extend(around.into_iter().filter(|parent| core.contains(parent)));
+    }
+    if promoted.is_empty() {
+        return Ok(false);
+    }
+    promote_to_transition(core, transition, promoted);
+    Ok(true)
+}
+
 fn branched_boundary_vertices(edges: Vec<(usize, usize)>) -> BTreeSet<usize> {
     let mut outgoing = BTreeMap::<usize, usize>::new();
     let mut incoming = BTreeMap::<usize, usize>::new();
@@ -1678,7 +1743,24 @@ fn solve_retirement_family(
         });
     }
     let fixed_sources = fixed_boundary_sources(&boundary);
-    let eligible = retirement_candidates(&base_hit.mesh, &boundary, transition);
+    // An icosahedron vertex is never retired: every level keeps it, at
+    // degree 5 (guide 11.148).
+    let eligible = retirement_candidates(&base_hit.mesh, &boundary, transition)
+        .into_iter()
+        .filter(|&(vertex, _)| {
+            !base_hit
+                .mesh
+                .source_vertex_slots
+                .get(vertex)
+                .copied()
+                .flatten()
+                .is_some_and(|slot| {
+                    matches!(
+                        source.addresses.get(slot).and_then(Option::as_ref),
+                        Some(VertexAddress::IcosahedronVertex(_))
+                    )
+                })
+        });
     let mut offset = 0usize;
     for (vertex, degree) in eligible {
         let block = retirement_block_size(degree)?;
@@ -2094,6 +2176,14 @@ impl ProductSearch<'_> {
             &mut chosen,
             self.focus.map(|plan| plan.distance.as_slice()),
         );
+        forecast.protect(
+            self.source,
+            preassigned_touched.iter().copied().chain(
+                variables
+                    .iter()
+                    .flat_map(|variable| variable.touched.iter().copied()),
+            ),
+        );
         for position in chosen
             .iter()
             .enumerate()
@@ -2408,6 +2498,10 @@ fn fixed_custom_face_angles_are_repairable(
 
 struct DenseForecast {
     degrees: Vec<isize>,
+    /// Icosahedron vertices off the region's edge: the hard gate takes them
+    /// at degree 5 and no other (`hard_gate_within`), so only 5 finishes
+    /// them (guide 11.148).
+    protected: Vec<usize>,
 }
 
 impl DenseForecast {
@@ -2416,7 +2510,31 @@ impl DenseForecast {
         for (&vertex, &degree) in forecast {
             degrees[vertex] = degree;
         }
-        Self { degrees }
+        Self {
+            degrees,
+            protected: Vec::new(),
+        }
+    }
+
+    /// Protects the icosahedron vertices among `vertices` that are not on
+    /// the region's edge, where the hard gate spares open fans.
+    fn protect(&mut self, source: &MotherGrid, vertices: impl IntoIterator<Item = usize>) {
+        #[cfg(test)]
+        if tests::UNPROTECTED.with(std::cell::Cell::get) {
+            return;
+        }
+        let outer = source.region.as_ref().map(|region| region.outer_boundary());
+        self.protected = vertices
+            .into_iter()
+            .filter(|vertex| {
+                matches!(
+                    source.addresses.get(*vertex).and_then(Option::as_ref),
+                    Some(VertexAddress::IcosahedronVertex(_))
+                ) && !outer.is_some_and(|outer| outer.contains(vertex))
+            })
+            .collect::<BTreeSet<_>>()
+            .into_iter()
+            .collect();
     }
 
     fn apply_triangles(&mut self, triangles: &[[usize; 3]], sign: isize) {
@@ -2455,7 +2573,12 @@ impl DenseForecast {
         position: usize,
     ) -> Option<usize> {
         vertices.iter().copied().find(|&vertex| {
-            !degree_mask_can_finish(self.degrees[vertex], suffix_masks.mask(vertex, position))
+            let mask = suffix_masks.mask(vertex, position);
+            if self.protected.contains(&vertex) {
+                !degree_mask_reaches(self.degrees[vertex], mask, 5)
+            } else {
+                !degree_mask_can_finish(self.degrees[vertex], mask)
+            }
         })
     }
 
@@ -2826,6 +2949,11 @@ fn degree_mask_can_finish(degree: isize, mask: u128) -> bool {
         }
     }
     false
+}
+
+/// Whether one of the counts `mask` may add brings `degree` to `target`.
+fn degree_mask_reaches(degree: isize, mask: u128, target: isize) -> bool {
+    u32::try_from(target - degree).is_ok_and(|add| add < u128::BITS && mask & (1u128 << add) != 0)
 }
 
 fn triangle_vertices(triangles: &[[usize; 3]]) -> BTreeSet<usize> {
@@ -3485,6 +3613,140 @@ mod tests {
         /// `work_per_variable` in tests.
         pub(super) static WORK_PER_VARIABLE: std::cell::Cell<usize> =
             const { std::cell::Cell::new(64) };
+        /// Set by a test that searches as before icosahedron vertices were
+        /// protected (`DenseForecast::protect`, `promote_core_at_pentagons`).
+        pub(super) static UNPROTECTED: std::cell::Cell<bool> =
+            const { std::cell::Cell::new(false) };
+    }
+
+    /// An icosahedron vertex in a transition finishes at degree 5 (guide
+    /// 11.148). Cores round one pentagon at different distances, with
+    /// transitions of different widths, put the vertex inside the transition
+    /// or on its edge with the core. As before, the degree forecast let it
+    /// finish at 6 and the hard gate turned those states down after building
+    /// them; a pentagon on the core's edge often had no state at all. Now
+    /// every search that closes leaves it at degree 5, closes wherever one
+    /// closed before, in no more states, and closes some layouts that had
+    /// none.
+    #[test]
+    fn an_icosahedron_vertex_in_a_transition_finishes_at_degree_five() {
+        let fine = MotherGrid::generate(64).unwrap();
+        let coarse = MotherGrid::generate(32).unwrap();
+        let patches = Patches::new(&fine);
+        let pentagon = (0..fine.addresses.len())
+            .find(|&site| {
+                matches!(
+                    fine.addresses[site],
+                    Some(VertexAddress::IcosahedronVertex(_))
+                )
+            })
+            .unwrap();
+        let at_pentagon = coarse
+            .triangle_addresses
+            .iter()
+            .flatten()
+            .copied()
+            .filter(|&parent| patches.get(parent).unwrap().corners.contains(&pentagon))
+            .collect::<BTreeSet<_>>();
+        assert_eq!(at_pentagon.len(), 5);
+        let grow = |set: &BTreeSet<TriangleAddress>| {
+            set.iter()
+                .flat_map(|&parent| patches.get(parent).unwrap().neighbours)
+                .chain(set.iter().copied())
+                .collect::<BTreeSet<_>>()
+        };
+        // Rings of parents round the pentagon's five.
+        let mut rings = vec![at_pentagon.clone()];
+        let mut reached = at_pentagon.clone();
+        for _ in 0..3 {
+            let next = grow(&reached);
+            rings.push(next.difference(&reached).copied().collect());
+            reached = next;
+        }
+        let degree = |trial: &TransitionTopologyTrial| {
+            let compact = trial
+                .mesh
+                .source_vertex_slots
+                .iter()
+                .position(|slot| *slot == Some(pentagon))?;
+            Some(
+                trial
+                    .mesh
+                    .mesh
+                    .active_triangle_slots()
+                    .filter(|&face| trial.mesh.mesh.triangles()[face].contains(&compact))
+                    .count(),
+            )
+        };
+        let (mut closed, mut sooner, mut rescued) = (0, 0, 0);
+        let centres = rings
+            .iter()
+            .flat_map(|ring| ring.iter().take(4).copied())
+            .collect::<Vec<_>>();
+        for &centre in &centres {
+            for (core_radius, width) in
+                (0..3).flat_map(|radius| [1, 2, 4].map(|width| (radius, width)))
+            {
+                let mut core = BTreeSet::from([centre]);
+                for _ in 0..core_radius {
+                    core = grow(&core);
+                }
+                let mut outer = core.clone();
+                for _ in 0..width {
+                    outer = grow(&outer);
+                }
+                let transition = outer.difference(&core).copied().collect::<BTreeSet<_>>();
+                if at_pentagon.is_disjoint(&transition) {
+                    continue;
+                }
+                let component = HierarchyComponent {
+                    id: 70,
+                    parents: core.union(&transition).copied().collect(),
+                    boundary_edges: Vec::new(),
+                    core_parents: core.iter().copied().collect(),
+                    transition_parents: transition.iter().copied().collect(),
+                };
+                let limits = TransitionTopologyLimits {
+                    topology_states: 1_000,
+                    maximum_halo_expansions: 0,
+                };
+                let search = |unprotected| {
+                    UNPROTECTED.with(|flag| flag.set(unprotected));
+                    let outcome =
+                        solve_transition_topology_from_cursor(&fine, &component, limits, 0);
+                    UNPROTECTED.with(|flag| flag.set(false));
+                    outcome
+                };
+                let (after, before) = (search(false), search(true));
+                let shape = format!("centre {centre:?}, core {core_radius}, width {width}");
+                let states = |outcome: &TransitionTopologyOutcome| match outcome {
+                    TransitionTopologyOutcome::Closed(trial) => Some(trial.report.topology_states),
+                    _ => None,
+                };
+                if let TransitionTopologyOutcome::Closed(trial) = &after {
+                    assert_eq!(degree(trial), Some(5), "{shape}");
+                    closed += 1;
+                }
+                match (states(&after), states(&before)) {
+                    (Some(after), Some(before)) => {
+                        assert!(after <= before, "{shape}: {after} states against {before}");
+                        sooner += usize::from(after < before);
+                    }
+                    (None, Some(_)) => panic!("{shape}: closed before, now {after:?}"),
+                    (Some(_), None) => rescued += 1,
+                    (None, None) => {}
+                }
+            }
+        }
+        assert!(closed > 0, "some fixture must close");
+        assert!(
+            sooner > 0,
+            "some search must have had states turned down at the pentagon"
+        );
+        assert!(
+            rescued > 0,
+            "some pentagon on the core's edge must have had no state"
+        );
     }
 
     fn outcome_signature(outcome: &TransitionTopologyOutcome) -> String {
@@ -4405,6 +4667,81 @@ mod tests {
             hit,
             boundary,
         )
+    }
+
+    /// A retirement family never retires an icosahedron vertex (guide
+    /// 11.148): with a transition of the parents round one its fan is
+    /// inside the transition, and the first vertex the family would retire.
+    #[test]
+    fn retirement_family_keeps_an_icosahedron_vertex() {
+        let source = MotherGrid::generate(8).unwrap();
+        let pentagon = (0..source.addresses.len())
+            .find(|&site| {
+                matches!(
+                    source.addresses[site],
+                    Some(VertexAddress::IcosahedronVertex(_))
+                )
+            })
+            .unwrap();
+        let seed = source
+            .mesh
+            .active_triangle_slots()
+            .find(|&face| source.mesh.triangles()[face].contains(&pentagon))
+            .unwrap();
+        let transition = source
+            .mesh
+            .triangle_fan_from(pentagon, seed)
+            .unwrap()
+            .into_iter()
+            .map(|face| {
+                source.triangle_addresses[face]
+                    .and_then(TriangleAddress::parent_2_to_1)
+                    .unwrap()
+            })
+            .collect::<BTreeSet<_>>();
+        let hit = SearchHit {
+            mesh: HierarchyLeafMesh {
+                mesh: source.mesh.clone(),
+                triangle_addresses: source.triangle_addresses.clone(),
+                source_vertex_slots: (0..source.mesh.vertices().len())
+                    .map(|slot| source.mesh.is_vertex_live(slot).then_some(slot))
+                    .collect(),
+            },
+            triangles_by_parent: BTreeMap::new(),
+            triangles: Vec::new(),
+            degree_forecast: BTreeMap::new(),
+            topology_id: 0,
+            retired: false,
+        };
+        let boundary = TransitionBoundary {
+            halo_parents: transition.iter().copied().collect(),
+            ..TransitionBoundary::default()
+        };
+        let candidates = retirement_candidates(&hit.mesh, &boundary, &transition);
+        assert_eq!(
+            candidates
+                .first()
+                .map(|&(vertex, degree)| (hit.mesh.source_vertex_slots[vertex], degree)),
+            Some((Some(pentagon), 5))
+        );
+        let outcome = solve_retirement_family(
+            &source,
+            99,
+            &BTreeSet::new(),
+            &transition,
+            &HierarchyLeafSet::from_mother_grid(&source).unwrap(),
+            boundary,
+            &hit,
+            0,
+            0,
+            42,
+            0,
+            None,
+        );
+        let Some(TransitionTopologyOutcome::Closed(trial)) = outcome else {
+            panic!("another vertex of the transition retires: {outcome:?}");
+        };
+        assert!(trial.candidate.source_active_vertices.contains(&pentagon));
     }
 
     #[test]

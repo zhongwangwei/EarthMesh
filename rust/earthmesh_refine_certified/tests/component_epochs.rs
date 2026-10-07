@@ -73,6 +73,7 @@ fn parent_ball(
 fn lower_patch_requirements(
     grid: &MotherGrid,
     parents: &BTreeSet<TriangleAddress>,
+    level: usize,
     required: &mut [usize],
 ) {
     for face in grid.mesh.active_triangle_slots() {
@@ -81,7 +82,7 @@ fn lower_patch_requirements(
             .is_some_and(|parent| parents.contains(&parent))
         {
             for site in grid.mesh.triangles()[face] {
-                required[site] = 2;
+                required[site] = level;
             }
         }
     }
@@ -132,26 +133,28 @@ fn uniform_requirement_runs_exactly_three_to_two_to_one_to_zero() {
 
 #[test]
 fn global_topology_budget_is_shared_across_same_level_components() {
-    let source = MotherGrid::generate(8).unwrap();
-    let coarse = MotherGrid::generate(4).unwrap();
+    // Patches inside two base faces, clear of their corners: a transition
+    // round an icosahedron vertex has its own rules (guide 11.148).
+    let source = MotherGrid::generate(16).unwrap();
+    let coarse = MotherGrid::generate(8).unwrap();
     let centers = [0, 10].map(|base_face| {
         coarse
             .triangle_addresses
             .iter()
             .flatten()
             .copied()
-            .find(|address| address.base_face == base_face)
+            .find(|address| address.base_face == base_face && address.i == 3 && address.j == 2)
             .unwrap()
     });
     let patches = centers.map(|center| parent_ball(&source, center, 2));
     assert!(patches[0].is_disjoint(&patches[1]));
 
-    let mut required = vec![3; source.mesh.vertices().len()];
+    let mut required = vec![4; source.mesh.vertices().len()];
     for patch in &patches {
-        lower_patch_requirements(&source, patch, &mut required);
+        lower_patch_requirements(&source, patch, 3, &mut required);
     }
     let levels = source_levels(&source, &required);
-    let mut config = full_config(3);
+    let mut config = full_config(4);
     config.topology_states_per_component = 10;
     config.total_transition_states = 2;
     config.elastic_iterations_per_topology = 0;

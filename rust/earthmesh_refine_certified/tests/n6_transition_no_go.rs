@@ -25,9 +25,12 @@ fn n6_legacy_transition_family_emits_honest_machine_readable_evidence() {
     assert!(proof.family_topology_count > 0);
     assert!(proof.best_numerical_margin_degrees.is_some());
     // The family count is after hard topology gates prune invalid candidates.
-    assert_eq!(proof.family_topology_count, 188);
+    // 188 before the fixture's pentagons were kept at degree 5 (guide
+    // 11.148): its core parents round them join the transition, which
+    // widens the family; the margins and the outcome stay as they were.
+    assert_eq!(proof.family_topology_count, 372);
     assert!(proof.topology_family_closed);
-    assert_eq!(proof.interval_boxes, 188);
+    assert_eq!(proof.interval_boxes, 372);
     assert_eq!(proof.interval_upper_margin_degrees, Some(19.8));
     assert!(proof
         .best_numerical_margin_degrees
