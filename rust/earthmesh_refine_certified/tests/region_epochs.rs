@@ -300,3 +300,75 @@ fn two_regions_joined_through_the_settled_region_match_the_whole_sphere() {
 fn two_levels_around_one_disk_match_the_whole_sphere() {
     compare(8, 2, &[(102.7, 25.0, 8.0, 2)], 5);
 }
+
+fn settled_component_failure(max_level: usize) {
+    let base = MotherGrid::generate(4).unwrap();
+    let certified = BTreeSet::from([base
+        .triangle_addresses
+        .iter()
+        .flatten()
+        .copied()
+        .next()
+        .unwrap()]);
+    let built = grown(&base, &certified, 2);
+    let settled = SettledRegion::new(&base, &built).unwrap();
+    assert!(!settled.is_empty());
+    let fine_n = base.subdivision << max_level;
+    let region = MotherGrid::generate_faces(
+        fine_n,
+        descendant_faces(built.iter().copied(), fine_n).unwrap(),
+    )
+    .unwrap();
+    let scope = RegionScope::new(&region, &certified, base.subdivision).unwrap();
+    let source_levels = SourceLevelField::from_active_voronoi_cells(
+        &region.mesh,
+        vec![0; region.mesh.vertex_count()],
+    )
+    .unwrap();
+    let mut config = config(max_level);
+    // Fail certification deterministically, without an expensive elastic search.
+    config.interval_boxes_per_component = 0;
+    let outcome = run_region_component_epochs(
+        &region,
+        &region.mesh,
+        &source_levels,
+        &vec![0; region.mesh.vertices().len()],
+        &config,
+        &RegionEpochs {
+            built_bases: built,
+            settled,
+            scope,
+        },
+    );
+    let ElasticCmrcOutcome::NotCertifiable { reason } = outcome else {
+        panic!("an uncoarsened settled component must fail closed: {outcome:?}");
+    };
+    assert!(
+        reason.contains(&format!("component 0 at {max_level}->{}", max_level - 1)),
+        "{reason}"
+    );
+    assert!(
+        reason.contains("outcome=search_budget_exhausted"),
+        "{reason}"
+    );
+    assert!(reason.contains("stage=LocalGeometry"), "{reason}");
+    assert!(
+        reason.contains("local geometry interval-box budget exhausted"),
+        "{reason}"
+    );
+    assert!(
+        reason.contains(&format!("settled region stayed at level {max_level}")),
+        "{reason}"
+    );
+    assert!(reason.contains("cannot deliver"), "{reason}");
+}
+
+#[test]
+fn final_epoch_settled_component_failure_is_not_deliverable() {
+    settled_component_failure(1);
+}
+
+#[test]
+fn multilevel_settled_component_failure_keeps_original_diagnostic() {
+    settled_component_failure(2);
+}

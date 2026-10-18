@@ -815,6 +815,23 @@ fn run_elastic_component_epochs_impl(
             component_record.parent_count = parent_count;
             component_record.core_parent_count = core_parent_count;
             if component_record.outcome != ComponentOutcomeKind::Certified {
+                // The settled region cannot be delivered at an uncoarsened level,
+                // including when this is the final epoch.
+                if implicit.is_some() {
+                    return ElasticCmrcOutcome::NotCertifiable {
+                        reason: format!(
+                            "component {} at {source_level}->{target_level}: outcome={}; {}; \
+                             settled region stayed at level {settled_level}; \
+                             cannot deliver a settled face finer than the base",
+                            component_record.component_id,
+                            component_record.outcome.as_str(),
+                            component_record
+                                .reason
+                                .as_deref()
+                                .unwrap_or("no failure reason"),
+                        ),
+                    };
+                }
                 promoted += 1;
                 report.components_promoted += 1;
                 report.total_topology_states += component_record.topology_states;
@@ -1185,7 +1202,7 @@ fn rollback_record(
         interval_boxes: rollback.interval_boxes,
         transition_ring_width: initial_transition_rings + rollback.halo_expansions,
         outcome,
-        reason: Some(rollback.reason),
+        reason: Some(format!("stage={:?}: {}", rollback.stage, rollback.reason)),
     }
 }
 
