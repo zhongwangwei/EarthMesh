@@ -4770,8 +4770,12 @@ impl CurvatureMemory {
         // -r descends when r . g > 0.
         let descent = dot_all(&r, gradient);
         let norm = r.iter().map(|value| magnitude(*value)).fold(0.0, f64::max);
-        if !(scale.is_finite() && scale > 0.0 && descent.is_finite() && descent > 0.0)
-            || !(norm.is_finite() && norm > 0.0)
+        if !(scale.is_finite()
+            && scale > 0.0
+            && descent.is_finite()
+            && descent > 0.0
+            && norm.is_finite()
+            && norm > 0.0)
         {
             self.pairs.clear();
             return None;
