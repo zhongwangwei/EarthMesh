@@ -808,13 +808,15 @@ pub(super) fn solve_component_transaction_at_level(
     // 11.130): `focus` keeps the failed candidate and the place, and the
     // search offers transitions that change it there and keep it as it was
     // beyond the focus's radius. A focus whose candidates fail at its place
-    // `FOCUS_CANDIDATES` times, or that has nothing left to offer even
+    // `FOCUS_CANDIDATES` times across visits to that neighbourhood, or that
+    // has nothing left to offer even
     // widened, ends the transaction: the layout's own enumeration would
     // change the transition far from the failure, which leaves it where it
     // is (the 40 km 30 m trial failed at one face 40 times that way).
     let mut focus = None::<RetryFocus>;
     let mut last_failure = None::<(ComponentTransactionStage, String)>;
     let mut focus_candidates = 0usize;
+    let mut failure_counts = Vec::new();
     let mut focused_candidates = 0usize;
     let mut focused_states = 0usize;
     let parent_edge = match component
@@ -1264,9 +1266,14 @@ pub(super) fn solve_component_transaction_at_level(
                         angle_between(current.point, point)
                             <= current.change_radius_edges * parent_edge
                     });
-                if same_place {
-                    focus_candidates += 1;
-                } else {
+                focus_candidates = count_focus_failure(
+                    &mut failure_counts,
+                    point,
+                    parent_edge,
+                    focused,
+                    same_place.then_some(focus_candidates),
+                );
+                if !same_place {
                     focus = Some(RetryFocus {
                         point,
                         change_radius_edges: FOCUS_CHANGE_RADIUS_EDGES,
@@ -1275,7 +1282,6 @@ pub(super) fn solve_component_transaction_at_level(
                         chosen: level_custom_triangles,
                         cursor: 0,
                     });
-                    focus_candidates = 0;
                 }
                 let current = focus.as_ref().expect("a focus was just kept or made");
                 log_retry_focus(
@@ -1287,7 +1293,16 @@ pub(super) fn solve_component_transaction_at_level(
                 );
                 if focus_candidates >= FOCUS_CANDIDATES || focused_candidates >= FOCUSED_CANDIDATES
                 {
-                    let reason = focus_end_reason(current, focus_candidates, &last_failure);
+                    let limit = if focus_candidates >= FOCUS_CANDIDATES {
+                        "per_place"
+                    } else {
+                        "transaction"
+                    };
+                    let reason = format!(
+                        "retry_limit={limit} place_failures={focus_candidates}/{FOCUS_CANDIDATES} \
+                         focused_failures={focused_candidates}/{FOCUSED_CANDIDATES}; {}",
+                        focus_end_reason(current, focus_candidates, &last_failure)
+                    );
                     let stage = last_failure
                         .as_ref()
                         .map_or(ComponentTransactionStage::Elastic, |(stage, _)| {
@@ -1314,6 +1329,30 @@ const WIDENED_FOCUS_RADIUS_EDGES: f64 = 16.0;
 /// candidates one transaction may try in all, before it ends.
 const FOCUS_CANDIDATES: usize = 12;
 const FOCUSED_CANDIDATES: usize = 64;
+
+/// Keep each place's budget when the worst face moves away and back.
+/// Promotions may make progress; only failed focused candidates spend it.
+fn count_focus_failure(
+    counts: &mut Vec<(CartesianPoint, usize)>,
+    point: CartesianPoint,
+    parent_edge: f64,
+    focused: bool,
+    previous_focus_count: Option<usize>,
+) -> usize {
+    let increment = usize::from(focused);
+    // A widened or re-centred focus can span several historical buckets.
+    let continuous = previous_focus_count.map_or(0, |count| count + increment);
+    if let Some((_, count)) = counts.iter_mut().find(|(anchor, _)| {
+        angle_between(*anchor, point) <= FOCUS_CHANGE_RADIUS_EDGES * parent_edge
+    }) {
+        *count = (*count + increment).max(continuous);
+        *count
+    } else {
+        let count = increment.max(continuous);
+        counts.push((point, count));
+        count
+    }
+}
 
 fn face_centroid(mesh: &MeshState, face: usize) -> Option<CartesianPoint> {
     if !mesh.is_triangle_live(face) {
@@ -1729,6 +1768,12 @@ fn certify_candidate(
     let level = |source: usize| work.level(state, source);
     let (geometry, cells) = match &changed_faces {
         Some(faces) if !at_edge => {
+            if timing_enabled {
+                eprintln!(
+                    "earthmesh_cli: cmrc_detail phase=geometry_certification component={} scope=changed",
+                    component.id
+                );
+            }
             let internal = Certificate::internal_for(angle_contract)
                 .verify_geometry_region(&work.mesh.mesh, faces)
                 .map_err(|error| {
@@ -1776,6 +1821,12 @@ fn certify_candidate(
             )
         }
         Some(faces) if work.within.is_some() => {
+            if timing_enabled {
+                eprintln!(
+                    "earthmesh_cli: cmrc_detail phase=geometry_certification component={} scope=window",
+                    component.id
+                );
+            }
             let internal = verify(Certificate::internal_for(angle_contract), &work.mesh.mesh)
                 .map_err(|error| {
                     geometry_failure(ComponentTransactionStage::GlobalGeometry, error)
@@ -1822,6 +1873,12 @@ fn certify_candidate(
             )
         }
         _ => {
+            if timing_enabled {
+                eprintln!(
+                    "earthmesh_cli: cmrc_detail phase=geometry_certification component={} scope=whole",
+                    component.id
+                );
+            }
             let internal = verify(Certificate::internal_for(angle_contract), &work.mesh.mesh)
                 .map_err(|error| {
                     geometry_failure(ComponentTransactionStage::GlobalGeometry, error)
@@ -3402,6 +3459,107 @@ mod tests {
         assert!(near_miss_stalled(Some(&miss(0.06)), Some(0.05)));
         // A failure farther out is no near miss, stalled or not.
         assert!(!near_miss_stalled(Some(&miss(0.2)), Some(0.05)));
+    }
+
+    #[test]
+    fn alternating_failed_faces_cannot_reset_a_places_retry_budget() {
+        let point = |angle: f64| CartesianPoint::new(angle.cos(), angle.sin(), 0.0);
+        let edge = 0.001;
+        let mut counts = Vec::new();
+        let [left, right] = [point(0.0), point(0.01)];
+        assert_eq!(count_focus_failure(&mut counts, left, edge, false, None), 0);
+        assert_eq!(
+            count_focus_failure(&mut counts, right, edge, false, None),
+            0
+        );
+        for expected in 1..=FOCUS_CANDIDATES {
+            // The worst face alternates between neighbourhoods and moves
+            // to a different triangle within each one.
+            assert_eq!(
+                count_focus_failure(&mut counts, point(0.0003), edge, true, None),
+                expected
+            );
+            assert_eq!(
+                count_focus_failure(&mut counts, point(0.0103), edge, true, None),
+                expected
+            );
+            // A promoted layout neither spends nor resets the local budget.
+            assert_eq!(
+                count_focus_failure(&mut counts, left, edge, false, None),
+                expected
+            );
+        }
+        assert_eq!(counts.len(), 2);
+    }
+
+    #[test]
+    fn re_centred_and_widened_focuses_keep_their_continuous_retry_budget() {
+        let point = |angle: f64| CartesianPoint::new(angle.cos(), angle.sin(), 0.0);
+        let edge = 0.001;
+        for (centre, radius, failures) in [
+            (0.0015, FOCUS_CHANGE_RADIUS_EDGES, [0.0015, 0.003]),
+            (0.0, WIDENED_FOCUS_CHANGE_RADIUS_EDGES, [0.001, 0.003]),
+        ] {
+            let mut counts = Vec::new();
+            count_focus_failure(&mut counts, point(0.0), edge, false, None);
+            count_focus_failure(&mut counts, point(centre), edge, false, None);
+            let mut continuous = 0;
+            for attempt in 1..=FOCUS_CANDIDATES {
+                let failed = point(failures[attempt % 2]);
+                let same_place = angle_between(point(centre), failed) <= radius * edge;
+                assert!(same_place);
+                continuous = count_focus_failure(
+                    &mut counts,
+                    failed,
+                    edge,
+                    true,
+                    same_place.then_some(continuous),
+                );
+                assert_eq!(continuous, attempt);
+            }
+        }
+    }
+
+    #[test]
+    fn retry_neighbourhoods_use_spherical_distance_and_keep_their_anchors() {
+        let point = |angle: f64| CartesianPoint::new(angle.cos(), angle.sin(), 0.0);
+        let mut counts = Vec::new();
+        let edge = 0.001;
+        assert_eq!(
+            count_focus_failure(&mut counts, point(0.0), edge, true, None),
+            1
+        );
+        assert_eq!(
+            count_focus_failure(&mut counts, point(0.0015), edge, true, None),
+            2
+        );
+        assert_eq!(
+            count_focus_failure(&mut counts, point(0.003), edge, true, None),
+            1
+        );
+        assert_eq!(counts.len(), 2);
+        counts.clear();
+        assert_eq!(
+            count_focus_failure(
+                &mut counts,
+                point(std::f64::consts::PI - 0.0002),
+                edge,
+                true,
+                None
+            ),
+            1
+        );
+        assert_eq!(
+            count_focus_failure(
+                &mut counts,
+                point(-std::f64::consts::PI + 0.0002),
+                edge,
+                true,
+                None
+            ),
+            2
+        );
+        assert_eq!(counts.len(), 1);
     }
 
     /// The places a failure's next candidate promotes besides its worst: a
