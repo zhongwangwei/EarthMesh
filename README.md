@@ -1,4 +1,4 @@
-# EarthMesh v3.0.0-alpha9
+# EarthMesh v3.0.0-alpha10
 
 EarthMesh generates unstructured meshes for land, ocean, atmosphere, and coupled
 Earth-system workflows. The v3 alpha line is the current Rust engine: namelists
@@ -256,6 +256,14 @@ For questions or support, please contact:
 
 ## Revision History
 
+- 2026.10.18 - v3.0.0-alpha10 brings regional certified reverse coarsening,
+  multi-source merge criteria and Studio previews, shared backend delivery,
+  and the icosahedron-vertex transition fix accumulated since alpha9. Local
+  focused retries retain their budgets across failure locations; a regional
+  settled-frame failure now stops immediately with its original diagnostic,
+  including at the final level. Timing logs identify changed-face, window and
+  whole-mesh certification. Global meshes with local 30 m refinement remain
+  deferred; the implemented 30 m path is regional.
 - 2026.07.16 - The v3 alpha Rust API removed unused `core::paths`, Project
   reproducibility-manifest/prelude, `quality::hydro_coast`, and planner `io`
   modules. These experimental facades had no production callers; alpha API
