@@ -1591,10 +1591,15 @@ fn certify_candidate(
                 "exact coarse core failed internal geometry certification".to_string(),
             ));
         }
-        let patch =
-            elastic_patch_for_state(transition, &work.mesh, angle_contract).map_err(|reason| {
-                CandidateAttemptFailure::retry(ComponentTransactionStage::Elastic, reason)
-            })?;
+        let patch = elastic_patch_for_state(
+            transition,
+            &work.mesh,
+            angle_contract,
+            source.region.as_ref().map(|region| region.outer_boundary()),
+        )
+        .map_err(|reason| {
+            CandidateAttemptFailure::retry(ComponentTransactionStage::Elastic, reason)
+        })?;
         log_component_phase(timing_enabled, component.id, "prepare_patch", phase_started);
         if work.reaches_cut(patch.guard_faces.iter().copied()) {
             return Err(CandidateAttemptFailure::whole(
@@ -3132,6 +3137,7 @@ fn elastic_patch_for_state(
     transition: &super::TransitionTopologyTrial,
     mesh: &HierarchyLeafMesh,
     angle_contract: AngleContractId,
+    region_edge_sources: Option<&BTreeSet<usize>>,
 ) -> Result<ElasticPatch, String> {
     let domain = match angle_contract {
         AngleContractId::LegacyStrict40To80 => GeometryDomainId::CurrentAnnulus,
@@ -3156,12 +3162,18 @@ fn elastic_patch_for_state(
         .collect::<Result<BTreeSet<_>, _>>()?;
     let movable_compact_vertices = movable_sources
         .iter()
+        // Ordinary-ring expansion may reach the physical region's edge.
+        // Artificial window cuts still trigger the existing whole fallback.
+        .filter(|source| region_edge_sources.is_none_or(|edge| !edge.contains(*source)))
         .map(|source| {
             source_to_compact.get(source).copied().ok_or_else(|| {
                 format!("elastic source vertex {source} is absent from transaction mesh")
             })
         })
         .collect::<Result<BTreeSet<_>, _>>()?;
+    if movable_compact_vertices.is_empty() {
+        return Err("elastic patch has no movable vertex inside the region edge".into());
+    }
     let guard_faces = mesh
         .mesh
         .active_triangle_slots()
@@ -3880,7 +3892,7 @@ mod tests {
                 Some(&scope),
                 1_000_000,
             );
-            let mut window_state = initial;
+            let mut window_state = initial.clone();
             let window = solve_certifying(
                 &source,
                 &mut window_state,
@@ -3905,6 +3917,12 @@ mod tests {
             }
             window_state.refresh(&source).unwrap();
             assert_eq!(whole_state, window_state);
+            for &site in source.region.as_ref().unwrap().outer_boundary() {
+                assert_eq!(
+                    whole_state.source_positions[site],
+                    initial.source_positions[site]
+                );
+            }
         }
     }
 
