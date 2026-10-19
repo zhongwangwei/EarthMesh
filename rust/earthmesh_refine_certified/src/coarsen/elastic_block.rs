@@ -306,6 +306,8 @@ pub enum ElasticBlockPhase {
 struct EnergyContext {
     reference_edge_lengths: HashMap<(usize, usize), f64>,
     target_angles: HashMap<usize, f64>,
+    /// Known fixed open sites have angle windows, but no closed-cell target.
+    edge_sites: BTreeSet<usize>,
     guard_edges: Vec<(usize, usize)>,
     guard_faces: Vec<usize>,
     guard_seeds: Vec<(usize, usize)>,
@@ -1499,7 +1501,7 @@ fn solve_elastic_patch_certifying<G>(
     };
     let initial_step = initial_step * trust_fraction;
     let minimum_step = minimum_step * trust_fraction;
-    let context = match EnergyContext::new(&current.mesh, &patch, angle_contract) {
+    let context = match EnergyContext::new_scoped(&current.mesh, &patch, angle_contract, scope) {
         Ok(context) => context,
         Err(reason) => return ElasticBlockOutcome::InvalidPatch { reason },
     };
@@ -2768,6 +2770,15 @@ impl EnergyContext {
         patch: &ElasticPatch,
         contract: AngleContractId,
     ) -> Result<Self, String> {
+        Self::new_scoped(mesh, patch, contract, None)
+    }
+
+    fn new_scoped(
+        mesh: &MeshState,
+        patch: &ElasticPatch,
+        contract: AngleContractId,
+        scope: Option<&GeometryScope>,
+    ) -> Result<Self, String> {
         let mut guard_seeds = BTreeMap::new();
         let mut guard_edges = BTreeSet::new();
         for &face in &patch.guard_faces {
@@ -2783,6 +2794,12 @@ impl EnergyContext {
                 guard_edges.insert((edge.0.min(edge.1), edge.0.max(edge.1)));
             }
         }
+        let edge_sites = guard_seeds
+            .keys()
+            .copied()
+            .filter(|site| scope.is_some_and(|scope| scope.edge_sites.contains(site)))
+            .collect::<BTreeSet<_>>();
+        guard_seeds.retain(|site, _| !edge_sites.contains(site));
         let mut reference_dual_areas = BTreeMap::new();
         for (&site, &seed) in &guard_seeds {
             let area = reference_voronoi_area(mesh, &patch.reference_positions, site, seed)
@@ -2836,7 +2853,7 @@ impl EnergyContext {
             })
             .collect();
         let guard_seeds = guard_seeds.into_iter().collect::<Vec<_>>();
-        let dual_pairs = collect_dual_pairs(mesh, &guard_faces)?;
+        let dual_pairs = collect_dual_pairs(mesh, &guard_faces, &edge_sites)?;
         let movable = patch
             .movable_compact_vertices
             .iter()
@@ -2897,7 +2914,7 @@ impl EnergyContext {
             })
             .collect();
         let fans = vertex_fans(mesh, &guard_faces, &derivatives);
-        let degrees_pass = crate::certificate::region_degrees_pass(mesh, &guard_faces);
+        let degrees_pass = crate::certificate::region_degrees_pass(mesh, &guard_faces, &edge_sites);
         let contract = AngleContract::for_id(contract);
         let narrowed = |window: AngleWindow| {
             (
@@ -2908,6 +2925,7 @@ impl EnergyContext {
         Ok(Self {
             reference_edge_lengths,
             target_angles,
+            edge_sites,
             guard_edges,
             guard_faces,
             guard_seeds,
@@ -3050,20 +3068,27 @@ fn reference_voronoi_area(
     .area_on_unit_sphere()
 }
 
-fn collect_dual_pairs(mesh: &MeshState, guard_faces: &[usize]) -> Result<Vec<DualPair>, String> {
+fn collect_dual_pairs(
+    mesh: &MeshState,
+    guard_faces: &[usize],
+    edge_sites: &BTreeSet<usize>,
+) -> Result<Vec<DualPair>, String> {
     let mut seen = BTreeSet::new();
     let mut pairs = Vec::new();
     for &face in guard_faces {
         let triangle = mesh.triangles()[face];
         for corner in 0..3 {
             let other = mesh.neighbours()[face][corner];
+            let edge = [triangle[(corner + 1) % 3], triangle[(corner + 2) % 3]];
+            if other == 0 && edge.iter().all(|site| edge_sites.contains(site)) {
+                continue;
+            }
             if other == 0 || !mesh.is_triangle_live(other) {
                 return Err("elastic guard touches an open or inactive neighbour".into());
             }
             if !seen.insert((face.min(other), face.max(other))) {
                 continue;
             }
-            let edge = [triangle[(corner + 1) % 3], triangle[(corner + 2) % 3]];
             let opposite = mesh.triangles()[other]
                 .iter()
                 .copied()
@@ -3236,7 +3261,11 @@ fn face_energy_terms(
     for corner in 0..3 {
         let angle = angles[corner];
         let site = triangle[corner];
-        let target = *context.target_angles.get(&site)?;
+        let target = match context.target_angles.get(&site) {
+            Some(&target) => Some(target),
+            None if context.edge_sites.contains(&site) => None,
+            None => return None,
+        };
         let below = (minimum_angle - angle).max(0.0);
         let above = (angle - maximum_angle).max(0.0);
         terms[count] = 100.0 * (below * below + above * above);
@@ -3249,7 +3278,9 @@ fn face_energy_terms(
         match phase {
             ElasticBlockPhase::Untangle | ElasticBlockPhase::DelaunayVoronoiFeasibility => {}
             ElasticBlockPhase::AngleFeasibility => {
-                if patch.target_mode.uses_hierarchy_area_degree() {
+                if let Some(target) =
+                    target.filter(|_| patch.target_mode.uses_hierarchy_area_degree())
+                {
                     terms[count] = 0.001 * (angle - target).powi(2);
                     count += 1;
                 }
@@ -3260,7 +3291,8 @@ fn face_energy_terms(
                 if lower <= 0.0 || upper <= 0.0 {
                     return None;
                 }
-                terms[count] = 0.2 * (angle - target).powi(2) - 0.001 * (lower.ln() + upper.ln());
+                terms[count] = target.map_or(0.0, |target| 0.2 * (angle - target).powi(2))
+                    - 0.001 * (lower.ln() + upper.ln());
                 count += 1;
             }
         }
@@ -4936,6 +4968,172 @@ mod tests {
         let guard_set = guard_faces.iter().copied().collect::<BTreeSet<_>>();
         let context = EnergyContext::new(&grid.mesh, &patch, AngleContractId::default()).unwrap();
         (grid.mesh, patch, guard_set, context)
+    }
+
+    #[test]
+    fn an_open_region_repairs_its_interior_and_keeps_its_edge_fixed() {
+        let sphere = MotherGrid::generate(4).unwrap();
+        let first = sphere.mesh.active_triangle_slots().next().unwrap();
+        let centre = sphere.mesh.triangles()[first][0];
+        let faces = sphere
+            .mesh
+            .triangle_fan_from(centre, first)
+            .unwrap()
+            .into_iter()
+            .map(|face| sphere.triangle_addresses[face].unwrap())
+            .collect::<Vec<_>>();
+        let grid = MotherGrid::generate_faces(4, faces).unwrap();
+        let scope = GeometryScope {
+            edge_sites: grid.region.as_ref().unwrap().outer_boundary().clone(),
+            euler: 1,
+        };
+        let centre = grid
+            .mesh
+            .active_vertex_slots()
+            .find(|site| !scope.edge_sites.contains(site))
+            .unwrap();
+        let guard_faces = grid.mesh.active_triangle_slots().collect::<Vec<_>>();
+        let guard = guard_faces.iter().copied().collect::<BTreeSet<_>>();
+        let certificate = Certificate::internal_for(AngleContractId::DomainQuality38To82V1);
+        certificate
+            .verify_geometry_within(&grid.mesh, &scope.edge_sites, scope.euler)
+            .unwrap();
+        let patch = ElasticPatch {
+            domain_id: GeometryDomainId::CurrentAnnulus,
+            topology: TransitionTopologyCandidate {
+                component_id: 49,
+                topology_id: 0,
+                core_parents: Vec::new(),
+                custom_transition_triangles: BTreeMap::new(),
+                source_triangles: guard_faces
+                    .iter()
+                    .map(|&face| grid.mesh.triangles()[face])
+                    .collect(),
+                source_active_vertices: grid.mesh.active_vertex_slots().collect(),
+                source_degree_forecast: BTreeMap::new(),
+            },
+            reference_positions: grid.mesh.vertices().to_vec(),
+            fixed_compact_vertices: scope.edge_sites.iter().copied().collect(),
+            movable_compact_vertices: vec![centre],
+            guard_faces,
+            target_mode: ElasticTargetMode::TrialReference,
+            target_field: ElasticTargetField::default(),
+        };
+        assert!(patch
+            .fixed_compact_vertices
+            .iter()
+            .all(|site| scope.edge_sites.contains(site)));
+        let context = EnergyContext::new_scoped(
+            &grid.mesh,
+            &patch,
+            AngleContractId::DomainQuality38To82V1,
+            Some(&scope),
+        )
+        .unwrap();
+        assert_eq!(context.guard_seeds.len(), 1);
+        assert_eq!(context.guard_seeds[0].0, centre);
+        assert!(context.degrees_pass);
+        assert!(
+            dual_energy(&grid.mesh, &context, true)
+                .unwrap()
+                .hard_feasible
+        );
+        let slots = (0..grid.mesh.vertices().len())
+            .map(|site| grid.mesh.is_vertex_live(site).then_some(site))
+            .collect();
+        let mut source = HierarchyLeafMesh {
+            mesh: grid.mesh,
+            triangle_addresses: grid.triangle_addresses,
+            source_vertex_slots: slots,
+        };
+        let neighbour = patch.fixed_compact_vertices[0];
+        let shifted = normalized_point(add_points(
+            scale_point(source.mesh.vertices()[centre], 0.6),
+            scale_point(source.mesh.vertices()[neighbour], 0.4),
+        ))
+        .unwrap();
+        source.mesh.move_vertex(centre, shifted);
+        assert!(all_faces_positive(&source.mesh, &guard));
+        let phase = energy_phase(&certificate, &source.mesh, &guard, &context);
+        assert_eq!(phase, ElasticBlockPhase::AngleFeasibility);
+        let (step, _) = relocation_step_window(&source.mesh, &guard).unwrap();
+        assert_eq!(
+            finite_difference_gradient(&mut source.mesh.clone(), &patch, phase, step, &context)
+                .unwrap(),
+            full_finite_difference_gradient(
+                &mut source.mesh.clone(),
+                &patch,
+                phase,
+                step,
+                &context
+            )
+            .unwrap()
+        );
+        assert!(matches!(
+            certificate.verify_geometry_within(&source.mesh, &scope.edge_sites, scope.euler),
+            Err(CertificateError::AngleOutOfRange { .. })
+                | Err(CertificateError::CriterionNotCertifiable(_))
+        ));
+        let outcome = solve_elastic_patch_scoped(
+            &source,
+            patch.clone(),
+            ElasticBlockLimits {
+                elastic_iterations: 1_024,
+            },
+            AngleContractId::DomainQuality38To82V1,
+            Some(&scope),
+            Some(&guard),
+        );
+        let ElasticBlockOutcome::Certified(trial) = outcome else {
+            panic!("an open region must repair its interior: {outcome:?}");
+        };
+        assert!(trial.report.elastic_iterations > 0);
+        assert!(trial.report.moved_compact_vertices.contains(&centre));
+        certificate
+            .verify_geometry_within(&trial.mesh.mesh, &scope.edge_sites, scope.euler)
+            .unwrap();
+        for &site in &scope.edge_sites {
+            assert_eq!(
+                trial.mesh.mesh.vertices()[site],
+                source.mesh.vertices()[site]
+            );
+        }
+        let mut incomplete_scope = scope;
+        incomplete_scope.edge_sites.remove(&neighbour);
+        assert!(matches!(
+            solve_elastic_patch_scoped(
+                &source,
+                patch,
+                ElasticBlockLimits {
+                    elastic_iterations: 1_024,
+                },
+                AngleContractId::DomainQuality38To82V1,
+                Some(&incomplete_scope),
+                Some(&guard),
+            ),
+            ElasticBlockOutcome::InvalidPatch { .. }
+        ));
+    }
+
+    #[test]
+    fn open_region_dual_pairs_keep_internal_edges_between_boundary_sites() {
+        let base = MotherGrid::generate(2).unwrap();
+        let parent = *base.triangle_addresses.iter().flatten().next().unwrap();
+        let grid = MotherGrid::generate_faces(
+            4,
+            crate::mother_grid::region::descendant_faces([parent], 4).unwrap(),
+        )
+        .unwrap();
+        let edge = grid.region.as_ref().unwrap().outer_boundary();
+        let faces = grid.mesh.active_triangle_slots().collect::<Vec<_>>();
+        assert!(faces.iter().all(|&face| grid.mesh.triangles()[face]
+            .iter()
+            .all(|site| edge.contains(site))));
+        assert_eq!(
+            collect_dual_pairs(&grid.mesh, &faces, edge).unwrap().len(),
+            3
+        );
+        assert!(collect_dual_pairs(&grid.mesh, &faces, &BTreeSet::new()).is_err());
     }
 
     #[test]
@@ -6668,6 +6866,7 @@ mod tests {
                 .enumerate()
                 .map(|(site, degree)| (site, std::f64::consts::TAU / degree as f64))
                 .collect(),
+            edge_sites: BTreeSet::new(),
             guard_edges: vec![(triangle[0], triangle[1]), (triangle[1], triangle[2])],
             guard_faces: vec![face],
             guard_seeds: vec![(usize::MAX, usize::MAX)],

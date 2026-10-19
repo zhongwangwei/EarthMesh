@@ -494,8 +494,12 @@ fn region_angles_pass(mesh: &MeshState, faces: &[usize], minimum: f64, maximum: 
 /// Whether the degree terms of `Certificate::geometry_penalty_for_region`
 /// over `faces` sum to exactly zero: every vertex of a live face has a
 /// closed fan (`triangle_fan_from`, whatever face it starts from) of five
-/// to seven triangles. Topology alone.
-pub(crate) fn region_degrees_pass(mesh: &MeshState, faces: &[usize]) -> bool {
+/// to seven triangles, except at known regional edge sites. Topology alone.
+pub(crate) fn region_degrees_pass(
+    mesh: &MeshState,
+    faces: &[usize],
+    edge_sites: &BTreeSet<usize>,
+) -> bool {
     let mut seeds = BTreeMap::<usize, usize>::new();
     for &face in faces {
         if mesh.is_triangle_live(face) {
@@ -505,8 +509,10 @@ pub(crate) fn region_degrees_pass(mesh: &MeshState, faces: &[usize]) -> bool {
         }
     }
     seeds.into_par_iter().all(|(site, seed)| {
-        mesh.triangle_fan_from(site, seed)
-            .is_ok_and(|fan| (5..=7).contains(&fan.len()))
+        edge_sites.contains(&site)
+            || mesh
+                .triangle_fan_from(site, seed)
+                .is_ok_and(|fan| (5..=7).contains(&fan.len()))
     })
 }
 
