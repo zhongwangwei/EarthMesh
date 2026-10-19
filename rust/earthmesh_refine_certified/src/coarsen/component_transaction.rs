@@ -3814,9 +3814,9 @@ mod tests {
     fn regional_boundary_commits_use_open_fans_only_at_the_region_edge() {
         let sphere = MotherGrid::generate(16).unwrap();
         for exact_core in [true, false] {
-            // Three rings close the certified core's cells while the
-            // candidate's transition still reaches the region's open edge.
-            let mut component = ringed_component(&sphere, 8, 3);
+            // Four rings cover the certified core's remap footprint while
+            // the candidate still reaches the region's open edge.
+            let mut component = ringed_component(&sphere, 8, 4);
             let certified = component.core_parents.iter().copied().collect();
             let source = MotherGrid::generate_faces(
                 16,
@@ -3833,6 +3833,25 @@ mod tests {
                 .outer_boundary()
                 .iter()
                 .all(|&site| !scope.certified_sources[site]));
+            let coarse = MotherGrid::generate_faces(8, component.parents.iter().copied()).unwrap();
+            let core_face = coarse
+                .triangle_addresses
+                .iter()
+                .position(|address| *address == Some(component.core_parents[0]))
+                .unwrap();
+            let covered = BTreeSet::from(coarse.mesh.triangles()[core_face]);
+            let remap = VoronoiRemapSource::new_region(
+                &source.mesh,
+                source.region.as_ref().unwrap().outer_boundary(),
+            )
+            .remap_region_to(
+                &coarse.mesh,
+                |site| covered.contains(&site),
+                scope.whole_cells,
+            )
+            .unwrap()
+            .certify_spherical_overlap(source.mesh.vertex_count(), coarse.mesh.vertex_count());
+            assert!(remap.global_area_closure_error() <= remap.closure_tolerance());
             if exact_core {
                 component.core_parents.clone_from(&component.parents);
                 component.transition_parents.clear();
