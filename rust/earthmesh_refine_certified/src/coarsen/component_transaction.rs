@@ -3683,9 +3683,15 @@ mod tests {
             .enumerate()
             .map(|(site, _)| source.mesh.is_vertex_live(site).then_some(site))
             .collect::<Vec<_>>();
+        let source_remap = match (&source.region, scope) {
+            (Some(region), Some(_)) => {
+                VoronoiRemapSource::new_region(&source.mesh, region.outer_boundary())
+            }
+            _ => VoronoiRemapSource::new(&source.mesh),
+        };
         solve_component_transaction_at_level(
             source,
-            &VoronoiRemapSource::new(&source.mesh),
+            &source_remap,
             &levels,
             state,
             source,
