@@ -6697,3 +6697,46 @@ Voronoi 与发布多边形错误均为零，物理、平衡和 remap closure 残
 NetCDF 的变量和属性逐一比较全部一致。新诊断共记录 2171 次 `scope=changed`；本批成功事务走改动面认证。
 修复前、修复版分别使用同一份固定 release binary，SHA256 在各作业中核对一致，输入以只读绑定共享；
 证书、资源统计、完整日志、逐变量比较与原始网格保留在对应 T7920 验收作业中，本地只取回小证据。
+
+### 11.150 真实区域边缘的局部认证与弹性修复（2026-10-19）
+
+11.149 的四个代表性案例成功事务均走 `changed`，未覆盖 guard faces 本身触到真实区域边缘的情况。
+事务的最终 `Window`／`Whole` 认证使用已知区域边缘集合，但前面的几何快筛与局部证书仍要求所有顶点形成闭合扇。
+因此角度正确、区域证书有效的候选也会被提前误拒绝。修复前提交 `a7cd6dc2` 的
+[回归 CI](https://github.com/zhongwangwei/EarthMesh/actions/runs/39253699679) 在 exact-core 案例中复现：
+`GlobalGeometry` 返回 `exact coarse core failed internal geometry certification`，拓扑搜索与弹性迭代均为零。
+
+局部快筛和正式局部证书现在使用同一份已知边缘集合，仅豁免边缘处不适用的闭合 fan、degree 和完整 Voronoi cell 检查。
+每个 guard face 的角度区间证明与方向检查保留；触边时扫描工作网格的 Delaunay 边，包含两端都在区域边缘的内部边。
+快筛仍只计算角度和 degree，不执行区间证明；正式 `LocalGeometry` 阶段仍按每个 guard face 三个 interval boxes 计账。
+最终 `Window`／`Whole` 的拓扑、角度、对偶与 remap 认证沿用原门禁。
+
+确实需要移动内部顶点修角度时，原弹性能量上下文也会对固定边缘顶点建立闭合 fan 的目标角与 dual cell，
+或因真实开放边缺少跨边相邻三角形而返回 `InvalidPatch`。上下文现在排除已知边缘的闭合单元项，
+保留所有面的角度窗、preferred-window、方向、Interior 对数屏障、边长与交叉检查。仅明确的区域边缘省略不适用的
+degree 软目标；内部顶点缺少目标仍拒绝。Delaunay pairs 仅跳过两端均为已知边缘且 neighbour 为零的真实开放边；
+有两个相邻面的内部边及非零 inactive neighbour 均照常检查。可动顶点仍必须有完整 fan，真实开放边缘保持固定。
+普通环扩展原先只永久固定五价点，可能把真实区域边缘重新纳入可动集合；事务构造 patch 时现在按原始 source 槽号
+过滤这些物理边缘点，再建立 guard 与 fixed 集合。此处不使用工作窗口的全部 edge sites，人工窗口截断边仍触发
+原来的整网格重建，避免静默缩小弹性域。若过滤后无可动顶点，候选明确返回重试原因。
+
+新增回归覆盖 exact-core 和混合分量的 Whole／Window 结果等价、零 interval 预算的原子回滚、
+边缘坏三角形拒绝，以及真实开放区域中实际发生弹性迭代后内部顶点通过认证、边缘坐标逐位不变。
+遗漏实际边缘标记必须拒绝；另验证两端都在边缘的内部 Delaunay 边仍保留，局部梯度与完整能量梯度一致。
+exact-core 回归使用四圈父面缓冲，先检查待交付 core 的源单元闭合与粗级 remap 覆盖完整。
+混合分量使用两圈 transition，在 fine16 球面源网格中移除 coarse8 的一个父面
+`{base_face: 0, i: 0, j: 0, orientation: Down}`，形成邻近真实开放边缘。
+该区域足够大，正常搜索得到的窗口小于源网格一半，避免小区域直接选择 Whole 的成本回退。
+测试明确要求实际 `CommitGeometry::Window`、两条路径均发生弹性迭代、提交刷新后完整状态一致及物理边缘坐标不变；
+人工窗口截断仍保留原有整网格重建门禁。T7920 上这一案例的 Whole／Window 均为 5 次弹性迭代。
+源 remap 使用与生产区域调度器一致的 `VoronoiRemapSource::new_region`，混合候选沿用实际最终网格的完整 remap 门禁。
+
+T7920 的正式事务模块 13 个测试全部通过。另执行 `region_epochs --include-ignored`：
+6 个区域／全局一致性测试全部通过，包括此前忽略的
+`one_level_on_a_finer_base_matches_the_whole_sphere` 和
+`two_regions_joined_through_the_settled_region_match_the_whole_sphere`。
+
+代码提交 `ae5b82a2` 的 [完整 CI](https://github.com/zhongwangwei/EarthMesh/actions/runs/39261693645)
+全部通过：引擎 2970 个测试通过、119 个原有测试保持忽略；GUI 125 个通过、1 个原有测试保持忽略。
+格式、严格 Clippy、冻结证据与架构门禁均通过。本轮未重跑 11.149 的四个真实数据 A/B 案例；
+修复保存在独立分支，现有 `v3.0.0-alpha10` 发布分支与标签均保持 `3878e46c`，尚未发布新版本。
