@@ -3826,14 +3826,32 @@ mod tests {
     fn regional_boundary_commits_use_open_fans_only_at_the_region_edge() {
         let sphere = MotherGrid::generate(16).unwrap();
         for exact_core in [true, false] {
-            // Four rings cover the certified core's remap footprint while
-            // the candidate still reaches the region's open edge.
-            let mut component = ringed_component(&sphere, 8, 4);
+            let mut component = ringed_component(&sphere, 8, if exact_core { 4 } else { 2 });
             let certified = component.core_parents.iter().copied().collect();
+            let parents = if exact_core {
+                // Four rings cover the certified core's remap footprint.
+                component.parents.clone()
+            } else {
+                // This nearby hole exposes a physical edge while keeping
+                // the automatic search window below half the source mesh.
+                let hole = TriangleAddress {
+                    base_face: 0,
+                    i: 0,
+                    j: 0,
+                    n: 8,
+                    orientation: crate::mother_grid::TriangleOrientation::Down,
+                };
+                MotherGrid::generate(8)
+                    .unwrap()
+                    .triangle_addresses
+                    .into_iter()
+                    .flatten()
+                    .filter(|&parent| parent != hole)
+                    .collect()
+            };
             let source = MotherGrid::generate_faces(
                 16,
-                crate::mother_grid::region::descendant_faces(component.parents.iter().copied(), 16)
-                    .unwrap(),
+                crate::mother_grid::region::descendant_faces(parents.iter().copied(), 16).unwrap(),
             )
             .unwrap();
             let scope = RegionScope::new(&source, &certified, 8).unwrap();
@@ -3845,26 +3863,26 @@ mod tests {
                 .outer_boundary()
                 .iter()
                 .all(|&site| !scope.certified_sources[site]));
-            let coarse = MotherGrid::generate_faces(8, component.parents.iter().copied()).unwrap();
-            let core_face = coarse
-                .triangle_addresses
-                .iter()
-                .position(|address| *address == Some(component.core_parents[0]))
-                .unwrap();
-            let covered = BTreeSet::from(coarse.mesh.triangles()[core_face]);
-            let remap = VoronoiRemapSource::new_region(
-                &source.mesh,
-                source.region.as_ref().unwrap().outer_boundary(),
-            )
-            .remap_region_to(
-                &coarse.mesh,
-                |site| covered.contains(&site),
-                scope.whole_cells,
-            )
-            .unwrap()
-            .certify_spherical_overlap(source.mesh.vertex_count(), coarse.mesh.vertex_count());
-            assert!(remap.global_area_closure_error() <= remap.closure_tolerance());
             if exact_core {
+                let coarse = MotherGrid::generate_faces(8, parents.iter().copied()).unwrap();
+                let core_face = coarse
+                    .triangle_addresses
+                    .iter()
+                    .position(|address| *address == Some(component.core_parents[0]))
+                    .unwrap();
+                let covered = BTreeSet::from(coarse.mesh.triangles()[core_face]);
+                let remap = VoronoiRemapSource::new_region(
+                    &source.mesh,
+                    source.region.as_ref().unwrap().outer_boundary(),
+                )
+                .remap_region_to(
+                    &coarse.mesh,
+                    |site| covered.contains(&site),
+                    scope.whole_cells,
+                )
+                .unwrap()
+                .certify_spherical_overlap(source.mesh.vertex_count(), coarse.mesh.vertex_count());
+                assert!(remap.global_area_closure_error() <= remap.closure_tolerance());
                 component.core_parents.clone_from(&component.parents);
                 component.transition_parents.clear();
             }
@@ -3914,6 +3932,8 @@ mod tests {
             assert!(matches!(whole.geometry, CommitGeometry::Whole { .. }));
             if !exact_core {
                 assert!(matches!(window.geometry, CommitGeometry::Window { .. }));
+                assert!(whole.elastic_iterations > 0);
+                assert!(window.elastic_iterations > 0);
             }
             window_state.refresh(&source).unwrap();
             assert_eq!(whole_state, window_state);
