@@ -3648,6 +3648,7 @@ mod tests {
         state: &mut ComponentTransactionState,
         component: &HierarchyComponent,
         certification: CommitCertification,
+        scope: Option<&RegionScope>,
     ) -> ComponentTransactionOutcome {
         let levels = SourceLevelField::from_active_voronoi_cells(
             &source.mesh,
@@ -3681,7 +3682,7 @@ mod tests {
                 retry_at_failure: true,
             },
             AngleContractId::DomainQuality38To82V1,
-            None,
+            scope,
             certification,
         )
     }
@@ -3702,6 +3703,7 @@ mod tests {
             &mut whole_state,
             &component,
             CommitCertification::Whole,
+            None,
         );
         let mut changed_state = initial.clone();
         let changed = solve_certifying(
@@ -3709,6 +3711,7 @@ mod tests {
             &mut changed_state,
             &component,
             CommitCertification::Changed,
+            None,
         );
         let (
             ComponentTransactionOutcome::Certified(whole),
@@ -3757,6 +3760,7 @@ mod tests {
             &mut whole_state,
             &component,
             CommitCertification::Whole,
+            None,
         );
         NARROW_WINDOWS.with(|narrow| narrow.set(true));
         WINDOW_CUTS.with(|cuts| cuts.set(0));
@@ -3766,6 +3770,7 @@ mod tests {
             &mut changed_state,
             &component,
             CommitCertification::Changed,
+            None,
         );
         NARROW_WINDOWS.with(|narrow| narrow.set(false));
         assert!(WINDOW_CUTS.with(std::cell::Cell::get) > 0);
@@ -3773,6 +3778,60 @@ mod tests {
         assert!(matches!(changed, ComponentTransactionOutcome::Certified(_)));
         changed_state.refresh(&source).unwrap();
         assert_eq!(whole_state, changed_state);
+    }
+
+    #[test]
+    fn regional_boundary_commits_use_open_fans_only_at_the_region_edge() {
+        let sphere = MotherGrid::generate(16).unwrap();
+        for exact_core in [true, false] {
+            let mut component = ringed_component(&sphere, 8);
+            let certified = component.core_parents.iter().copied().collect();
+            let source = MotherGrid::generate_faces(
+                16,
+                crate::mother_grid::region::descendant_faces(component.parents.iter().copied(), 16)
+                    .unwrap(),
+            )
+            .unwrap();
+            let scope = RegionScope::new(&source, &certified, 8).unwrap();
+            assert!(!source.region.as_ref().unwrap().outer_boundary().is_empty());
+            if exact_core {
+                component.core_parents.clone_from(&component.parents);
+                component.transition_parents.clear();
+            }
+            let initial = ComponentTransactionState::new(&source, 3).unwrap();
+            let mut whole_state = initial.clone();
+            let whole = solve_certifying(
+                &source,
+                &mut whole_state,
+                &component,
+                CommitCertification::Whole,
+                Some(&scope),
+            );
+            let mut window_state = initial;
+            let window = solve_certifying(
+                &source,
+                &mut window_state,
+                &component,
+                CommitCertification::Changed,
+                Some(&scope),
+            );
+            let (whole, window) = match (whole, window) {
+                (
+                    ComponentTransactionOutcome::Certified(whole),
+                    ComponentTransactionOutcome::Certified(window),
+                ) => (whole, window),
+                (whole, window) => panic!(
+                    "regional boundary must certify (exact_core={exact_core}): \
+                     whole={whole:?}; window={window:?}"
+                ),
+            };
+            assert!(matches!(whole.geometry, CommitGeometry::Whole { .. }));
+            if !exact_core {
+                assert!(matches!(window.geometry, CommitGeometry::Window { .. }));
+            }
+            window_state.refresh(&source).unwrap();
+            assert_eq!(whole_state, window_state);
+        }
     }
 
     #[test]
