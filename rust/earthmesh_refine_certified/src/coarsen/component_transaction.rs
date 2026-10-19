@@ -3627,9 +3627,9 @@ mod tests {
         );
     }
 
-    /// A core parent and the two rings of parents round it as its
+    /// A core parent and rings of parents round it as its
     /// transition: a candidate changes a small part of the sphere.
-    fn ringed_component(source: &MotherGrid, coarse_n: usize) -> HierarchyComponent {
+    fn ringed_component(source: &MotherGrid, coarse_n: usize, rings: usize) -> HierarchyComponent {
         let core = TriangleAddress {
             base_face: 0,
             i: 1,
@@ -3639,7 +3639,7 @@ mod tests {
         };
         let mut transition = BTreeSet::new();
         let mut frontier = vec![core];
-        for _ in 0..2 {
+        for _ in 0..rings {
             let mut next = Vec::new();
             for parent in frontier {
                 for neighbour in hierarchy_parent_neighbours(source, parent).unwrap() {
@@ -3721,7 +3721,7 @@ mod tests {
     #[test]
     fn a_commit_certified_where_it_changed_is_the_commit_certified_whole() {
         let source = MotherGrid::generate(16).unwrap();
-        let component = ringed_component(&source, 8);
+        let component = ringed_component(&source, 8, 2);
         let initial = ComponentTransactionState::new(&source, 3).unwrap();
         let mut whole_state = initial.clone();
         let whole = solve_certifying(
@@ -3780,7 +3780,7 @@ mod tests {
     #[test]
     fn a_candidate_that_reaches_its_windows_edge_is_built_whole() {
         let source = MotherGrid::generate(16).unwrap();
-        let component = ringed_component(&source, 8);
+        let component = ringed_component(&source, 8, 2);
         let initial = ComponentTransactionState::new(&source, 3).unwrap();
         let mut whole_state = initial.clone();
         let whole = solve_certifying(
@@ -3814,7 +3814,9 @@ mod tests {
     fn regional_boundary_commits_use_open_fans_only_at_the_region_edge() {
         let sphere = MotherGrid::generate(16).unwrap();
         for exact_core in [true, false] {
-            let mut component = ringed_component(&sphere, 8);
+            // Three rings close the certified core's cells while the
+            // candidate's transition still reaches the region's open edge.
+            let mut component = ringed_component(&sphere, 8, 3);
             let certified = component.core_parents.iter().copied().collect();
             let source = MotherGrid::generate_faces(
                 16,
@@ -3824,6 +3826,13 @@ mod tests {
             .unwrap();
             let scope = RegionScope::new(&source, &certified, 8).unwrap();
             assert!(!source.region.as_ref().unwrap().outer_boundary().is_empty());
+            assert!(source
+                .region
+                .as_ref()
+                .unwrap()
+                .outer_boundary()
+                .iter()
+                .all(|&site| !scope.certified_sources[site]));
             if exact_core {
                 component.core_parents.clone_from(&component.parents);
                 component.transition_parents.clear();
