@@ -291,6 +291,17 @@ impl Certificate {
         mesh: &MeshState,
         faces: &BTreeSet<usize>,
     ) -> Result<GeometryRegionCertificateReport, CertificateError> {
+        self.verify_geometry_region_within(mesh, faces, &BTreeSet::new())
+    }
+
+    /// The same face proofs on an open region: only known edge sites skip
+    /// closed-fan and dual-cell checks. Their incident edges remain audited.
+    pub(crate) fn verify_geometry_region_within(
+        &self,
+        mesh: &MeshState,
+        faces: &BTreeSet<usize>,
+        edge_sites: &BTreeSet<usize>,
+    ) -> Result<GeometryRegionCertificateReport, CertificateError> {
         if faces.is_empty() {
             return Err(CertificateError::CriterionNotCertifiable(
                 "geometry region is empty".to_string(),
@@ -321,9 +332,19 @@ impl Certificate {
             }
         }
 
-        let sites = mesh.sites_touching(faces);
+        let mut sites = mesh.sites_touching(faces);
+        let all_sites = sites.len();
+        if !edge_sites.is_empty() {
+            sites.retain(|site, _| !edge_sites.contains(site));
+        }
         let degree_outside_window = local_degree_errors(mesh, &sites)?;
-        let delaunay_violations = local_delaunay_violations(mesh, &sites)?;
+        // Open fans cannot drive the local edge walk, including edges whose
+        // two ends both lie on the region boundary.
+        let delaunay_violations = if sites.len() == all_sites {
+            local_delaunay_violations(mesh, &sites)?
+        } else {
+            delaunay_violations(mesh)?
+        };
         let dual = verify_dual_sites(mesh, &sites)?;
         let report = GeometryRegionCertificateReport {
             faces: faces.len(),
@@ -349,6 +370,22 @@ impl Certificate {
             faces,
             self.min_angle_degrees,
             self.max_angle_degrees,
+            None,
+        ) == Some(0.0)
+    }
+
+    pub(crate) fn geometry_region_passes_within(
+        &self,
+        mesh: &MeshState,
+        faces: &BTreeSet<usize>,
+        edge_sites: &BTreeSet<usize>,
+    ) -> bool {
+        self.geometry_penalty_for_region(
+            mesh,
+            faces,
+            self.min_angle_degrees,
+            self.max_angle_degrees,
+            Some(edge_sites),
         ) == Some(0.0)
     }
 
@@ -362,6 +399,7 @@ impl Certificate {
             faces,
             self.min_angle_degrees + GEOMETRY_INTERIOR_MARGIN_DEGREES,
             self.max_angle_degrees - GEOMETRY_INTERIOR_MARGIN_DEGREES,
+            None,
         )
     }
 
@@ -400,6 +438,7 @@ impl Certificate {
         faces: &BTreeSet<usize>,
         minimum_angle: f64,
         maximum_angle: f64,
+        edge_sites: Option<&BTreeSet<usize>>,
     ) -> Option<f64> {
         let mut penalty = 0.0;
         let mut seeds = Vec::with_capacity(faces.len().saturating_mul(3));
@@ -421,6 +460,9 @@ impl Certificate {
         seeds.sort_unstable_by_key(|&(site, _)| site);
         seeds.dedup_by_key(|(site, _)| *site);
         for (site, seed) in seeds {
+            if edge_sites.is_some_and(|edge| edge.contains(&site)) {
+                continue;
+            }
             let degree = mesh.triangle_fan_from(site, seed).ok()?.len();
             let violation = 5usize.saturating_sub(degree).max(degree.saturating_sub(7));
             penalty += 10_000.0 * (violation * violation) as f64;
@@ -1759,6 +1801,47 @@ mod tests {
             report.voronoi_invalid_cells + report.voronoi_reciprocal_errors,
             0
         );
+    }
+
+    #[test]
+    fn local_open_region_checks_keep_face_proofs_and_interior_cells() {
+        let base = MotherGrid::generate(2).unwrap();
+        let parent = *base.triangle_addresses.iter().flatten().next().unwrap();
+        let certificate = Certificate::internal_for(AngleContractId::DomainQuality38To82V1);
+        for fine_n in [4, 8] {
+            let grid = MotherGrid::generate_faces(
+                fine_n,
+                crate::mother_grid::region::descendant_faces([parent], fine_n).unwrap(),
+            )
+            .unwrap();
+            let faces = grid.mesh.active_triangle_slots().collect::<BTreeSet<_>>();
+            let edge = grid.region.as_ref().unwrap().outer_boundary();
+            let whole = certificate
+                .verify_geometry_within(&grid.mesh, edge, 1)
+                .unwrap();
+            let local = certificate
+                .verify_geometry_region_within(&grid.mesh, &faces, edge)
+                .unwrap();
+            assert!(certificate.geometry_region_passes_within(&grid.mesh, &faces, edge));
+            assert_eq!(local.faces, whole.faces);
+            assert_eq!(local.interval_boxes, 3 * faces.len());
+            assert_eq!(local.min_angle_degrees, whole.min_angle_degrees);
+            assert_eq!(local.max_angle_degrees, whole.max_angle_degrees);
+            assert_eq!(local.voronoi_cells, whole.voronoi_cells);
+            assert_eq!(local.delaunay_violations, whole.delaunay_violations);
+            assert!(certificate
+                .verify_geometry_region(&grid.mesh, &faces)
+                .is_err());
+
+            let mut distorted = grid.mesh.clone();
+            let face = *faces.first().unwrap();
+            let [left, right, _] = distorted.triangles()[face];
+            distorted.move_vertex(left, distorted.vertices()[right]);
+            assert!(certificate
+                .verify_geometry_region_within(&distorted, &faces, edge)
+                .is_err());
+            assert!(!certificate.geometry_region_passes_within(&distorted, &faces, edge));
+        }
     }
 
     #[test]

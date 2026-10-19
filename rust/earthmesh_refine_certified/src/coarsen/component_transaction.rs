@@ -1555,8 +1555,29 @@ fn certify_candidate(
         failure.interval_boxes = interval_boxes;
         return Err(failure);
     }
-    let geometry_passes = Certificate::internal_for(angle_contract)
-        .geometry_region_passes(&work.mesh.mesh, &guard_faces);
+    let edge_sites = geometry_scope.as_ref().and_then(|scope| {
+        guard_faces
+            .iter()
+            .flat_map(|&face| work.mesh.mesh.triangles()[face])
+            .any(|site| scope.edge_sites.contains(&site))
+            .then_some(&scope.edge_sites)
+    });
+    let certify_local_geometry = |mesh: &MeshState| {
+        let certificate = Certificate::internal_for(angle_contract);
+        match edge_sites {
+            Some(edge) => certificate.verify_geometry_region_within(mesh, &guard_faces, edge),
+            None => certificate.verify_geometry_region(mesh, &guard_faces),
+        }
+    };
+    let geometry_passes = match edge_sites {
+        Some(edge) => Certificate::internal_for(angle_contract).geometry_region_passes_within(
+            &work.mesh.mesh,
+            &guard_faces,
+            edge,
+        ),
+        None => Certificate::internal_for(angle_contract)
+            .geometry_region_passes(&work.mesh.mesh, &guard_faces),
+    };
     log_component_phase(
         timing_enabled,
         component.id,
@@ -1719,16 +1740,14 @@ fn certify_candidate(
         &transition.boundary,
         coarse_level,
     );
-    let local_geometry = Certificate::internal_for(angle_contract)
-        .verify_geometry_region(&work.mesh.mesh, &guard_faces)
-        .map_err(|error| {
-            let mut failure = CandidateAttemptFailure::retry(
-                ComponentTransactionStage::LocalGeometry,
-                format!("{error:?}"),
-            );
-            failure.interval_boxes = interval_boxes;
-            failure
-        })?;
+    let local_geometry = certify_local_geometry(&work.mesh.mesh).map_err(|error| {
+        let mut failure = CandidateAttemptFailure::retry(
+            ComponentTransactionStage::LocalGeometry,
+            format!("{error:?}"),
+        );
+        failure.interval_boxes = interval_boxes;
+        failure
+    })?;
     debug_assert_eq!(interval_boxes, local_geometry.interval_boxes);
     log_component_phase(
         timing_enabled,
@@ -3649,6 +3668,7 @@ mod tests {
         component: &HierarchyComponent,
         certification: CommitCertification,
         scope: Option<&RegionScope>,
+        interval_boxes: usize,
     ) -> ComponentTransactionOutcome {
         let levels = SourceLevelField::from_active_voronoi_cells(
             &source.mesh,
@@ -3677,7 +3697,7 @@ mod tests {
             ComponentTransactionLimits {
                 topology_states: 10_000,
                 elastic_iterations: 1_024,
-                interval_boxes: 1_000_000,
+                interval_boxes,
                 halo_expansions: 0,
                 retry_at_failure: true,
             },
@@ -3704,6 +3724,7 @@ mod tests {
             &component,
             CommitCertification::Whole,
             None,
+            1_000_000,
         );
         let mut changed_state = initial.clone();
         let changed = solve_certifying(
@@ -3712,6 +3733,7 @@ mod tests {
             &component,
             CommitCertification::Changed,
             None,
+            1_000_000,
         );
         let (
             ComponentTransactionOutcome::Certified(whole),
@@ -3761,6 +3783,7 @@ mod tests {
             &component,
             CommitCertification::Whole,
             None,
+            1_000_000,
         );
         NARROW_WINDOWS.with(|narrow| narrow.set(true));
         WINDOW_CUTS.with(|cuts| cuts.set(0));
@@ -3771,6 +3794,7 @@ mod tests {
             &component,
             CommitCertification::Changed,
             None,
+            1_000_000,
         );
         NARROW_WINDOWS.with(|narrow| narrow.set(false));
         assert!(WINDOW_CUTS.with(std::cell::Cell::get) > 0);
@@ -3799,6 +3823,20 @@ mod tests {
                 component.transition_parents.clear();
             }
             let initial = ComponentTransactionState::new(&source, 3).unwrap();
+            let mut no_budget = initial.clone();
+            let failure = solve_certifying(
+                &source,
+                &mut no_budget,
+                &component,
+                CommitCertification::Changed,
+                Some(&scope),
+                0,
+            );
+            let ComponentTransactionOutcome::SearchBudgetExhausted(rollback) = failure else {
+                panic!("a boundary commit must respect its zero interval budget: {failure:?}");
+            };
+            assert_eq!(rollback.stage, ComponentTransactionStage::LocalGeometry);
+            assert_eq!(no_budget, initial);
             let mut whole_state = initial.clone();
             let whole = solve_certifying(
                 &source,
@@ -3806,6 +3844,7 @@ mod tests {
                 &component,
                 CommitCertification::Whole,
                 Some(&scope),
+                1_000_000,
             );
             let mut window_state = initial;
             let window = solve_certifying(
@@ -3814,6 +3853,7 @@ mod tests {
                 &component,
                 CommitCertification::Changed,
                 Some(&scope),
+                1_000_000,
             );
             let (whole, window) = match (whole, window) {
                 (
