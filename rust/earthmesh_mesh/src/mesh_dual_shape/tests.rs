@@ -156,3 +156,29 @@ fn a_closed_mesh_moves_toward_regular_cells_without_folding_any() {
     }
     assert!(worst_opposite_sum(&points, &faces) < 179.0);
 }
+
+#[test]
+fn ninety_metre_right_triangle_area_is_accurate_after_rotation() {
+    let angle = 90.0_f64 / 6_371_000.0;
+    let (sin, cos) = angle.sin_cos();
+    let expected = 2.0 * (sin * sin).atan2((1.0 + cos).powi(2));
+    for (lon, lat) in [
+        (0.0_f64, 0.0_f64),
+        (100.0, 38.0),
+        (-60.0, 0.0),
+        (90.0, 59.0),
+    ] {
+        let a = lonlat(lon, lat);
+        let (lon, lat) = (lon.to_radians(), lat.to_radians());
+        let east = [-lon.sin(), lon.cos(), 0.0];
+        let north = [-lat.sin() * lon.cos(), -lat.sin() * lon.sin(), lat.cos()];
+        let b = std::array::from_fn(|i| cos * a[i] + sin * east[i]);
+        let c = std::array::from_fn(|i| cos * a[i] + sin * north[i]);
+        let actual = triangle_area(a, b, c);
+        let relative_error = (actual - expected).abs() / expected;
+        assert!(
+            relative_error < 1e-10,
+            "area {actual:.16e}, expected {expected:.16e}, relative error {relative_error:.3e} at ({lon}, {lat}) radians"
+        );
+    }
+}

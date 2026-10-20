@@ -137,7 +137,8 @@ fn circumcentre(corners: [P; 3]) -> P {
 
 /// Area of a spherical triangle of unit vectors.
 fn triangle_area(a: P, b: P, c: P) -> f64 {
-    let numerator = dotp(a, crossp(b, c)).abs();
+    // Local edge differences avoid cancellation for small triangles far from the axes.
+    let numerator = dotp(a, crossp(sub(b, a), sub(c, a))).abs();
     let denominator = 1.0 + dotp(a, b) + dotp(b, c) + dotp(c, a);
     2.0 * numerator.atan2(denominator)
 }

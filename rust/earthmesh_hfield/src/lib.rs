@@ -228,7 +228,7 @@ fn spherical_polygon_signed_area(points: &[(f64, f64)]) -> Option<f64> {
         return None;
     }
     for &(lon, lat) in points {
-        if !(lon.is_finite() && lat.is_finite()) || !(-90.0..=90.0).contains(&lat) {
+        if !(lon.is_finite() && lat.is_finite() && (-90.0..=90.0).contains(&lat)) {
             return None;
         }
     }
