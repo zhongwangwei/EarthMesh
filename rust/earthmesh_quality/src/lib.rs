@@ -1926,7 +1926,7 @@ fn evaluate(
         "aspect_ratio_max",
         geom.aspect_ratio.max,
         aspect_level,
-        "max cell aspect ratio",
+        "max ratio of longest to shortest cell edge",
     );
 
     let edge_cv_level = if geom.cell_edge_length_cv.max > th.cell_edge_cv_warn {
@@ -1964,7 +1964,7 @@ fn evaluate(
         "cell_area_cv",
         geom.cell_area.cv,
         cv_level,
-        "cell area coefficient of variation",
+        "cell area coefficient of variation across all refinement levels",
     );
     push(
         "cell_area_ratio",
@@ -1982,7 +1982,7 @@ fn evaluate(
         "max_adjacent_resolution_ratio",
         topo.max_adjacent_resolution_ratio,
         res_level,
-        "abrupt refinement transition",
+        "max adjacent sqrt(area) ratio",
     );
 
     let trans_level = if topo.transition_continuity_warning_count > 0 {
@@ -1994,7 +1994,10 @@ fn evaluate(
         "transition_continuity_warning_count",
         topo.transition_continuity_warning_count as f64,
         trans_level,
-        "adjacent sqrt(area) ratio > 2",
+        &format!(
+            "adjacent sqrt(area) ratio > {}",
+            th.max_adjacent_resolution_ratio_warn
+        ),
     );
 
     let isolated_level = if topo.isolated_refined_cell_count > 0 {

@@ -547,6 +547,46 @@ fn worst_cells_geojson_output_for_bad_mesh() {
 }
 
 #[test]
+fn worst_cell_geojson_preserves_location_and_optional_refinement_level() {
+    let mut mesh = two_square_mesh();
+    mesh.vertices[1].x = 0.001;
+    let mut report = compute(&mesh, &QualityThresholds::default());
+    assert!(!report.worst_cells.is_empty());
+    report.worst_cells.truncate(1);
+    report.worst_cells[0].centroid = Point::new(179.25, -32.5);
+    report.worst_cells[0].refine_level = Some(3);
+    let known = io::to_worst_cells_geojson(&report);
+    assert!(known.contains("\"center_lon\": 179.25"));
+    assert!(known.contains("\"center_lat\": -32.5"));
+    assert!(known.contains("\"refine_level\": 3"));
+    report.worst_cells[0].refine_level = None;
+    assert!(io::to_worst_cells_geojson(&report).contains("\"refine_level\": null"));
+}
+
+#[test]
+fn transition_gate_reports_the_configured_physical_scale_threshold() {
+    let mut mesh = two_square_mesh();
+    mesh.vertices[4].x = 5.0;
+    mesh.vertices[5].x = 5.0;
+    for (limit, count) in [(1.5, 1), (3.0, 0)] {
+        let thresholds = QualityThresholds {
+            max_adjacent_resolution_ratio_warn: limit,
+            ..QualityThresholds::default()
+        };
+        let report = compute(&mesh, &thresholds);
+        assert!((1.5..2.1).contains(&report.topology.max_adjacent_resolution_ratio));
+        assert_eq!(report.topology.transition_continuity_warning_count, count);
+        let gate = report
+            .gates
+            .iter()
+            .find(|gate| gate.metric == "transition_continuity_warning_count")
+            .unwrap();
+        assert_eq!(gate.detail, format!("adjacent sqrt(area) ratio > {limit}"));
+        assert!(io::to_summary_json(&report).contains(&format!("\"detail\": \"{}\"", gate.detail)));
+    }
+}
+
+#[test]
 fn invalid_worst_cells_do_not_hide_repairable_quality_targets() {
     let mesh = QualityMeshInput {
         vertices: vec![

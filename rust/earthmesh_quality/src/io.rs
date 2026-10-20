@@ -416,10 +416,11 @@ pub fn to_summary_json(r: &MeshQualityReport) -> String {
     for (i, gate) in r.gates.iter().enumerate() {
         let comma = if i + 1 < r.gates.len() { "," } else { "" };
         s.push_str(&format!(
-            "    {{\"metric\": \"{}\", \"value\": {}, \"level\": \"{}\"}}{}\n",
+            "    {{\"metric\": \"{}\", \"value\": {}, \"level\": \"{}\", \"detail\": \"{}\"}}{}\n",
             esc(&gate.metric),
             num(gate.value),
             gate.level.as_str(),
+            esc(&gate.detail),
             comma
         ));
     }
@@ -755,9 +756,14 @@ pub fn to_worst_cells_geojson(r: &MeshQualityReport) -> String {
         coords.push(']');
         s.push_str(&format!(
             "    {{\"type\": \"Feature\", \"geometry\": {{\"type\": \"Polygon\", \"coordinates\": [{}]}}, \
-             \"properties\": {{\"cell_index\": {}, \"metric\": \"{}\", \"value\": {}, \"level\": \"{}\"}}}}{}\n",
+             \"properties\": {{\"cell_index\": {}, \"center_lon\": {}, \"center_lat\": {}, \"refine_level\": {}, \"metric\": \"{}\", \"value\": {}, \"level\": \"{}\"}}}}{}\n",
             coords,
             wc.cell_index,
+            num(wc.centroid.x),
+            num(wc.centroid.y),
+            wc.refine_level
+                .map(|level| level.to_string())
+                .unwrap_or_else(|| "null".to_string()),
             esc(&wc.metric),
             num(wc.value),
             wc.level.as_str(),
