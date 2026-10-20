@@ -3822,6 +3822,153 @@ mod tests {
         assert_eq!(whole_state, changed_state);
     }
 
+    /// Check the domain in source IDs: window rebuilding changes compact slots.
+    fn assert_patch_domain(work: &Work, patch: &ElasticPatch) -> BTreeSet<usize> {
+        let movable = patch
+            .movable_compact_vertices
+            .iter()
+            .copied()
+            .collect::<BTreeSet<_>>();
+        let fixed = patch
+            .fixed_compact_vertices
+            .iter()
+            .copied()
+            .collect::<BTreeSet<_>>();
+        let guard = patch.guard_faces.iter().copied().collect::<BTreeSet<_>>();
+        assert!(!movable.is_empty());
+        assert!(movable.is_disjoint(&fixed));
+        let incident = work
+            .mesh
+            .mesh
+            .active_triangle_slots()
+            .filter(|&face| {
+                work.mesh.mesh.triangles()[face]
+                    .iter()
+                    .any(|site| movable.contains(site))
+            })
+            .collect::<BTreeSet<_>>();
+        assert_eq!(guard, incident);
+        let remaining_corners = guard
+            .iter()
+            .flat_map(|&face| work.mesh.mesh.triangles()[face])
+            .filter(|site| !movable.contains(site))
+            .collect::<BTreeSet<_>>();
+        assert_eq!(fixed, remaining_corners);
+        movable
+            .iter()
+            .map(|&site| work.mesh.source_vertex_slots[site].unwrap())
+            .collect()
+    }
+
+    #[test]
+    fn regional_elastic_domains_rebind_source_ids_and_reject_artificial_cuts() {
+        let sphere = MotherGrid::generate(16).unwrap();
+        let component = ringed_component(&sphere, 8, 2);
+        let hole = TriangleAddress {
+            base_face: 0,
+            i: 0,
+            j: 0,
+            n: 8,
+            orientation: crate::mother_grid::TriangleOrientation::Down,
+        };
+        let parents = MotherGrid::generate(8)
+            .unwrap()
+            .triangle_addresses
+            .into_iter()
+            .flatten()
+            .filter(|&parent| parent != hole);
+        let source = MotherGrid::generate_faces(
+            16,
+            crate::mother_grid::region::descendant_faces(parents, 16).unwrap(),
+        )
+        .unwrap();
+        let outcome = (TransitionTopologyLimits {
+            topology_states: 10_000,
+            maximum_halo_expansions: 0,
+        })
+        .solve_from_cursor_with_promotion(
+            &source,
+            &component,
+            0,
+            RetryRequest {
+                windowed: true,
+                ..RetryRequest::default()
+            },
+            true,
+        );
+        let TransitionTopologyOutcome::Closed(transition) = outcome else {
+            panic!("regional fixture must produce a real transition: {outcome:?}");
+        };
+        assert!(!transition.candidate.custom_transition_triangles.is_empty());
+        let edge = source.region.as_ref().unwrap().outer_boundary();
+        let base = ElasticPatch::from_transition_with_domain(
+            &transition,
+            GeometryDomainId::PlusTwoOrdinaryRings,
+        )
+        .unwrap();
+        let base_sources = base
+            .movable_compact_vertices
+            .iter()
+            .map(|&site| transition.mesh.source_vertex_slots[site].unwrap())
+            .collect::<BTreeSet<_>>();
+        // Exercise the physical-edge filter, rather than an already disjoint patch.
+        assert!(!base_sources.is_disjoint(edge));
+        let expected = base_sources
+            .difference(edge)
+            .copied()
+            .collect::<BTreeSet<_>>();
+        let initial = ComponentTransactionState::new(&source, 3).unwrap();
+        let mut whole = Work::whole(&initial);
+        let mut window = Work::window(
+            &source,
+            &initial,
+            transition
+                .window_parents
+                .as_ref()
+                .expect("fixture uses a window"),
+        )
+        .unwrap();
+        for work in [&mut whole, &mut window] {
+            work.install(&source, &transition.candidate).unwrap();
+            let patch = elastic_patch_for_state(
+                &transition,
+                &work.mesh,
+                AngleContractId::DomainQuality38To82V1,
+                Some(edge),
+            )
+            .unwrap();
+            let sources = assert_patch_domain(work, &patch);
+            assert_eq!(sources, expected);
+            assert!(sources.is_disjoint(edge));
+            assert!(!work.reaches_cut(patch.guard_faces.iter().copied()));
+        }
+        assert_ne!(
+            whole.mesh.source_vertex_slots,
+            window.mesh.source_vertex_slots
+        );
+        let narrow_parents = transition
+            .candidate
+            .core_parents
+            .iter()
+            .chain(&transition.boundary.halo_parents)
+            .copied()
+            .collect();
+        let mut narrow = Work::window(&source, &initial, &narrow_parents).unwrap();
+        narrow.install(&source, &transition.candidate).unwrap();
+        assert!(!narrow.cut.is_empty());
+        assert!(narrow.cut.is_disjoint(edge));
+        assert!(narrow.reaches_cut(affected_faces(&source, &narrow.mesh, &transition.candidate)));
+        // If rebinding succeeds, its incomplete fans still require whole fallback.
+        if let Ok(patch) = elastic_patch_for_state(
+            &transition,
+            &narrow.mesh,
+            AngleContractId::DomainQuality38To82V1,
+            Some(edge),
+        ) {
+            assert!(narrow.reaches_cut(patch.guard_faces.iter().copied()));
+        }
+    }
+
     #[test]
     fn regional_boundary_commits_use_open_fans_only_at_the_region_edge() {
         let sphere = MotherGrid::generate(16).unwrap();
