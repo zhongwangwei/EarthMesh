@@ -73,7 +73,7 @@ CLI 当前按最接近的二分尺度层级选择 `finest_m`（`CertifiedMergeOp
 
 ## 5. 可追溯性与验证
 
-- 四组历史诊断作业：`codex-c85e1cc43a3f4f50b728ce3cdc586be8`；探针源码 SHA256 为 `f678d1100a4fea889e05b425e4ae9153b70a5de453c240b2f76685419ebdbcb0`。四份冻结汇总的计数、极值和分级面积 CV 均复核一致。
+- 四组历史诊断作业：`codex-c85e1cc43a3f4f50b728ce3cdc586be8`；探针源码 SHA256 为 `ab2e29f79420e981fc80ee731661163943838ee0724c5fe19ebb23b8a2e28953`，执行文件 SHA256 为 `f678d1100a4fea889e05b425e4ae9153b70a5de453c240b2f76685419ebdbcb0`。四份冻结汇总的计数、极值和分级面积 CV 均复核一致。
 - 真实 MERIT 作业：`codex-be91def90ed84ed09581c9f215302f68`。预检核对 `latitude`／`longitude`、`elv(longitude, latitude)`、3 角秒间隔和有效样本。两块相关 MERIT 瓦片、土地类型、发布二进制 SHA256 及 MERIT 目录清单前后一致，没有上传外部数据。
 - 质量 crate 定向验证：58 个单元测试、23 个质量集成测试、2 个快照集成测试通过（共 83）；严格 Clippy 通过。新增回归覆盖已知中心坐标、可空细化级别和自定义过渡阈值的计数／说明。
 - JSON 冒烟作业：`codex-dd99747a28884c22b68b1e7d32ae7cc2`。实际 Rust 导出由 Python JSON 解析，验证引号、反斜杠、换行、制表符转义，以及有限／非有限中心和有值／空级别。
