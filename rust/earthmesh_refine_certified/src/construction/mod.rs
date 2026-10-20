@@ -17,7 +17,8 @@ mod options;
 pub use options::{CertifiedDelivery, CertifiedMode, CertifiedRunOptions};
 
 /// What became of an experimental local update: kept as the candidate, with
-/// the caller's report, or refused -- the control kept -- with the reason.
+/// the caller's report, or refused -- the fully certified control kept --
+/// with the callback or final-certification failure reason.
 #[derive(Clone, Debug, PartialEq)]
 pub enum LocalUpdateDecision<R> {
     Candidate(R),
@@ -27,8 +28,9 @@ pub enum LocalUpdateDecision<R> {
 /// A local update the caller applies to the coarsened mesh before the final
 /// gates (`EARTHMESH_CMRC_LOCAL_UPDATE`): it reads its own request and moves
 /// the mesh, given the delivered levels, the twelve pentagons and the angle
-/// contract, and reports. An `InvalidData` error refuses the candidate; any
-/// other error aborts the run.
+/// contract, and reports. An `InvalidData` callback error or failed final
+/// certification refuses the candidate and retains the fully certified control;
+/// any other callback error aborts the run.
 pub type LocalUpdate<'a, R> =
     dyn Fn(&mut MeshState, &[usize], &[usize; 12], AngleContractId) -> io::Result<R> + 'a;
 
@@ -1523,88 +1525,125 @@ pub fn build_mixed_certified_construction<R>(
         .collect::<io::Result<Vec<_>>>()?
         .try_into()
         .expect("twelve source pentagons map to twelve compact sites");
-    let mut mesh = leaf_mesh.mesh.clone();
+    let mesh = leaf_mesh.mesh.clone();
     let delivered_levels = result
         .state
         .target_levels()
         .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?
         .levels()
         .to_vec();
-    // Trial updates precede every final source/remap/geometry gate.
-    // Invalid input aborts; a rejected trial cannot mutate the retained control.
-    let local_update = local_update
-        .map(|apply| {
-            let mut candidate = mesh.clone();
+    let mut finalize =
+        |mesh: MeshState,
+         projected: Option<crate::FinalCellRequirementCertificate>,
+         handed_on_remap: Option<crate::remap::ConservativeRemap>| {
+            let final_cell_requirements = if let Some(projected) = projected.filter(|_| {
+                mesh == initial_mesh && delivered_levels.iter().all(|&level| level == chosen_level)
+            }) {
+                projected
+            } else {
+                let final_levels = crate::TargetLevelField::from_active_voronoi_cells(
+                    &mesh,
+                    delivered_levels.clone(),
+                )
+                .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?;
+                crate::certify_final_cell_requirements_from_raster(
+                    raster_requirements,
+                    &mesh,
+                    &final_levels,
+                    1,
+                )
+                .map_err(|error| {
+                    io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        format!("CMRC final-cell certification failed: {error}"),
+                    )
+                })?
+            };
+            log_cmrc_phase(
+                timing_enabled,
+                "final_requirement_projection",
+                &mut phase_started,
+            );
+            let remap = if initial_mesh == mesh {
+                crate::remap::ConservativeRemap::identity_for_mesh(&mesh)
+            } else if let Some(remap) =
+                handed_on_remap.filter(|remap| remap.joins(&initial_mesh, &mesh))
+            {
+                // The last committed component certified this very remap; computing it
+                // again cost as much as all the components' own (guide 11.103).
+                remap
+            } else {
+                crate::remap::ConservativeRemap::between_voronoi_meshes(&initial_mesh, &mesh)
+                    .map_err(|error| {
+                        io::Error::new(
+                            io::ErrorKind::InvalidData,
+                            format!("CMRC mixed Voronoi remap failed: {error}"),
+                        )
+                    })?
+            };
+            log_cmrc_phase(timing_enabled, "voronoi_remap", &mut phase_started);
+            let remap_certificate =
+                remap.certify_spherical_overlap(initial_mesh.vertex_count(), mesh.vertex_count());
+            let geometry = match crate::certify_geometry_with_contract(mesh, options.angle_contract)
+            {
+                crate::CertifiedMeshOutcome::GeometryCertified(mesh) => mesh,
+                other => return Err(certified_outcome_error(other)),
+            };
+            log_cmrc_phase(
+                timing_enabled,
+                "final_geometry_certificate",
+                &mut phase_started,
+            );
+            // Optional updates must pass the delivery gates before replacing control.
+            if local_update.is_some() {
+                let evidence = crate::FinalCertificationEvidence::from_final_cells(
+                    &final_cell_requirements,
+                    remap_certificate.clone(),
+                )
+                .map_err(|error| {
+                    io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        format!("CMRC final evidence failed: {error}"),
+                    )
+                })?;
+                crate::finalize_geometry_certified_mother((*geometry).clone(), evidence).map_err(
+                    |error| {
+                        io::Error::new(
+                            io::ErrorKind::InvalidData,
+                            format!("CMRC final delivery certification failed: {error}"),
+                        )
+                    },
+                )?;
+            }
+            Ok((geometry, remap, remap_certificate, final_cell_requirements))
+        };
+    let control = finalize(mesh, Some(projected), handed_on_remap)?;
+    let (certified, local_update) = match local_update {
+        None => (control, None),
+        Some(apply) => {
+            let mut candidate = control.0.primal().clone();
             match apply(
                 &mut candidate,
                 &delivered_levels,
                 &pentagons,
                 options.angle_contract,
             ) {
-                Ok(report) => {
-                    mesh = candidate;
-                    Ok(LocalUpdateDecision::Candidate(report))
-                }
-                Err(error) if error.kind() == io::ErrorKind::InvalidData => {
-                    Ok(LocalUpdateDecision::Control(error.to_string()))
-                }
-                Err(error) => Err(error),
+                Ok(report) => match finalize(candidate, None, None) {
+                    Ok(candidate) => (candidate, Some(LocalUpdateDecision::Candidate(report))),
+                    Err(error) => (
+                        control,
+                        Some(LocalUpdateDecision::Control(error.to_string())),
+                    ),
+                },
+                Err(error) if error.kind() == io::ErrorKind::InvalidData => (
+                    control,
+                    Some(LocalUpdateDecision::Control(error.to_string())),
+                ),
+                Err(error) => return Err(error),
             }
-        })
-        .transpose()?;
-    let final_cell_requirements =
-        if mesh == initial_mesh && delivered_levels.iter().all(|&level| level == chosen_level) {
-            projected
-        } else {
-            let final_levels =
-                crate::TargetLevelField::from_active_voronoi_cells(&mesh, delivered_levels.clone())
-                    .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?;
-            crate::certify_final_cell_requirements_from_raster(
-                raster_requirements,
-                &mesh,
-                &final_levels,
-                1,
-            )
-            .map_err(|error| {
-                io::Error::new(
-                    io::ErrorKind::InvalidData,
-                    format!("CMRC final-cell certification failed: {error}"),
-                )
-            })?
-        };
-    log_cmrc_phase(
-        timing_enabled,
-        "final_requirement_projection",
-        &mut phase_started,
-    );
-    let remap = if initial_mesh == mesh {
-        crate::remap::ConservativeRemap::identity_for_mesh(&mesh)
-    } else if let Some(remap) = handed_on_remap.filter(|remap| remap.joins(&initial_mesh, &mesh)) {
-        // The last committed component certified this very remap; computing it
-        // again cost as much as all the components' own (guide 11.103).
-        remap
-    } else {
-        crate::remap::ConservativeRemap::between_voronoi_meshes(&initial_mesh, &mesh).map_err(
-            |error| {
-                io::Error::new(
-                    io::ErrorKind::InvalidData,
-                    format!("CMRC mixed Voronoi remap failed: {error}"),
-                )
-            },
-        )?
+        }
     };
-    log_cmrc_phase(timing_enabled, "voronoi_remap", &mut phase_started);
-    let remap_certificate =
-        remap.certify_spherical_overlap(initial_mesh.vertex_count(), mesh.vertex_count());
-    let geometry = match crate::certify_geometry_with_contract(mesh, options.angle_contract) {
-        crate::CertifiedMeshOutcome::GeometryCertified(mesh) => mesh,
-        other => return Err(certified_outcome_error(other)),
-    };
-    log_cmrc_phase(
-        timing_enabled,
-        "final_geometry_certificate",
-        &mut phase_started,
-    );
+    let (geometry, remap, remap_certificate, final_cell_requirements) = certified;
     Ok(CertifiedConstruction {
         delivered_level: delivered_levels.iter().copied().max().unwrap_or(0),
         delivered_levels,
