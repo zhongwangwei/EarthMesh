@@ -1,4 +1,4 @@
-# EarthMesh v3.0.0-alpha10
+# EarthMesh v3.0.0-alpha11
 
 EarthMesh generates unstructured meshes for land, ocean, atmosphere, and coupled
 Earth-system workflows. The v3 alpha line is the current Rust engine: namelists
@@ -30,7 +30,7 @@ After this alpha is published to PyPI, install the Rust CLI as a Python wheel
 (the installed command remains `earthmesh_cli`):
 
 ```bash
-python -m pip install earthmesh==3.0.0a2
+python -m pip install earthmesh==3.0.0a11
 earthmesh_cli --version
 earthmesh_cli --help
 ```
@@ -256,6 +256,14 @@ For questions or support, please contact:
 
 ## Revision History
 
+- 2026.10.20 - v3.0.0-alpha11 fixes regional CMRC candidates whose guards
+  touch a physical open boundary. Local certification and elastic repair use
+  the known boundary scope, preserve internal geometry checks, and keep
+  physical boundary sites fixed during domain expansion. Regressions exercise
+  actual Window certification against Whole certification. Four T7920 A/B
+  cases pass with unchanged grids and zero certification errors; the 100 km / 30 m
+  case uses synthetic roughness inputs, while Heihe and both vertex cases use
+  MERIT-Hydro.
 - 2026.10.18 - v3.0.0-alpha10 brings regional certified reverse coarsening,
   multi-source merge criteria and Studio previews, shared backend delivery,
   and the icosahedron-vertex transition fix accumulated since alpha9. Local
