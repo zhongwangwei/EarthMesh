@@ -832,7 +832,7 @@ fn cell_area_cv_gate_is_strict_at_its_configured_threshold() {
 }
 
 #[test]
-fn quality_repair_plan_skips_cells_without_a_recorded_refinement_level() {
+fn quality_repair_plan_reports_an_assumed_level_zero_baseline() {
     let vertices = vec![
         Point::new(0.0, 0.0),
         Point::new(4.0, 0.0),
@@ -860,17 +860,19 @@ fn quality_repair_plan_skips_cells_without_a_recorded_refinement_level() {
     );
     assert_eq!(report.repair_cells.len(), 1);
 
-    // No recorded level: no guessed target, counted instead (audit A18).
+    // A missing level is the uniform baseline's level 0: the target stays 1
+    // (MPAS global-uniform AutoRefine depends on it), but the assumption is
+    // reported instead of silent (audit A18).
     let plan = io::to_quality_repair_plan_json(&report);
-    assert!(plan.contains("\"total_cells\": 0"), "{plan}");
-    assert!(plan.contains("\"unresolved_level_cells\": 1"), "{plan}");
-    assert!(!plan.contains("\"target_level\""), "{plan}");
+    assert!(plan.contains("\"total_cells\": 1"), "{plan}");
+    assert!(plan.contains("\"assumed_level_zero_cells\": 1"), "{plan}");
+    assert!(plan.contains("\"target_level\": 1"), "{plan}");
 
-    // The same cell with a recorded level still gets level + 1, capped.
+    // A recorded level still gets level + 1, capped, with no assumption.
     report.repair_cells[0].refine_level = Some(2);
     let plan = io::to_quality_repair_plan_json(&report);
     assert!(plan.contains("\"total_cells\": 1"), "{plan}");
-    assert!(plan.contains("\"unresolved_level_cells\": 0"), "{plan}");
+    assert!(plan.contains("\"assumed_level_zero_cells\": 0"), "{plan}");
     assert!(plan.contains("\"target_level\": 3"), "{plan}");
     let capped = io::to_quality_repair_plan_json_capped(&report, 2);
     assert!(capped.contains("\"target_level\": 2"), "{capped}");
