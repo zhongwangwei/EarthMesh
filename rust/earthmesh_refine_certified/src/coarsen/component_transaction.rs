@@ -1750,6 +1750,7 @@ fn certify_candidate(
             ComponentTransactionStage::LocalGeometry,
             format!("{error:?}"),
         );
+        failure.elastic_iterations = elastic_iterations;
         failure.interval_boxes = interval_boxes;
         failure
     })?;
@@ -1763,6 +1764,7 @@ fn certify_candidate(
 
     let geometry_failure = |stage: ComponentTransactionStage, error: CertificateError| {
         let mut failure = CandidateAttemptFailure::retry(stage, format!("{error:?}"));
+        failure.elastic_iterations = elastic_iterations;
         failure.interval_boxes = interval_boxes;
         failure
     };
@@ -1833,6 +1835,7 @@ fn certify_candidate(
                 phase_started,
             )
             .map_err(|mut failure| {
+                failure.elastic_iterations = elastic_iterations;
                 failure.interval_boxes = interval_boxes;
                 failure
             })?;
@@ -1885,6 +1888,7 @@ fn certify_candidate(
                 phase_started,
             )
             .map_err(|mut failure| {
+                failure.elastic_iterations = elastic_iterations;
                 failure.interval_boxes = interval_boxes;
                 failure
             })?;
@@ -1932,6 +1936,7 @@ fn certify_candidate(
             .map_err(|reason| {
                 let mut failure =
                     CandidateAttemptFailure::invalid(ComponentTransactionStage::FinalCells, reason);
+                failure.elastic_iterations = elastic_iterations;
                 failure.interval_boxes = interval_boxes;
                 failure
             })?;
@@ -1946,6 +1951,7 @@ fn certify_candidate(
             .map_err(|reason| {
                 let mut failure =
                     CandidateAttemptFailure::retry(ComponentTransactionStage::Remap, reason);
+                failure.elastic_iterations = elastic_iterations;
                 failure.interval_boxes = interval_boxes;
                 failure
             })?;
@@ -1968,6 +1974,7 @@ fn certify_candidate(
                         ComponentTransactionStage::FinalCells,
                         reason,
                     );
+                    failure.elastic_iterations = elastic_iterations;
                     failure.interval_boxes = interval_boxes;
                     return Err(failure);
                 }
@@ -1976,6 +1983,7 @@ fn certify_candidate(
                         ComponentTransactionStage::FinalCells,
                         residuals_reason(report.physical_residuals(), report.balance_residuals()),
                     );
+                    failure.elastic_iterations = elastic_iterations;
                     failure.interval_boxes = interval_boxes;
                     return Err(failure);
                 }
@@ -1988,6 +1996,7 @@ fn certify_candidate(
             .map_err(|reason| {
                 let mut failure =
                     CandidateAttemptFailure::retry(ComponentTransactionStage::Remap, reason);
+                failure.elastic_iterations = elastic_iterations;
                 failure.interval_boxes = interval_boxes;
                 failure
             })?;
@@ -2018,6 +2027,7 @@ fn certify_candidate(
             ComponentTransactionStage::Postcondition,
             "component transaction did not reduce both vertices and faces".to_string(),
         );
+        failure.elastic_iterations = elastic_iterations;
         failure.interval_boxes = interval_boxes;
         return Err(failure);
     }
@@ -3723,6 +3733,89 @@ mod tests {
             scope,
             certification,
         )
+    }
+
+    #[test]
+    fn late_cell_rejection_retains_state_and_charges_applied_elastic_work() {
+        let source = MotherGrid::generate(16).unwrap();
+        let component = ringed_component(&source, 8, 2);
+        let initial = ComponentTransactionState::new(&source, 3).unwrap();
+        let outcome = (TransitionTopologyLimits {
+            topology_states: 10_000,
+            maximum_halo_expansions: 0,
+        })
+        .solve_from_cursor_with_promotion(
+            &source,
+            &component,
+            0,
+            RetryRequest::default(),
+            true,
+        );
+        let TransitionTopologyOutcome::Closed(transition) = outcome else {
+            panic!("fixture must produce a transition: {outcome:?}");
+        };
+        let remap = VoronoiRemapSource::new(&source.mesh);
+        let certify = |work: &mut Work, demand, mode| {
+            let levels = SourceLevelField::from_active_voronoi_cells(
+                &source.mesh,
+                vec![demand; source.mesh.active_vertex_slots().count()],
+            )
+            .unwrap();
+            certify_candidate(
+                &source,
+                &remap,
+                &levels,
+                &initial,
+                work,
+                &component,
+                2,
+                1,
+                &transition,
+                1_024,
+                None,
+                1_000_000,
+                Some(initial.fingerprint()),
+                initial.vertex_count,
+                initial.face_count,
+                AngleContractId::DomainQuality38To82V1,
+                None,
+                mode,
+                &mut Instant::now(),
+            )
+        };
+        for mode in [CommitCertification::Whole, CommitCertification::Changed] {
+            let mut control = Work::whole(&initial);
+            let (accepted, _) = certify(&mut control, 2, mode).unwrap();
+            assert!(accepted.elastic_iterations > 0);
+            assert!(!control.moved.is_empty());
+            let mut rejected = Work::whole(&initial);
+            // Geometry can pass while coarsened cells miss a finer demand.
+            let failure = certify(&mut rejected, 3, mode).unwrap_err();
+            assert_eq!(failure.stage, ComponentTransactionStage::FinalCells);
+            assert_eq!(failure.disposition, CandidateFailureDisposition::Retry);
+            assert_eq!(failure.elastic_iterations, accepted.elastic_iterations);
+            assert_eq!(failure.interval_boxes, accepted.interval_boxes);
+            assert_eq!(rejected.mesh, control.mesh);
+            assert_eq!(rejected.moved, control.moved);
+            assert!(rejected
+                .mesh
+                .source_vertex_slots
+                .iter()
+                .enumerate()
+                .any(|(site, source)| source.is_some_and(|source| {
+                    rejected.mesh.mesh.vertices()[site] != initial.source_positions[source]
+                })));
+            assert_eq!(initial, ComponentTransactionState::new(&source, 3).unwrap());
+            drop(rejected);
+            let mut recovered = initial.clone();
+            let actual =
+                solve_certifying(&source, &mut recovered, &component, mode, None, 1_000_000);
+            let mut clean = initial.clone();
+            let expected = solve_certifying(&source, &mut clean, &component, mode, None, 1_000_000);
+            assert!(matches!(actual, ComponentTransactionOutcome::Certified(_)));
+            assert_eq!(format!("{actual:?}"), format!("{expected:?}"));
+            assert_eq!(recovered, clean);
+        }
     }
 
     /// Certifying only what a commit changed (guide 11.143, 11.145), in the
