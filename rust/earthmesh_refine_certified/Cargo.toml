@@ -1,6 +1,6 @@
 [package]
 name = "earthmesh_refine_certified"
-version = "3.0.0-alpha11"
+version = "3.0.0-alpha12"
 edition = "2021"
 
 [dependencies]
