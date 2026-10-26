@@ -3,6 +3,8 @@ name: CI
 # Minimal-but-effective regression gate for EarthMesh v3.
 # - `fast`  : fmt + pure Rust crates (no NetCDF, no GUI). Seconds, no system deps.
 # - `gui`   : frontend syntax + Tauri fmt/clippy/tests with Linux webview deps.
+# - `gui-bundle` : release branches + dispatch only -- builds a real Tauri .deb
+#                  bundle (sidecar staging + bundle config); PRs keep `gui` fast.
 # - `heavy` : cli with system NetCDF (dynamic link, no source build).
 # Large MERIT-Hydro / external-data tests stay `#[ignore]` and never run here.
 
@@ -78,6 +80,51 @@ jobs:
         run: make clippy-gui
       - name: Tauri command tests
         run: make test-gui
+
+  gui-bundle:
+    name: gui-bundle (Tauri app + .deb bundle)
+    runs-on: ubuntu-22.04
+    # The four gui gates compile and test the Tauri crate but never package it:
+    # a broken `tauri.bundle.conf.json` (beforeBuildCommand sidecar staging,
+    # externalBin layout, bundle targets) can ship unnoticed. Build one real
+    # bundle on release branches and on demand; pull requests keep the faster
+    # `gui` job. `cargo tauri build` runs the bundle config's beforeBuildCommand,
+    # which compiles the static-NetCDF CLI as the sidecar (the expensive part).
+    if: github.event_name == 'workflow_dispatch' || startsWith(github.ref, 'refs/heads/v')
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v5
+      - name: Install Tauri v2 Linux dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            libwebkit2gtk-4.1-dev \
+            build-essential \
+            curl \
+            wget \
+            file \
+            libxdo-dev \
+            libssl-dev \
+            libayatana-appindicator3-dev \
+            librsvg2-dev
+      - name: Install tauri-cli
+        run: cargo install tauri-cli --version "^2"
+      - name: Build the Tauri app and a .deb bundle
+        # `--debug` keeps the gate quick; `--bundles deb` avoids AppImage's
+        # extra Linux tooling. The bundle config stages the sidecar first.
+        run: |
+          cd gui-tauri
+          cargo tauri build --debug --bundles deb --config src-tauri/tauri.bundle.conf.json
+      - name: Assert the bundle and the sidecar exist
+        run: |
+          test -n "$(find gui-tauri/src-tauri/target/debug/bundle/deb -name '*.deb' -print -quit)"
+          test -n "$(find gui-tauri/src-tauri/binaries -name 'earthmesh_cli-*' -print -quit)"
+      - name: How to reproduce a failure
+        if: failure()
+        run: |
+          echo "::error::GUI bundle gate failed. Reproduce locally:"
+          echo "  cd gui-tauri && cargo tauri build --debug --bundles deb --config src-tauri/tauri.bundle.conf.json   # Linux"
+          echo "  make check-gui-bundle   # platform-native debug bundle (macOS: .app/.dmg, Linux: deb/rpm/AppImage)"
 
   heavy:
     name: heavy (cli, system NetCDF)

@@ -39,6 +39,12 @@ build-python:
 build-gui-bundle:
 	env -u CARGO_TARGET_DIR sh -c 'cd gui-tauri && cargo tauri build --config src-tauri/tauri.bundle.conf.json'
 
+# CI's `gui-bundle` job: a debug bundle through the same config, so a broken
+# beforeBuildCommand/externalBin layout fails locally before it reaches a
+# release branch. Use the native bundle set here; CI pins Linux's deb.
+check-gui-bundle:
+	env -u CARGO_TARGET_DIR sh -c 'cd gui-tauri && cargo tauri build --debug --config src-tauri/tauri.bundle.conf.json'
+
 fmt:
 	$(CARGO) fmt --manifest-path rust/earthmesh_core/Cargo.toml --check
 	$(CARGO) fmt --manifest-path rust/earthmesh_geometry/Cargo.toml --check
