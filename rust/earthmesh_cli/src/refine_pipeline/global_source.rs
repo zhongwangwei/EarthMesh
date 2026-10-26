@@ -2583,9 +2583,11 @@ fn refine_with_stretch(
         levels[v] = targets.target_level(lonlat)?;
     }
     let asks_anywhere = targets.demands_anywhere(1);
-    let Some(plan) =
-        earthmesh_refine_stretch::plan_stretch(&points, &levels, h0_radians, max_level)
-    else {
+    // A demand without a measurable base edge length is refused rather than
+    // planned with a zero reach margin; no demand stays "no plan" as before.
+    let plan = earthmesh_refine_stretch::plan_stretch(&points, &levels, h0_radians, max_level)
+        .map_err(|message| io::Error::new(io::ErrorKind::InvalidData, message))?;
+    let Some(plan) = plan else {
         // Nothing to stretch toward: the grid as it is, when that is the answer.
         if !asks_anywhere
             && planned_circles.iter().all(|demand| !demand.demanded)

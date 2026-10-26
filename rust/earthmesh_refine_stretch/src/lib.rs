@@ -35,27 +35,41 @@ pub struct StretchPlan {
 /// is asked), on a grid whose median edge is `h0_radians`: the focus is the
 /// demand's depth-weighted centre, and the factor the one the farthest
 /// demanded point needs -- half a base cell beyond it, so the cells over the
-/// demand's edge qualify too -- at most four times `2^deepest`. `None` when
-/// no vertex is demanded.
+/// demand's edge qualify too -- at most four times `2^deepest`.
+///
+/// `Ok(None)` when no vertex is demanded. `Err` when a vertex *is* demanded
+/// but the base edge length is unknown: that half-cell margin cannot be
+/// guessed, and treating it as zero reports points reachable that the cell
+/// containing them will still miss -- a silent under-delivery rather than a
+/// plan. An explicit error keeps the caller responsible for measuring `h0`
+/// before it asks for a plan.
 pub fn plan_stretch(
     points: &[P],
     levels: &[usize],
     h0_radians: Option<f64>,
     max_level: usize,
-) -> Option<StretchPlan> {
-    let (focus, focus_factor) = earthmesh_mesh::schmidt_focus_for_levels(
+) -> Result<Option<StretchPlan>, String> {
+    let Some((focus, focus_factor)) = earthmesh_mesh::schmidt_focus_for_levels(
         points,
         levels,
         2f64.powi(max_level.min(16) as i32),
-    )?;
+    ) else {
+        // No demand: nothing to plan, and the answer does not depend on h0.
+        return Ok(None);
+    };
+    let h0_radians = h0_radians.ok_or_else(|| {
+        "stretch planning needs the base grid's median edge length (h0), but it is not \
+         available; the half-cell reach margin cannot be defaulted to zero"
+            .to_string()
+    })?;
     let needed = earthmesh_mesh::schmidt_factor_for_levels(
         points,
         levels,
         focus,
-        h0_radians.unwrap_or(0.0) / 2.0,
+        h0_radians / 2.0,
         4.0 * focus_factor,
     );
-    Some(StretchPlan {
+    Ok(Some(StretchPlan {
         focus,
         factor: needed.factor,
         focus_factor,
@@ -63,7 +77,7 @@ pub fn plan_stretch(
         unreachable: needed.unreachable,
         farthest_unreachable_deg: needed.farthest_unreachable_deg,
         capped: needed.capped,
-    })
+    }))
 }
 
 /// Move unit `points` by the planned stretch.
@@ -92,7 +106,9 @@ mod tests {
                     .map(move |lon| unit(lon as f64, lat as f64))
             })
             .collect::<Vec<_>>();
-        assert!(plan_stretch(&points, &vec![0; points.len()], Some(0.17), 2).is_none());
+        assert!(plan_stretch(&points, &vec![0; points.len()], Some(0.17), 2)
+            .unwrap()
+            .is_none());
 
         let target = unit(30.0, 20.0);
         let levels = points
@@ -102,7 +118,9 @@ mod tests {
                 usize::from(cos > 15f64.to_radians().cos()) * 2
             })
             .collect::<Vec<_>>();
-        let plan = plan_stretch(&points, &levels, Some(0.17), 2).unwrap();
+        let plan = plan_stretch(&points, &levels, Some(0.17), 2)
+            .expect("a finite base edge length plans")
+            .expect("the demand asks for a stretch");
         let cos = plan.focus[0] * target[0] + plan.focus[1] * target[1] + plan.focus[2] * target[2];
         assert!(cos > 10f64.to_radians().cos(), "focus {:?}", plan.focus);
         assert!(plan.factor > 1.0 && plan.demanded > 0, "{plan:?}");
@@ -120,5 +138,27 @@ mod tests {
             .unwrap();
         let next = near + 1;
         assert!(gap(moved[near], moved[next]) < gap(points[near], points[next]));
+    }
+
+    /// An unknown base edge length is refused when a demand exists; with no
+    /// demand it is irrelevant, so the answer stays `None` rather than an
+    /// error -- the previous behaviour is preserved exactly where it was well
+    /// defined.
+    #[test]
+    fn a_demand_without_a_base_edge_length_is_refused_not_defaulted() {
+        let points = [unit(0.0, 0.0), unit(10.0, 0.0)];
+        assert!(
+            plan_stretch(&points, &[0, 0], None, 1).unwrap().is_none(),
+            "no demand: no plan, and h0 cannot matter"
+        );
+        let error = plan_stretch(&points, &[1, 0], None, 1)
+            .expect_err("a demanded vertex needs the half-cell margin h0 supplies");
+        assert!(error.contains("median edge length"), "{error}");
+        assert!(
+            plan_stretch(&points, &[1, 0], Some(0.01), 1)
+                .expect("a finite h0 plans")
+                .is_some(),
+            "the same demand with h0 known still plans"
+        );
     }
 }

@@ -415,6 +415,24 @@ pub fn repair_redgreen_angle_window(
     mesh: &mut RedGreenMesh,
     degree_cap: Option<usize>,
 ) -> io::Result<earthmesh_mesh::AngleWindowReport> {
+    // An empty level vector means "this mesh's per-cell depth was never
+    // tracked", and the repair keeps it unknown (guide 11.77) rather than
+    // inventing a depth. A non-empty vector of the wrong length is not unknown
+    // -- it is a table that no longer matches the faces it describes, and
+    // silently reducing it to "unknown" would drop real metadata while every
+    // downstream check still reported success.
+    if !mesh.refinement_levels.is_empty()
+        && mesh.refinement_levels.len() != mesh.cells_on_triangle.len()
+    {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!(
+                "redgreen angle repair: refinement level count {} does not match face count {}",
+                mesh.refinement_levels.len(),
+                mesh.cells_on_triangle.len()
+            ),
+        ));
+    }
     let (lo, hi) = earthmesh_quality::TRIANGLE_ANGLE_WINDOW_DEG;
     let mut options = earthmesh_mesh::AngleWindowOptions::new((
         lo + ANGLE_WINDOW_MARGIN_DEG,
@@ -446,11 +464,9 @@ pub fn repair_redgreen_angle_window(
         })
         .collect();
     let mut faces = mesh.cells_on_triangle.clone();
-    let mut levels = if mesh.refinement_levels.len() == faces.len() {
-        mesh.refinement_levels.clone()
-    } else {
-        Vec::new()
-    };
+    // The length was checked above: empty stays empty (unknown), non-empty is
+    // aligned by construction.
+    let mut levels = mesh.refinement_levels.clone();
     let report =
         earthmesh_mesh::repair_triangle_angle_window(&mut points, &mut faces, &mut levels, options);
     if report.flips + report.moves + report.removed_vertices == 0 {
@@ -591,5 +607,52 @@ mod tests {
         assert_eq!(flips.remaining_illegal_edges, 1);
         assert_eq!(&mesh.cells_on_triangle[2..4], &before[2..4]);
         assert_ne!(&mesh.cells_on_triangle[4..6], &before[4..6]);
+    }
+
+    /// A base grid through the shared bridge. The bridge writes an aligned
+    /// all-zero level table (an unrefined mesh is level 0 everywhere); a test
+    /// that needs the *unknown* contract clears it, and a test that needs a
+    /// defect overwrites it.
+    fn unrefined_redgreen_mesh() -> RedGreenMesh {
+        let base =
+            earthmesh_mesh::TriangularMesh::from_icosahedron(6, 0, 1.0, 0.25).expect("base mesh");
+        let neighbors = base.m_neighbors.clone();
+        crate::redgreen_mesh_from_triangular(&base, &neighbors).expect("bridge in")
+    }
+
+    #[test]
+    fn angle_repair_refuses_a_misaligned_refinement_level_table() {
+        let mut mesh = unrefined_redgreen_mesh();
+        mesh.refinement_levels = vec![0; mesh.cells_on_triangle.len() + 1];
+        let error = repair_redgreen_angle_window(&mut mesh, None)
+            .expect_err("a non-empty level table of the wrong length is a defect, not 'unknown'");
+        assert_eq!(error.kind(), io::ErrorKind::InvalidData);
+        let message = error.to_string();
+        assert!(
+            message.contains("refinement level count")
+                && message.contains("does not match face count"),
+            "{message}"
+        );
+    }
+
+    #[test]
+    fn angle_repair_keeps_an_unknown_level_table_unknown() {
+        let mut mesh = unrefined_redgreen_mesh();
+        // "Unknown" is the empty table a caller passes when the mesh never
+        // tracked a per-cell depth; the bridge's aligned zero table is a
+        // different, known state and is tested separately.
+        mesh.refinement_levels.clear();
+        repair_redgreen_angle_window(&mut mesh, None).expect("an unknown level table is allowed");
+        assert!(
+            mesh.refinement_levels.is_empty(),
+            "the repair must not invent a depth for a mesh that never tracked one"
+        );
+    }
+
+    #[test]
+    fn angle_repair_accepts_an_aligned_level_table() {
+        let mut mesh = unrefined_redgreen_mesh();
+        mesh.refinement_levels = vec![0; mesh.cells_on_triangle.len()];
+        repair_redgreen_angle_window(&mut mesh, None).expect("an aligned level table is accepted");
     }
 }

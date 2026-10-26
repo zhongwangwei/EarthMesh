@@ -73,31 +73,63 @@ fn global_triangles(mesh: &UnstructuredMesh) -> io::Result<(Vec<P>, Vec<[usize; 
 /// The deepest nest over each global triangle. A nest is its parent's
 /// triangles split 1 -> 4, so it covers whole global triangles, and each of
 /// its triangles traces back, parent by parent, to exactly one.
-fn nest_depth_over_global(domains: &[earthmesh_mesh::IconNestDomain]) -> Vec<u32> {
+///
+/// A parent chain that does not resolve is an error, not a level-0 triangle:
+/// the level published for that triangle would claim "no refinement" while a
+/// nest does cover it, which is exactly the silent-metadata failure the
+/// `earthmesh_{m,w}_refine_level` variables exist to avoid.
+fn nest_depth_over_global(domains: &[earthmesh_mesh::IconNestDomain]) -> io::Result<Vec<u32>> {
+    use io::ErrorKind;
     let Some(global) = domains.first() else {
-        return Vec::new();
+        return Ok(Vec::new());
     };
     let mut depth = vec![0u32; global.triangles.len()];
     // Domain ids are 1-based and a parent comes before its children.
     let mut roots: Vec<Vec<usize>> = vec![(0..global.triangles.len()).collect()];
-    for domain in &domains[1..] {
-        let parent_roots = domain
-            .parent
-            .checked_sub(1)
-            .and_then(|index| roots.get(index))
-            .cloned()
-            .unwrap_or_default();
-        let own: Vec<usize> = domain
-            .parent_triangle
-            .iter()
-            .filter_map(|&triangle| parent_roots.get(triangle).copied())
-            .collect();
+    for (index, domain) in domains.iter().enumerate().skip(1) {
+        let parent_index = domain.parent.checked_sub(1).ok_or_else(|| {
+            io::Error::new(
+                ErrorKind::InvalidData,
+                format!(
+                    "ICON nesting: domain {} at plan position {} names no parent domain",
+                    domain.id, index
+                ),
+            )
+        })?;
+        let parent_roots = roots.get(parent_index).ok_or_else(|| {
+            io::Error::new(
+                ErrorKind::InvalidData,
+                format!(
+                    "ICON nesting: domain {} names parent {}, but only {} domain(s) were planned \
+                     before it",
+                    domain.id,
+                    domain.parent,
+                    roots.len()
+                ),
+            )
+        })?;
+        let mut own = Vec::with_capacity(domain.parent_triangle.len());
+        for &triangle in &domain.parent_triangle {
+            let root = parent_roots.get(triangle).copied().ok_or_else(|| {
+                io::Error::new(
+                    ErrorKind::InvalidData,
+                    format!(
+                        "ICON nesting: domain {} names parent triangle {triangle}, but parent \
+                         domain {} has only {} triangle(s)",
+                        domain.id,
+                        domain.parent,
+                        parent_roots.len()
+                    ),
+                )
+            })?;
+            own.push(root);
+        }
         for &root in &own {
             depth[root] = depth[root].max(domain.depth);
         }
         roots.push(own);
     }
-    depth
+    Ok(depth)
 }
 
 /// The delivery's level on each published row of the global grid: the global
@@ -246,7 +278,7 @@ pub(super) fn plan_icon_nests(
     if let Some(error) = failure.borrow_mut().take() {
         return Err(error);
     }
-    let depth = nest_depth_over_global(&domains);
+    let depth = nest_depth_over_global(&domains)?;
     Ok(IconNestPlan {
         domains,
         angles,
@@ -369,7 +401,38 @@ mod tests {
             domain(2, 1, 1, vec![0, 0, 0, 0, 2, 2, 2, 2]),
             domain(3, 2, 2, vec![5, 5, 5, 5]),
         ];
-        assert_eq!(nest_depth_over_global(&domains), vec![1, 0, 2]);
+        assert_eq!(nest_depth_over_global(&domains).unwrap(), vec![1, 0, 2]);
+    }
+
+    #[test]
+    fn a_parent_chain_that_does_not_resolve_is_refused_not_read_as_level_zero() {
+        // Domain 3 names triangle 9 of domain 2, which has three.
+        let domains = [
+            domain(1, 0, 0, Vec::new()),
+            domain(2, 1, 1, vec![0, 0, 0]),
+            domain(3, 2, 2, vec![0, 9]),
+        ];
+        let error = nest_depth_over_global(&domains)
+            .expect_err("an out-of-range parent triangle is a defect, not level 0");
+        assert_eq!(error.kind(), io::ErrorKind::InvalidData);
+        let message = error.to_string();
+        assert!(
+            message.contains("domain 3")
+                && message.contains("parent triangle 9")
+                && message.contains("parent domain 2"),
+            "{message}"
+        );
+
+        // A parent id that names a domain not planned before this one.
+        let domains = [domain(1, 0, 0, Vec::new()), domain(2, 7, 1, vec![0, 0, 0])];
+        let error = nest_depth_over_global(&domains)
+            .expect_err("a parent domain that was never planned is a defect, not level 0");
+        assert_eq!(error.kind(), io::ErrorKind::InvalidData);
+        let message = error.to_string();
+        assert!(
+            message.contains("domain 2") && message.contains("parent 7"),
+            "{message}"
+        );
     }
 
     #[test]
