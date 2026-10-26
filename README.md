@@ -257,9 +257,12 @@ For questions or support, please contact:
 ## Revision History
 
 - 2026.10.26 - v3.0.0-alpha12 is the deep-audit release. Twenty-four findings
-  were reviewed end to end: twenty-two are fixed and the remaining two are
-  documented Info trade-offs, plus a parallel-session fix that keeps completed
-  elastic work when a later certification rejects a candidate. Highlights: the
+  were reviewed end to end: twenty-three are fixed and the last is optimized
+  where it is provably safe (a no-op accepted candidate reuses the control's
+  fully certified construction; a moved candidate still pays its fresh
+  certification pass by design), plus a parallel-session fix that keeps
+  completed elastic work when a later certification rejects a candidate.
+  Highlights: the
   Studio dashboard receives quality-gate details; CMRC local-update manifests
   carry SHA-256 provenance for the request and both source files; quitting the
   Studio stops the engine child; certified late-failure paths report the

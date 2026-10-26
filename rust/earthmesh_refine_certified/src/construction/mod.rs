@@ -1634,14 +1634,26 @@ pub fn build_mixed_certified_construction<R>(
                         format!("CMRC final evidence failed: {error}"),
                     )
                 })?;
-                crate::finalize_geometry_certified_mother((*geometry).clone(), evidence).map_err(
-                    |error| {
-                        io::Error::new(
-                            io::ErrorKind::InvalidData,
-                            format!("CMRC final delivery certification failed: {error}"),
-                        )
-                    },
-                )?;
+                // Dispatch exactly like the delivery caller: a built region
+                // certifies only the remap rows its coverage names, a global
+                // run the whole mesh (audit A24). The mixed construction is
+                // global today, so the region arm is future-proofing.
+                let delivery = match remap.covered_targets() {
+                    None => {
+                        crate::finalize_geometry_certified_mother((*geometry).clone(), evidence)
+                    }
+                    Some(covered) => crate::finalize_region_geometry(
+                        (*geometry).clone(),
+                        evidence,
+                        covered.len(),
+                    ),
+                };
+                delivery.map_err(|error| {
+                    io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        format!("CMRC final delivery certification failed: {error}"),
+                    )
+                })?;
             }
             Ok((geometry, remap, remap_certificate, final_cell_requirements))
         };
@@ -1656,13 +1668,29 @@ pub fn build_mixed_certified_construction<R>(
                 &pentagons,
                 options.angle_contract,
             ) {
-                Ok(report) => match finalize(candidate, None, None) {
-                    Ok(candidate) => (candidate, Some(LocalUpdateDecision::Candidate(report))),
-                    Err(error) => (
-                        control,
-                        Some(LocalUpdateDecision::Control(error.to_string())),
-                    ),
-                },
+                Ok(report) => {
+                    // A position-preserving callback leaves the candidate
+                    // bit-identical to the control's certified primal. The
+                    // control construction already is the fully certified
+                    // result for this exact mesh (projection, fresh remap,
+                    // remap certificate, delivery check), so re-finalizing it
+                    // would repeat the most expensive gates on an unchanged
+                    // mesh (audit A23; guide 11.155 measured the double pass
+                    // as +39.8% elapsed on a real run).
+                    if candidate == *control.0.primal() {
+                        (control, Some(LocalUpdateDecision::Candidate(report)))
+                    } else {
+                        match finalize(candidate, None, None) {
+                            Ok(candidate) => {
+                                (candidate, Some(LocalUpdateDecision::Candidate(report)))
+                            }
+                            Err(error) => (
+                                control,
+                                Some(LocalUpdateDecision::Control(error.to_string())),
+                            ),
+                        }
+                    }
+                }
                 Err(error) if error.kind() == io::ErrorKind::InvalidData => (
                     control,
                     Some(LocalUpdateDecision::Control(error.to_string())),
