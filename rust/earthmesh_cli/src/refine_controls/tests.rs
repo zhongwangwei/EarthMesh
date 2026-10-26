@@ -690,3 +690,23 @@ fn specified_regions_above_the_active_level_are_rejected() {
         let _ = fs::remove_file(source);
     }
 }
+
+#[test]
+fn dispatch_refuses_an_unknown_backend_instead_of_treating_it_as_non_certified() {
+    // The shipped pipeline validates the namelist first, but this helper is a
+    // public dispatch surface; an unknown backend must fail here rather than
+    // silently taking the non-certified route (audit A21, guide §11.37).
+    for backend in ["harpdv", "not-a-backend", "method-c"] {
+        let config = EarthmeshConfig {
+            mesh_type: "oceanmesh".into(),
+            refine_backend: backend.into(),
+            refine: false,
+            ..Default::default()
+        };
+        let error =
+            super::refine_pipeline_refine_dispatch_requested(&config.to_mkgrd_namelist(), &config)
+                .expect_err("an unknown backend must be refused");
+        assert_eq!(error.kind(), std::io::ErrorKind::InvalidInput);
+        assert!(error.to_string().contains("refine_backend"), "{error}");
+    }
+}

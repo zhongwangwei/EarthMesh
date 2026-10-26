@@ -831,26 +831,36 @@ pub fn to_quality_repair_plan_json(r: &MeshQualityReport) -> String {
 
 /// Project-aware repair plan capped to the refinement level supported by the
 /// source mesh resolution.
+///
+/// Only cells with a recorded refinement level can be targeted: the level is
+/// where the "+1" is applied relative to, and guessing level 0 for a mesh that
+/// records none would repair it at an arbitrary depth (audit A18). Repairable
+/// cells without a level are counted in `unresolved_level_cells` instead, so
+/// `total_cells` is the number of emitted cells (the HField adapter requires it
+/// to equal `cells[]`'s length) and never includes a guessed target.
 pub fn to_quality_repair_plan_json_capped(r: &MeshQualityReport, max_level: u8) -> String {
     let repairable = &r.repair_cells;
-    let mut s = format!(
-        "{{\n  \"kind\": \"earthmesh_refinement_plan\",\n  \"total_cells\": {},\n  \"cells\": [\n",
-        repairable.len()
-    );
+    // `cell` keeps the position in `repair_cells` because it indexes the
+    // matching feature in `quality_repair_cells.geojson`; skipped cells leave a
+    // hole, which the consumer treats as a plain index.
+    let mut cells = Vec::with_capacity(repairable.len());
+    let mut unresolved_level_cells = 0usize;
     for (index, worst) in repairable.iter().enumerate() {
-        let target_level = worst
-            .refine_level
-            .unwrap_or(0)
-            .saturating_add(1)
-            .min(u32::from(max_level.min(5)));
-        let comma = if index + 1 < repairable.len() {
-            ","
-        } else {
-            ""
+        let Some(level) = worst.refine_level else {
+            unresolved_level_cells += 1;
+            continue;
         };
+        let target_level = level.saturating_add(1).min(u32::from(max_level.min(5)));
+        cells.push((index, worst.cell_index, target_level));
+    }
+    let mut s = format!(
+        "{{\n  \"kind\": \"earthmesh_refinement_plan\",\n  \"total_cells\": {},\n  \"unresolved_level_cells\": {unresolved_level_cells},\n  \"cells\": [\n",
+        cells.len()
+    );
+    for (emitted, (index, cell_index, target_level)) in cells.iter().enumerate() {
+        let comma = if emitted + 1 < cells.len() { "," } else { "" };
         s.push_str(&format!(
-            "    {{\"cell\": {index}, \"cell_id\": \"{}\", \"target_level\": {target_level}}}{comma}\n",
-            worst.cell_index,
+            "    {{\"cell\": {index}, \"cell_id\": \"{cell_index}\", \"target_level\": {target_level}}}{comma}\n",
         ));
     }
     s.push_str("  ]\n}\n");

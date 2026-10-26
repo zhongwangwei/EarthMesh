@@ -25,9 +25,24 @@ pub(crate) fn refine_pipeline_refine_dispatch_requested(
     let compatibility_specified_refine = config.refine;
     // An explicitly selected certified backend also owns the uniform mother
     // grid. Disabled refinement must not silently select Method-C instead.
-    let certified_mother = earthmesh_refine::RefinementBackend::from_engine_str(
+    //
+    // Resolve the name through the same parser the config validator uses: an
+    // unknown backend is an error here, not "not certified" (audit A21). The
+    // shipped pipeline validates first, but a caller that skips validation must
+    // not silently take the non-certified route (the guide §11.37 shape).
+    let backend = earthmesh_refine::RefinementBackend::from_engine_str(
         &config.refine_backend.trim().to_ascii_lowercase(),
-    ) == Some(earthmesh_refine::RefinementBackend::Certified);
+    )
+    .ok_or_else(|| {
+        io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!(
+                "unsupported refine_backend {}; expected method_c, red_green, certified, stretch, or icon_nest",
+                config.refine_backend
+            ),
+        )
+    })?;
+    let certified_mother = backend == earthmesh_refine::RefinementBackend::Certified;
     Ok(native_mdomain.is_some()
         || native_surface_global_expansion
         || native_refine_regions_requested

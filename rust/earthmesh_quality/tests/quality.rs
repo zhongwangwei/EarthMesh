@@ -830,3 +830,48 @@ fn cell_area_cv_gate_is_strict_at_its_configured_threshold() {
         .expect("the area-CV gate must be reported");
     assert_eq!(gate.level, QualityLevel::Warn);
 }
+
+#[test]
+fn quality_repair_plan_skips_cells_without_a_recorded_refinement_level() {
+    let vertices = vec![
+        Point::new(0.0, 0.0),
+        Point::new(4.0, 0.0),
+        Point::new(4.1, 0.5),
+        Point::new(2.0, 2.0),
+        Point::new(0.0, 2.0),
+        Point::new(-0.1, 1.0),
+    ];
+    let thresholds = QualityThresholds {
+        min_angle_warn_deg: 0.0,
+        aspect_ratio_warn: f64::INFINITY,
+        angle_deviation_warn_deg: 180.0,
+        ..QualityThresholds::default()
+    };
+    let mut report = compute(
+        &QualityMeshInput {
+            vertices,
+            cells: vec![QualityCell {
+                vertices: vec![0, 1, 2, 3, 4, 5],
+                refine_level: None,
+                neighbors: vec![],
+            }],
+        },
+        &thresholds,
+    );
+    assert_eq!(report.repair_cells.len(), 1);
+
+    // No recorded level: no guessed target, counted instead (audit A18).
+    let plan = io::to_quality_repair_plan_json(&report);
+    assert!(plan.contains("\"total_cells\": 0"), "{plan}");
+    assert!(plan.contains("\"unresolved_level_cells\": 1"), "{plan}");
+    assert!(!plan.contains("\"target_level\""), "{plan}");
+
+    // The same cell with a recorded level still gets level + 1, capped.
+    report.repair_cells[0].refine_level = Some(2);
+    let plan = io::to_quality_repair_plan_json(&report);
+    assert!(plan.contains("\"total_cells\": 1"), "{plan}");
+    assert!(plan.contains("\"unresolved_level_cells\": 0"), "{plan}");
+    assert!(plan.contains("\"target_level\": 3"), "{plan}");
+    let capped = io::to_quality_repair_plan_json_capped(&report, 2);
+    assert!(capped.contains("\"target_level\": 2"), "{capped}");
+}
