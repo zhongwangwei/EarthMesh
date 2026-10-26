@@ -6971,5 +6971,12 @@ target 单元调用 `spherical_overlap_partial` 重算行，其余行从 base（
   remap certificate、final-cell requirements、local-update decision 全部相等，并用 test-only counter 证明
   增量分支确实执行（fixture 会真正 commit 组件，调度器 handed-on remap 存在）。
 
-限制：本段只优化候选 final remap；候选的最终单元投影仍是全量（raster→Voronoi 投影的按行增量留作下一步）。
-控制侧惰性门禁（11.163）不变；真实多案例成本未测；生产优化器仍未启用。
+限制与后续：
+- 候选的最终单元投影不能按同样方式增量复用：惰性 control 设计（11.163）已经不再计算 control 投影，要复用
+  control 的投影行就必须先把 control 投影算出来，净成本与候选全量投影相当。因此投影保持全量——这是当前设计下
+  每个交付候选唯一必要的投影，按行增量没有收益。
+- 交付校验改为借用验证：新增 `GeometryCertifiedMotherGrid::validate_final_delivery`，判据与顺序同
+  `finalize_geometry_certified_mother`/`finalize_region_geometry`，但只取结论、不消费也不克隆几何。局部更新门禁
+  不再 clone 百万单元的 primal 再丢弃构造出的 final mesh；单测 `delivery_validation_agrees_with_the_finalize_functions`
+  对比两者对同一证据的接受/拒绝一致。
+- 真实多案例成本未测；生产优化器仍未启用。

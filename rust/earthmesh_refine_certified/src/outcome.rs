@@ -144,6 +144,42 @@ impl GeometryCertifiedMotherGrid {
     pub(crate) fn into_parts(self) -> (MeshState, GeometryCertificateReport) {
         (self.primal, self.certificate)
     }
+
+    /// The verdict of `finalize_geometry_certified_mother` /
+    /// `finalize_region_geometry` without consuming the geometry or building
+    /// the final mesh. The optional local-update delivery gate only needs the
+    /// verdict, and cloning a million-cell primal just to discard it was a
+    /// measurable part of the update path (audit A23).
+    ///
+    /// The checks and their order are exactly the finalize functions': remap
+    /// rows against the certified cell count, the evidence mesh fingerprint,
+    /// then the geometry and final gates.
+    pub fn validate_final_delivery(
+        &self,
+        evidence: &FinalCertificationEvidence,
+        certified_cells: usize,
+    ) -> Result<(), crate::certificate::CertificateError> {
+        if evidence.remap_rows != certified_cells {
+            return Err(crate::certificate::CertificateError::RemapRows {
+                expected: certified_cells,
+                actual: evidence.remap_rows,
+            });
+        }
+        if evidence.target_fingerprint != crate::fingerprint::mesh_fingerprint(&self.primal) {
+            return Err(crate::certificate::CertificateError::EvidenceMeshMismatch);
+        }
+        self.certificate.require_geometry_gates()?;
+        let failed = evidence.physical_residuals
+            + evidence.balance_residuals
+            + evidence.remap_closure_errors;
+        if failed == 0 {
+            Ok(())
+        } else {
+            Err(crate::certificate::CertificateError::FinalGateResiduals(
+                failed,
+            ))
+        }
+    }
 }
 
 #[derive(Debug, Clone)]

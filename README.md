@@ -261,8 +261,8 @@ For questions or support, please contact:
   where it is provably safe (a successful candidate always carries its own
   fresh certification, while the control's final gates run only when it is
   actually retained; a no-op candidate reuses the control construction, and a
-  moved candidate reuses the untouched cells' remap rows), plus a
-  parallel-session fix that keeps
+  moved candidate reuses the untouched cells' remap rows and the delivery gate
+  no longer clones the primal it discards), plus a parallel-session fix that keeps
   completed elastic work when a later certification rejects a candidate.
   Highlights: the
   Studio dashboard receives quality-gate details; CMRC local-update manifests

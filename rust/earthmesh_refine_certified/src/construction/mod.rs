@@ -1496,16 +1496,22 @@ fn mixed_final_delivery_check(
             format!("CMRC final evidence failed: {error}"),
         )
     })?;
-    let delivery = match remap.covered_targets() {
-        None => crate::finalize_geometry_certified_mother(geometry.clone(), evidence),
-        Some(covered) => crate::finalize_region_geometry(geometry.clone(), evidence, covered.len()),
+    // The dispatch mirrors the delivery caller (audit A24): a built region
+    // certifies the rows its coverage names, a global run the whole mesh.
+    // Validating without consuming the geometry avoids cloning the primal and
+    // building a final mesh that is discarded (audit A23).
+    let certified_cells = match remap.covered_targets() {
+        None => geometry.certificate().voronoi_cells,
+        Some(covered) => covered.len(),
     };
-    delivery.map_err(|error| {
-        io::Error::new(
-            io::ErrorKind::InvalidData,
-            format!("CMRC final delivery certification failed: {error}"),
-        )
-    })?;
+    geometry
+        .validate_final_delivery(&evidence, certified_cells)
+        .map_err(|error| {
+            io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!("CMRC final delivery certification failed: {error}"),
+            )
+        })?;
     Ok(())
 }
 
@@ -2374,5 +2380,43 @@ mod tests {
             full.final_cell_requirements
         );
         assert_eq!(incremental.local_update, full.local_update);
+    }
+
+    /// The clone-free delivery verdict must agree with the finalize functions it
+    /// replaces: same acceptance, same rejection. The optional local-update gate
+    /// only needs the verdict (audit A23).
+    #[test]
+    fn delivery_validation_agrees_with_the_finalize_functions() {
+        let grid = crate::MotherGrid::generate(4).unwrap();
+        let options = CertifiedRunOptions::default();
+        let geometry = match crate::certify_geometry_with_contract(
+            grid.mesh.clone(),
+            options.angle_contract,
+        ) {
+            crate::CertifiedMeshOutcome::GeometryCertified(geometry) => geometry,
+            other => panic!("mother grid must certify: {other:?}"),
+        };
+        let cells = geometry.primal().active_vertex_slots().count();
+        let evidence = crate::safe_mother_final_evidence(&vec![0; cells], 0, geometry.primal())
+            .expect("identity evidence");
+        assert_eq!(
+            geometry
+                .validate_final_delivery(&evidence, geometry.certificate().voronoi_cells)
+                .is_ok(),
+            crate::finalize_geometry_certified_mother((*geometry).clone(), evidence.clone())
+                .is_ok()
+        );
+        let mut bad = evidence;
+        bad.remap_rows += 1;
+        assert!(
+            geometry
+                .validate_final_delivery(&bad, geometry.certificate().voronoi_cells)
+                .is_err(),
+            "a mis-counted remap must be refused"
+        );
+        assert!(
+            crate::finalize_geometry_certified_mother((*geometry).clone(), bad).is_err(),
+            "the finalize function must refuse the same evidence"
+        );
     }
 }
