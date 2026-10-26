@@ -6,6 +6,16 @@ use earthmesh_mesh::{spherical_triangle_area_unit, MeshState};
 use rayon::prelude::*;
 use std::{collections::BTreeMap, sync::OnceLock};
 
+/// Test-only count of incremental merges that actually recomputed rows; the
+/// construction test uses it to prove the incremental branch ran.
+#[cfg(test)]
+static INCREMENTAL_REMAPS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+
+#[cfg(test)]
+pub(crate) fn incremental_remap_count() -> usize {
+    INCREMENTAL_REMAPS.load(std::sync::atomic::Ordering::Relaxed)
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct RemapRow {
     pub target: usize,
@@ -16,6 +26,10 @@ pub struct RemapRow {
 pub struct ConservativeRemap {
     rows: Vec<RemapRow>,
     coverage_error: f64,
+    /// Each row's pre-normalisation coverage residual, in row order: the
+    /// merged incremental remap of a local update needs the exact maximum over
+    /// the rows it keeps and the rows it recomputes.
+    coverage_errors: Vec<f64>,
     source_fingerprint: Option<u64>,
     target_fingerprint: Option<u64>,
     /// Set when rows cover only some target cells -- those of a built
@@ -79,9 +93,11 @@ impl ConservativeRemap {
 
     #[cfg(test)]
     pub(crate) fn from_rows_for_test(rows: Vec<RemapRow>) -> Self {
+        let coverage_errors = vec![0.0; rows.len()];
         Self {
             rows,
             coverage_error: 0.0,
+            coverage_errors,
             source_fingerprint: None,
             target_fingerprint: None,
             covered_targets: None,
@@ -97,6 +113,7 @@ impl ConservativeRemap {
                 })
                 .collect(),
             coverage_error: 0.0,
+            coverage_errors: vec![0.0; cell_count],
             source_fingerprint: None,
             target_fingerprint: None,
             covered_targets: None,
@@ -125,9 +142,11 @@ impl ConservativeRemap {
             })
             .collect::<Vec<_>>();
         let targets = rows.iter().map(|row| row.target).collect();
+        let coverage_errors = vec![0.0; rows.len()];
         Self {
             rows,
             coverage_error: 0.0,
+            coverage_errors,
             source_fingerprint: Some(fingerprint),
             target_fingerprint: Some(fingerprint),
             covered_targets: Some(PartialCoverage {
@@ -184,9 +203,11 @@ impl ConservativeRemap {
                     .collect(),
             });
         }
+        let coverage_errors = vec![0.0; rows.len()];
         Some(Self {
             rows,
             coverage_error: 0.0,
+            coverage_errors,
             source_fingerprint: Some(mesh_fingerprint(&fine.mesh)),
             target_fingerprint: Some(mesh_fingerprint(&coarse.mesh)),
             covered_targets: None,
@@ -279,10 +300,11 @@ impl ConservativeRemap {
             })
             .collect::<Result<Vec<_>, String>>()?;
         let coverage_error = rows.iter().map(|(_, error)| *error).fold(0.0_f64, f64::max);
-        let rows = rows.into_iter().map(|(row, _)| row).collect();
+        let (rows, coverage_errors): (Vec<_>, Vec<_>) = rows.into_iter().unzip();
         Ok(Self {
             rows,
             coverage_error,
+            coverage_errors,
             source_fingerprint: None,
             target_fingerprint: None,
             covered_targets: None,
@@ -329,6 +351,80 @@ impl ConservativeRemap {
         let mut remap = Self::spherical_overlap(&voronoi_rings(source)?, &voronoi_rings(target)?)?;
         remap.source_fingerprint = Some(mesh_fingerprint(source));
         remap.target_fingerprint = Some(mesh_fingerprint(target));
+        Ok(remap)
+    }
+
+    /// The remap from `source` to `target` where only the target cells
+    /// `changed_cells` names can differ from `base`'s: every other cell's
+    /// polygon is the one `base` was computed against, and the source is the
+    /// same mesh, so those rows (and their coverage residuals) are literally
+    /// the ones a full recomputation would produce. Only the named rows are
+    /// recomputed -- the local-update candidate moves a handful of vertices,
+    /// so this turns the expensive final remap into a few rows (audit A23;
+    /// guide 11.164).
+    pub(crate) fn between_voronoi_meshes_incremental(
+        source: &MeshState,
+        target: &MeshState,
+        base: &ConservativeRemap,
+        changed_cells: &[usize],
+    ) -> Result<Self, String> {
+        let source_fingerprint = mesh_fingerprint(source);
+        if base.source_fingerprint != Some(source_fingerprint) {
+            return Err("incremental remap needs a base remap of the same source mesh".into());
+        }
+        if base.covered_targets.is_some() {
+            return Err("incremental remap needs a base remap covering every target cell".into());
+        }
+        let target_cells = target.active_vertex_slots().count();
+        if base.rows.len() != target_cells || base.coverage_errors.len() != target_cells {
+            return Err(format!(
+                "incremental remap base has {} rows for a target with {target_cells} cells",
+                base.rows.len()
+            ));
+        }
+        if base
+            .rows
+            .iter()
+            .enumerate()
+            .any(|(cell, row)| row.target != cell)
+        {
+            return Err("incremental remap base rows are not in target cell order".into());
+        }
+        let mut remap = base.clone();
+        remap.target_fingerprint = Some(mesh_fingerprint(target));
+        if changed_cells.is_empty() {
+            return Ok(remap);
+        }
+        let source_rings = voronoi_rings(source)?;
+        let target_rings = voronoi_rings(target)?;
+        let mut changed_rings = Vec::with_capacity(changed_cells.len());
+        for &cell in changed_cells {
+            if cell >= target_cells {
+                return Err(format!(
+                    "incremental remap names target cell {cell}, the target has {target_cells}"
+                ));
+            }
+            changed_rings.push(target_rings[cell].clone());
+        }
+        #[cfg(test)]
+        INCREMENTAL_REMAPS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let partial = Self::spherical_overlap_partial(
+            &source_rings,
+            None,
+            &changed_rings,
+            changed_cells.to_vec(),
+            target_cells,
+        )?;
+        for (row, error) in partial.rows.into_iter().zip(partial.coverage_errors) {
+            let target = row.target;
+            remap.rows[target] = row;
+            remap.coverage_errors[target] = error;
+        }
+        remap.coverage_error = remap
+            .coverage_errors
+            .iter()
+            .copied()
+            .fold(0.0_f64, f64::max);
         Ok(remap)
     }
 
@@ -420,6 +516,7 @@ impl ConservativeRemap {
         Self {
             rows,
             coverage_error: self.coverage_error,
+            coverage_errors: self.coverage_errors.clone(),
             source_fingerprint: None,
             target_fingerprint: Some(target_fingerprint),
             covered_targets: Some(PartialCoverage {
@@ -434,6 +531,7 @@ impl ConservativeRemap {
         Self {
             rows: Vec::new(),
             coverage_error: 0.0,
+            coverage_errors: Vec::new(),
             source_fingerprint: None,
             target_fingerprint: None,
             covered_targets: Some(PartialCoverage {
@@ -1295,9 +1393,11 @@ mod tests {
             })
             .collect::<Result<Vec<_>, String>>()?;
         let coverage_error = rows.iter().map(|(_, error)| *error).fold(0.0_f64, f64::max);
+        let (rows, coverage_errors): (Vec<_>, Vec<_>) = rows.into_iter().unzip();
         Ok(ConservativeRemap {
-            rows: rows.into_iter().map(|(row, _)| row).collect(),
+            rows,
             coverage_error,
+            coverage_errors,
             source_fingerprint: None,
             target_fingerprint: None,
             covered_targets: None,
@@ -1651,6 +1751,7 @@ mod tests {
                 },
             ],
             coverage_error: 0.0,
+            coverage_errors: vec![0.0; 4],
             source_fingerprint: Some(7),
             target_fingerprint: Some(7),
             covered_targets: None,
@@ -1678,5 +1779,61 @@ mod tests {
         let small = ConservativeRemap::identity(1).certify_identity(1);
         let large = ConservativeRemap::identity(1).certify_spherical_overlap(1_000, 1);
         assert!(large.closure_tolerance() > small.closure_tolerance());
+    }
+
+    /// Replacing only the rows of the changed cells must reproduce the full
+    /// recomputation bit for bit: same rows, residuals and certificate. The
+    /// changed-cell set is derived here from the rings, independently of the
+    /// construction's derivation.
+    #[test]
+    fn incremental_remap_matches_the_full_recomputation() {
+        let source = MotherGrid::generate(2).unwrap();
+        let control = MotherGrid::generate(2).unwrap();
+        let base = ConservativeRemap::between_voronoi_meshes(&source.mesh, &control.mesh).unwrap();
+        let mut candidate = control.mesh.clone();
+        let sites = candidate.active_vertex_slots().take(4).collect::<Vec<_>>();
+        for (step, site) in sites.into_iter().enumerate() {
+            let point = candidate.vertices()[site];
+            let norm = (point.x * point.x + point.y * point.y + point.z * point.z).sqrt();
+            let angle = 1.0e-3 * (step as f64 + 1.0);
+            let (sin, cos) = angle.sin_cos();
+            candidate.move_vertex(
+                site,
+                earthmesh_mesh::CartesianPoint {
+                    x: (point.x * cos - point.y * sin) / norm,
+                    y: (point.x * sin + point.y * cos) / norm,
+                    z: point.z / norm,
+                },
+            );
+        }
+        let control_rings = voronoi_rings(&control.mesh).unwrap();
+        let candidate_rings = voronoi_rings(&candidate).unwrap();
+        let changed = (0..control_rings.len())
+            .filter(|&cell| control_rings[cell] != candidate_rings[cell])
+            .collect::<Vec<_>>();
+        assert!(!changed.is_empty(), "the fixture must change some cells");
+        assert!(
+            changed.len() < control_rings.len(),
+            "some rows must be reused"
+        );
+        let incremental = ConservativeRemap::between_voronoi_meshes_incremental(
+            &source.mesh,
+            &candidate,
+            &base,
+            &changed,
+        )
+        .expect("incremental remap");
+        let full = ConservativeRemap::between_voronoi_meshes(&source.mesh, &candidate).unwrap();
+        assert_eq!(incremental, full);
+        assert_eq!(
+            incremental.certify_spherical_overlap(
+                source.mesh.vertex_count(),
+                candidate.active_vertex_slots().count()
+            ),
+            full.certify_spherical_overlap(
+                source.mesh.vertex_count(),
+                candidate.active_vertex_slots().count()
+            )
+        );
     }
 }

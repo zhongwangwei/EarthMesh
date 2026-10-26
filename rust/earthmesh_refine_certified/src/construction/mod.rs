@@ -1524,6 +1524,7 @@ fn finalize_mixed_construction(
     angle_contract: crate::AngleContractId,
     recertify_delivery: bool,
     timing_enabled: bool,
+    incremental_remap: Option<(&crate::remap::ConservativeRemap, &[usize])>,
 ) -> io::Result<FinalizedMixedConstruction> {
     let mut phase_started = Instant::now();
     let final_cell_requirements = mixed_final_requirements(
@@ -1539,7 +1540,30 @@ fn finalize_mixed_construction(
         "final_requirement_projection",
         &mut phase_started,
     );
-    let (remap, remap_certificate) = mixed_final_remap(&mesh, initial_mesh, handed_on_remap)?;
+    let (remap, remap_certificate) = if let Some((base, changed_cells)) = incremental_remap {
+        // The candidate moves a handful of vertices: every cell outside
+        // `changed_cells` has the same polygon the control's remap was certified
+        // against, so its row is literally the one a full recomputation would
+        // produce and only the named rows are recomputed (audit A23; guide
+        // 11.164).
+        let remap = crate::remap::ConservativeRemap::between_voronoi_meshes_incremental(
+            initial_mesh,
+            &mesh,
+            base,
+            changed_cells,
+        )
+        .map_err(|error| {
+            io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!("CMRC incremental candidate Voronoi remap failed: {error}"),
+            )
+        })?;
+        let certificate =
+            remap.certify_spherical_overlap(initial_mesh.vertex_count(), mesh.vertex_count());
+        (remap, certificate)
+    } else {
+        mixed_final_remap(&mesh, initial_mesh, handed_on_remap)?
+    };
     log_cmrc_phase(timing_enabled, "voronoi_remap", &mut phase_started);
     let geometry = mixed_final_geometry(mesh, angle_contract)?;
     log_cmrc_phase(
@@ -1590,15 +1614,81 @@ fn finish_mixed_control_from_geometry(
     Ok((geometry, remap, remap_certificate, final_cell_requirements))
 }
 
+/// Whether the accepted candidate's final remap reuses the control's rows for
+/// the cells the update did not touch. `Full` exists so tests can compare the
+/// incremental result with the whole recomputation on identical inputs.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum CandidateRemapPolicy {
+    Incremental,
+    /// Test-only: recompute the candidate remap exactly as before, so a test
+    /// can compare the incremental result with the whole computation.
+    #[cfg(test)]
+    Full,
+}
+
+/// The Voronoi cells whose rings a coordinate-only local update changes: the
+/// cells of every vertex of a triangle incident to a moved vertex. The ring of
+/// a cell is the circumcentres of its incident triangles, so a triangle's
+/// corner -- and nothing else -- changes iff one of its three vertices moved.
+/// `None` when the callback did more than move active vertices; the caller then
+/// keeps the full remap.
+fn local_update_changed_cells(control: &MeshState, candidate: &MeshState) -> Option<Vec<usize>> {
+    if candidate.vertices().len() != control.vertices().len()
+        || !candidate
+            .active_vertex_slots()
+            .eq(control.active_vertex_slots())
+        || candidate.triangles() != control.triangles()
+    {
+        return None;
+    }
+    let mut moved = vec![false; control.vertices().len()];
+    let mut any_moved = false;
+    for site in control.active_vertex_slots() {
+        if candidate.vertices()[site] != control.vertices()[site] {
+            moved[site] = true;
+            any_moved = true;
+        }
+    }
+    if !any_moved {
+        return None;
+    }
+    let cell_count = control.active_vertex_slots().count();
+    let mut cell_of_site = vec![usize::MAX; control.vertices().len()];
+    for (cell, site) in control.active_vertex_slots().enumerate() {
+        cell_of_site[site] = cell;
+    }
+    let mut changed = vec![false; cell_count];
+    for triangle in control.active_triangle_slots() {
+        let sites = control.triangles()[triangle];
+        if sites.iter().any(|&site| moved[site]) {
+            for site in sites {
+                let cell = cell_of_site[site];
+                if cell != usize::MAX {
+                    changed[cell] = true;
+                }
+            }
+        }
+    }
+    Some(
+        changed
+            .iter()
+            .enumerate()
+            .filter_map(|(cell, &changed)| changed.then_some(cell))
+            .collect(),
+    )
+}
+
 /// Reverse coarsening of a global run's mixed requirement: the finest mother
 /// over the whole sphere, coarsened where the demand allows.
-pub fn build_mixed_certified_construction<R>(
+#[allow(clippy::too_many_arguments)]
+fn build_mixed_certified_construction_impl<R>(
     base_nxp: usize,
     chosen_level: usize,
     options: &CertifiedRunOptions,
     raster_requirements: &crate::RasterLevelField,
     budget: usize,
     local_update: Option<&LocalUpdate<'_, R>>,
+    candidate_remap_policy: CandidateRemapPolicy,
 ) -> io::Result<CertifiedConstruction<R>> {
     let timing_enabled = cmrc_timing_enabled();
     let mut phase_started = Instant::now();
@@ -1761,6 +1851,7 @@ pub fn build_mixed_certified_construction<R>(
                 options.angle_contract,
                 false,
                 timing_enabled,
+                None,
             )?,
             None,
         ),
@@ -1818,6 +1909,17 @@ pub fn build_mixed_certified_construction<R>(
                         )?;
                         (control, Some(LocalUpdateDecision::Candidate(report)))
                     } else {
+                        let changed_cells = match candidate_remap_policy {
+                            CandidateRemapPolicy::Incremental => {
+                                local_update_changed_cells(control_geometry.primal(), &candidate)
+                            }
+                            #[cfg(test)]
+                            CandidateRemapPolicy::Full => None,
+                        };
+                        let incremental_remap = handed_on_remap
+                            .as_ref()
+                            .filter(|remap| remap.joins(&initial_mesh, control_geometry.primal()))
+                            .zip(changed_cells.as_deref());
                         match finalize_mixed_construction(
                             candidate,
                             &initial_mesh,
@@ -1829,6 +1931,7 @@ pub fn build_mixed_certified_construction<R>(
                             options.angle_contract,
                             true,
                             timing_enabled,
+                            incremental_remap,
                         ) {
                             Ok(candidate) => {
                                 (candidate, Some(LocalUpdateDecision::Candidate(report)))
@@ -1881,6 +1984,27 @@ pub fn build_mixed_certified_construction<R>(
         local_update,
         region: None,
     })
+}
+
+/// Reverse coarsening of a global run's mixed requirement: the finest mother
+/// over the whole sphere, coarsened where the demand allows.
+pub fn build_mixed_certified_construction<R>(
+    base_nxp: usize,
+    chosen_level: usize,
+    options: &CertifiedRunOptions,
+    raster_requirements: &crate::RasterLevelField,
+    budget: usize,
+    local_update: Option<&LocalUpdate<'_, R>>,
+) -> io::Result<CertifiedConstruction<R>> {
+    build_mixed_certified_construction_impl(
+        base_nxp,
+        chosen_level,
+        options,
+        raster_requirements,
+        budget,
+        local_update,
+        CandidateRemapPolicy::Incremental,
+    )
 }
 
 pub fn certified_outcome_error(outcome: crate::CertifiedMeshOutcome) -> io::Error {
@@ -2178,5 +2302,77 @@ mod tests {
                 assert_eq!(delivery_base_faces_by_address(&domain, n).unwrap(), whole);
             }
         }
+    }
+
+    /// The incremental candidate remap must be indistinguishable from the full
+    /// recomputation: same rows, same certificate, same construction. The
+    /// test-only counter proves the incremental branch actually ran (the base
+    /// remap may be unavailable on some fixtures).
+    #[test]
+    fn incremental_candidate_remap_matches_the_full_recomputation() {
+        // A mixed requirement that actually commits components, so the
+        // scheduler hands on its final remap (the base of the incremental path).
+        let mut levels = vec![0; 32 * 16];
+        levels[8 * 32 + 16] = 2;
+        let raster = crate::RasterLevelField::new(32, 16, levels).unwrap();
+        let options = CertifiedRunOptions {
+            gradation_rings_per_level: 1,
+            search_budget: 1_000,
+            ..CertifiedRunOptions::default()
+        };
+        let update = |mesh: &mut MeshState,
+                      _levels: &[usize],
+                      _pentagons: &[usize; 12],
+                      _contract: crate::AngleContractId| {
+            let sites = mesh.active_vertex_slots().take(6).collect::<Vec<_>>();
+            for (step, site) in sites.into_iter().enumerate() {
+                let point = mesh.vertices()[site];
+                let norm = (point.x * point.x + point.y * point.y + point.z * point.z).sqrt();
+                let angle = 1.0e-3 * (step as f64 + 1.0);
+                let (sin, cos) = angle.sin_cos();
+                mesh.move_vertex(
+                    site,
+                    earthmesh_mesh::CartesianPoint {
+                        x: (point.x * cos - point.y * sin) / norm,
+                        y: (point.x * sin + point.y * cos) / norm,
+                        z: point.z / norm,
+                    },
+                );
+            }
+            Ok(7usize)
+        };
+        let before = crate::remap::incremental_remap_count();
+        let incremental = build_mixed_certified_construction_impl::<usize>(
+            1,
+            2,
+            &options,
+            &raster,
+            400,
+            Some(&update),
+            CandidateRemapPolicy::Incremental,
+        )
+        .expect("incremental candidate construction");
+        assert!(
+            crate::remap::incremental_remap_count() > before,
+            "the incremental remap branch did not run"
+        );
+        let full = build_mixed_certified_construction_impl::<usize>(
+            1,
+            2,
+            &options,
+            &raster,
+            400,
+            Some(&update),
+            CandidateRemapPolicy::Full,
+        )
+        .expect("full candidate construction");
+        assert_eq!(incremental.geometry.primal(), full.geometry.primal());
+        assert_eq!(incremental.remap, full.remap);
+        assert_eq!(incremental.remap_certificate, full.remap_certificate);
+        assert_eq!(
+            incremental.final_cell_requirements,
+            full.final_cell_requirements
+        );
+        assert_eq!(incremental.local_update, full.local_update);
     }
 }

@@ -260,7 +260,8 @@ For questions or support, please contact:
   were reviewed end to end: twenty-three are fixed and the last is optimized
   where it is provably safe (a successful candidate always carries its own
   fresh certification, while the control's final gates run only when it is
-  actually retained; a no-op candidate reuses the control construction), plus a
+  actually retained; a no-op candidate reuses the control construction, and a
+  moved candidate reuses the untouched cells' remap rows), plus a
   parallel-session fix that keeps
   completed elastic work when a later certification rejects a candidate.
   Highlights: the

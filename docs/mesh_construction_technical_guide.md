@@ -6948,4 +6948,28 @@ covered.len())`，为未来区域复用消除“变体写死”的隐患。
 
 验证：`cargo test -p earthmesh_refine_certified --test local_update_transaction` 7 passed ×3 次（成功移动、
 no-op 复用、候选晚期拒绝回退、callback 错误传播等所有分支）；`--lib` 333 passed / 7 ignored；fmt、clippy 通过。
-未覆盖：增量 remap/投影（按改动单元只重算受影响行）、真实多案例成本验收，生产优化器仍未启用。
+未覆盖：真实多案例成本验收，生产优化器仍未启用。
+
+### 11.164 局部更新候选的增量 remap（2026-10-26）
+
+A23 的第二段成本优化。局部更新候选只移动至多十个顶点：候选的 Voronoi 单元里，只有“移动顶点 incident
+triangles 的三个顶点”对应的 cell ring 会变；其余 cell 的 polygon 与源网格完全相同，它们相对母网格的 remap
+行与已认证的 control remap 行逐位相同。因此候选的最终 remap 不必全量重算。
+
+实现：`ConservativeRemap::between_voronoi_meshes_incremental(source, candidate, base, changed_cells)` 只对改动的
+target 单元调用 `spherical_overlap_partial` 重算行，其余行从 base（调度器 handed-on remap，已认证 initial→control）
+复制；`ConservativeRemap` 新增每行 coverage residual 字段，使合并后的 `coverage_error` 精确等于全量重算的
+最大值（而不是近似上界）。改动单元由 `local_update_changed_cells` 推导：三角形环上任何三顶点之一移动都会改变
+该三角形的 circumcentre，因此只移动 active 顶点时“incident triangle 三顶点”覆盖了全部受影响 ring；候选若改了
+结构则返回 `None`，调用方回退全量重算。
+
+正确性证据（两层）：
+- `remap::tests::incremental_remap_matches_the_full_recomputation` 用“ring 是否相同”独立推出 changed 集，
+  断言增量 remap 与全量 `between_voronoi_meshes` **逐位相等**（rows、coverage residuals、certificate）。
+- `construction::tests::incremental_candidate_remap_matches_the_full_recomputation` 用 test-only
+  `CandidateRemapPolicy::Full` 对同一个 update 跑增量与全量两条构造路径，断言 geometry primal、remap、
+  remap certificate、final-cell requirements、local-update decision 全部相等，并用 test-only counter 证明
+  增量分支确实执行（fixture 会真正 commit 组件，调度器 handed-on remap 存在）。
+
+限制：本段只优化候选 final remap；候选的最终单元投影仍是全量（raster→Voronoi 投影的按行增量留作下一步）。
+控制侧惰性门禁（11.163）不变；真实多案例成本未测；生产优化器仍未启用。

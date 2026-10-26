@@ -83,6 +83,12 @@ until the run finishes when reproducer-grade provenance matters.
   evidence, so the delivered mesh is certified exactly as before; what changes
   is that the control is not separately re-certified past its geometry gate
   when it will not be delivered.
+- The candidate's final source projection/remap/geometry/delivery evidence is
+  always computed fresh. Its conservative remap reuses the certified control
+  remap's rows for the cells the update did not move and recomputes only the
+  moved cells' rows; the merge carries every row's coverage residual, so its
+  certification equals a full recomputation, and unit tests assert that
+  equality bit for bit.
   The successful manifest records `experimental_local_update.decision` and
   `full_delivery_recertified`; its nested `geometry_only` report describes only
   the earlier proposal-validation stage.
