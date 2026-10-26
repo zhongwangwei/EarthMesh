@@ -18,10 +18,9 @@ EARTHMESH_CMRC_LOCAL_UPDATE=/absolute/path/proposal.json \
 Use a separate output directory. The control and proposal must describe the same
 mesh configuration. Only refined global `atmos`/`atmosmesh`, `hex`, MPAS output,
 `reverse_coarsening`, `coupled` delivery, the `domain_quality_38_to_82_v1` angle
-contract, and mixed requirements with maximum level 1 or 2 are admitted. The
-variable cannot be combined with `EARTHMESH_CMRC_SELECT`, `EARTHMESH_CMRC_TRIM`,
-or `EARTHMESH_CMRC_CHECKPOINT`. Unset it for ordinary behavior; there is no GUI
-toggle or optimizer dependency.
+contract, and mixed requirements with maximum level 1 or 2 are admitted. Unset
+the variable for ordinary behavior; there is no GUI toggle or optimizer
+dependency.
 
 The JSON request contains:
 
@@ -53,8 +52,14 @@ interface moves, and displacements above 3% of each site's local spacing fail.
   deliberately tests a different tradeoff, not a stricter triangle optimizer.
 - Candidate geometry/quality rejection retains the original control. Malformed
   requests and baseline mismatch fail, rather than silently becoming a quality
-  fallback. Later source/remap/export failure also fails closed; it does not
-  automatically regenerate control.
+  fallback. **An accepted proposal is only adopted if it also passes the final
+  source projection, the freshly computed conservative remap, the geometry
+  certificate and the final delivery certification. If any of those fails the
+  run keeps the fully certified control, records the reason
+  (`experimental_local_update.decision = "control"` in the manifest plus one
+  stderr line) and still exits 0 — exit 0 means the run completed, not that the
+  proposal was delivered.** Only a callback error other than `InvalidData`
+  aborts the run.
 - Accepted coordinates precede the final source projection and freshly computed
   conservative remap. Old certificate metadata is not reused as new evidence.
   The successful manifest records `experimental_local_update.decision` and

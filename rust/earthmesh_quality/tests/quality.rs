@@ -748,3 +748,42 @@ fn two_squares_have_one_rim_and_no_degree_violations() {
     assert_eq!(gate.value, 0.0);
     assert_eq!(gate.level, QualityLevel::Pass);
 }
+
+#[test]
+fn cell_area_cv_gate_is_strict_at_its_configured_threshold() {
+    // The other graded gates document strict `>` comparisons so a value exactly
+    // on its warn threshold stays in the milder tier; this one used `>=` and
+    // disagreed only at the boundary. Two equal-area squares have CV 0, so a
+    // threshold of 0 makes the boundary exactly reachable.
+    let report = compute(&two_square_mesh(), &QualityThresholds::default());
+    let cv = report.geometry.cell_area.cv;
+    assert_eq!(cv, 0.0, "fixture must have identical cell areas");
+    let thresholds = QualityThresholds {
+        area_cv_warn: cv,
+        ..QualityThresholds::default()
+    };
+    let boundary = compute(&two_square_mesh(), &thresholds);
+    let gate = boundary
+        .gates
+        .iter()
+        .find(|gate| gate.metric == "cell_area_cv")
+        .expect("the area-CV gate must be reported");
+    assert_eq!(
+        gate.level,
+        QualityLevel::Pass,
+        "value == threshold is not > threshold"
+    );
+
+    // One step above the threshold still warns.
+    let thresholds = QualityThresholds {
+        area_cv_warn: -1.0,
+        ..QualityThresholds::default()
+    };
+    let warned = compute(&two_square_mesh(), &thresholds);
+    let gate = warned
+        .gates
+        .iter()
+        .find(|gate| gate.metric == "cell_area_cv")
+        .expect("the area-CV gate must be reported");
+    assert_eq!(gate.level, QualityLevel::Warn);
+}

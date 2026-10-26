@@ -1126,6 +1126,15 @@ log("GUI README documents quality view selection");
     "quality report values must render as text",
   );
   log("quality report values render as text");
+
+  check(
+    body.includes('const detail = typeof g.detail === "string" ? g.detail.trim() : "";') &&
+      body.includes("if (detail) row.title = detail;") &&
+      body.includes('if (detail && g.level !== "pass")') &&
+      body.includes("note.textContent = detail;"),
+    "quality gate detail must reach the dashboard, not be dropped by the DTO",
+  );
+  log("quality gate detail reaches the dashboard");
 }
 
 {

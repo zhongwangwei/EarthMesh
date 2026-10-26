@@ -1955,7 +1955,7 @@ fn evaluate(
         "max deviation from regular n-gon angle",
     );
 
-    let cv_level = if geom.cell_area.cv >= th.area_cv_warn {
+    let cv_level = if geom.cell_area.cv > th.area_cv_warn {
         QualityLevel::Warn
     } else {
         QualityLevel::Pass

@@ -5325,7 +5325,17 @@ let expertEdit = { enabled: false, nxp: null, openmp: null, niter: null, niterRe
         level.textContent = (g.level || "?").toUpperCase();
         result.append(value, " ", level);
         row.append(metric, result);
+        const detail = typeof g.detail === "string" ? g.detail.trim() : "";
+        if (detail) row.title = detail;
         card.appendChild(row);
+        // The engine explains which threshold failed; show it under the row for
+        // warn/fail gates instead of dropping it in the round trip.
+        if (detail && g.level !== "pass") {
+          const note = document.createElement("div");
+          note.style.cssText = "font-size:11px;color:var(--muted);padding-left:2px;overflow-wrap:anywhere";
+          note.textContent = detail;
+          card.appendChild(note);
+        }
       });
     }
     const issues = (q.topology || []).filter((t) => t[1] > 0)

@@ -874,7 +874,7 @@ fn runtime_state_records_data_preprocess_source_grid_globals() {
 /// another.
 #[test]
 fn an_unknown_refine_backend_is_refused() {
-    for name in ["redgreen", "method-c", "hex"] {
+    for name in ["redgreen", "method-c", "hex", "harpdv", "harp-dv"] {
         let error = EarthmeshConfig::from_mkgrd_namelist(&backend_namelist(name, "hex"))
             .expect_err("this is not a refinement backend");
         assert!(error.contains("refine_backend"), "{name}: {error}");
@@ -888,8 +888,12 @@ fn the_retained_backends_are_accepted_in_any_case() {
         "method_c",
         "red_green",
         "certified",
+        "stretch",
+        "icon_nest",
         "Red_Green",
         "CERTIFIED",
+        "Stretch",
+        "ICON_NEST",
     ] {
         EarthmeshConfig::from_mkgrd_namelist(&backend_namelist(name, "hex"))
             .unwrap_or_else(|error| panic!("{name} should be a backend: {error}"));

@@ -802,19 +802,6 @@ pub(super) fn refine_with_certified(
             ));
         }
         validate_local_update_mode(config, &options, required_levels)?;
-        if [
-            "EARTHMESH_CMRC_SELECT",
-            "EARTHMESH_CMRC_TRIM",
-            "EARTHMESH_CMRC_CHECKPOINT",
-        ]
-        .iter()
-        .any(|name| std::env::var_os(name).is_some())
-        {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidInput,
-                "local updates cannot be combined with another experimental CMRC mode",
-            ));
-        }
     }
     // The request is read here; the construction applies it to the coarsened
     // mesh before its final gates.

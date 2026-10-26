@@ -10,7 +10,10 @@ use crate::{
     RefineLevelQualitySummary, Stat5, TopologyMetrics,
 };
 
-fn esc(v: &str) -> String {
+/// Escape a string for the hand-rolled JSON writers. `pub(crate)` because the
+/// coupling manifest builds its JSON the same way and must not repeat a partial
+/// escaper (it used to escape only `\` and `"`).
+pub(crate) fn esc(v: &str) -> String {
     let mut out = String::with_capacity(v.len() + 2);
     for c in v.chars() {
         match c {

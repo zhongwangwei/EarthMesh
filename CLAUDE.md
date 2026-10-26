@@ -96,15 +96,19 @@ The convention is **a branch per version**, not just a tag: `v1.0.0`, `v2.0.0`,
 pushing the branch is what builds the wheels. `master` is a separate lineage and
 is not where the v3 line lives.
 
-1. Bump the version everywhere. It appears in seventeen `Cargo.toml` files plus
-   both `Cargo.lock` files (`cargo update -w` in the root and in
-   `gui-tauri/src-tauri`), `gui-tauri/src-tauri/tauri.conf.json`, the README
-   title and changelog, **`pyproject.toml`'s `version` in PEP 440 form**
+1. Bump the version everywhere. It appears in eighteen `Cargo.toml` files -- the
+   seventeen `rust/` crate manifests (including `earthmesh_refine_certified`)
+   plus `gui-tauri/src-tauri` -- and both `Cargo.lock` files (`cargo update -w`
+   in the root and in `gui-tauri/src-tauri`), `gui-tauri/src-tauri/tauri.conf.json`,
+   the README title and changelog, **`pyproject.toml`'s `version` in PEP 440 form**
    (`3.0.0a7` for `3.0.0-alpha7` -- it names the wheel, and alpha5 shipped as
    `3.0.0a4` because it was missed), and **four `--version` assertions in
    `.github/workflows/python-release.yml`** that compare the string verbatim.
    `git grep -l '<old version>'` finds them; check `earthmesh_cli --version`
-   afterwards.
+   afterwards. **The alpha11 bump missed `earthmesh_refine_certified` because it
+   only touched the manifests of crates that already existed at the previous
+   release; derive the file list from the workspace members, not from the last
+   bump's diff.**
 2. Commit, create branch `v<version>`, push it, then push the tag as a separate
    refspec — branch and tag share a name, so `git push origin v<version>` is
    ambiguous and fails:

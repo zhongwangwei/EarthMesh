@@ -12,6 +12,7 @@
 //! It deliberately does **not** rewrite the coupling algorithm or change existing
 //! output formats — `coupling.nc` remains the CLI's existing CoLM writer.
 
+use crate::io::esc;
 use crate::QualityLevel;
 use earthmesh_geometry::safety::{validate_fraction_partition, GeometryQualityFlag};
 
@@ -496,8 +497,8 @@ pub fn to_coupling_manifest_json(products: &[(&str, &str)], verdict: QualityLeve
         let comma = if i + 1 < products.len() { "," } else { "" };
         s.push_str(&format!(
             "    \"{}\": \"{}\"{}\n",
-            role,
-            path.replace('\\', "\\\\").replace('"', "\\\""),
+            esc(role),
+            esc(path),
             comma
         ));
     }
@@ -781,5 +782,17 @@ mod tests {
         let manifest = to_coupling_manifest_json(&[("coupling_csv", "/x/coupling.csv")], r.verdict);
         assert!(manifest.contains("earthmesh_coupling_manifest"));
         assert!(manifest.contains("coupling_csv"));
+    }
+
+    #[test]
+    fn coupling_manifest_escapes_control_characters_in_roles_and_paths() {
+        // File names may contain quotes, backslashes, tabs and newlines; a
+        // partial escaper used to emit them raw and make the JSON unparseable.
+        let manifest = to_coupling_manifest_json(&[("a\"b\nc", "p\\q\"r\ts")], QualityLevel::Pass);
+        assert!(
+            manifest.contains("\"a\\\"b\\nc\": \"p\\\\q\\\"r\\ts\""),
+            "escaped manifest was: {manifest:?}"
+        );
+        assert!(!manifest.contains("a\"b\nc"), "raw role leaked through");
     }
 }

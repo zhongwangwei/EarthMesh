@@ -12,12 +12,14 @@ pub(crate) struct Stat {
     pub(crate) std: f64,
 }
 
-/// One quality gate: a metric value + its pass/warn/fail level.
+/// One quality gate: a metric value, its pass/warn/fail level, and the engine's
+/// human-readable explanation of the threshold that produced it.
 #[derive(Debug, Serialize)]
 pub(crate) struct Gate {
     pub(crate) metric: String,
     pub(crate) value: Option<f64>,
     pub(crate) level: String,
+    pub(crate) detail: String,
 }
 
 /// A mesh-quality summary for the dashboard, parsed from `quality_summary.json`.
@@ -62,6 +64,10 @@ struct GateJson {
     metric: String,
     value: serde_json::Value,
     level: String,
+    /// Optional: older `quality_summary.json` files predate the engine's detail
+    /// string, and those gates must still parse.
+    #[serde(default)]
+    detail: String,
 }
 
 #[derive(Deserialize)]
@@ -165,6 +171,7 @@ pub(crate) fn parse_quality_summary(text: &str, dir: &Path) -> Result<MeshQualit
             metric: gate.metric,
             value,
             level: gate.level,
+            detail: gate.detail,
         });
     }
 

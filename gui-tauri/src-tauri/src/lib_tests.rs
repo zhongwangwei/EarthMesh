@@ -741,7 +741,7 @@ fn parses_quality_summary_fields() {
             "heptagon_cell_count": 3
         },
         "gates": [
-            { "metric": "min_angle_deg", "value": 22.5, "level": "warn" },
+            { "metric": "min_angle_deg", "value": 22.5, "level": "warn", "detail": "adjacent sqrt(area) ratio > 2" },
             { "metric": "aspect_ratio", "value": 2.0, "level": "pass" },
             { "metric": "not_available", "value": null, "level": "pass" }
         ]
@@ -756,7 +756,13 @@ fn parses_quality_summary_fields() {
     assert!(q.compactness.is_none());
     assert_eq!(q.gates.len(), 3);
     assert_eq!(q.gates[0].level, "warn");
+    assert_eq!(q.gates[0].detail, "adjacent sqrt(area) ratio > 2");
+    // The frontend receives the parsed gates serialized back out, so the detail
+    // must survive the DTO hop too, not just deserialization.
+    let wire = serde_json::to_value(&q.gates[0]).unwrap();
+    assert_eq!(wire["detail"], "adjacent sqrt(area) ratio > 2");
     assert_eq!(q.gates[2].value, None);
+    assert!(q.gates[1].detail.is_empty());
     assert!(q.cell_sides.contains(&("triangle".to_string(), 1200)));
     assert!(q.cell_sides.contains(&("pentagon".to_string(), 2)));
     assert!(q.cell_sides.contains(&("hexagon".to_string(), 1188)));
