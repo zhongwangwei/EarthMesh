@@ -58,6 +58,32 @@ fn gui_cancel_before_spawn_rejects_late_child_and_releases_run() {
 }
 
 #[test]
+fn exit_stop_is_a_noop_when_no_mesh_run_is_active() {
+    let _guard = RUN_STATE_TEST_LOCK.lock().expect("lock run-state test");
+    // Quitting Studio with nothing running must be harmless: the exit handler is
+    // best-effort and must report "nothing to stop" without panicking.
+    assert!(!mesh_process::stop_running_child_on_exit());
+    assert_eq!(mesh_process::running_child_pid(), None);
+    // `ExitRequested` and `Exit` both call the stop; the second event must be an
+    // equally silent no-op.
+    assert!(!mesh_process::stop_running_child_on_exit());
+}
+
+#[test]
+fn exit_stop_cancels_a_run_that_has_not_spawned_its_child() {
+    let _guard = RUN_STATE_TEST_LOCK.lock().expect("lock run-state test");
+    let run = mesh_process::begin_run().expect("reserve run");
+    assert!(mesh_process::stop_running_child_on_exit());
+    // The child must not be allowed to start after the exit stop cancelled the run.
+    assert!(mesh_process::record_running_child(run.id(), 101)
+        .unwrap_err()
+        .contains("cancelled"));
+    drop(run);
+    // The cancelled run released its slot, so a later exit event is a no-op.
+    assert!(!mesh_process::stop_running_child_on_exit());
+}
+
+#[test]
 fn gui_run_directories_are_unique_even_under_an_explicit_output_base() {
     let nonce = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)

@@ -564,6 +564,35 @@ fn worst_cell_geojson_preserves_location_and_optional_refinement_level() {
 }
 
 #[test]
+fn worst_cell_geojson_uses_null_geometry_instead_of_a_short_ring() {
+    let mut mesh = two_square_mesh();
+    mesh.vertices[1].x = 0.001;
+    let mut report = compute(&mesh, &QualityThresholds::default());
+    assert!(!report.worst_cells.is_empty());
+    report.worst_cells.truncate(1);
+    assert!(io::to_worst_cells_geojson(&report).contains("\"type\": \"Polygon\""));
+
+    // A malformed cell can leave a ring with fewer than three points; writing
+    // it verbatim used to produce "coordinates": [[]] (or a 3-position ring),
+    // which is invalid RFC 7946 and makes strict readers reject the whole
+    // FeatureCollection.
+    for ring in [
+        Vec::new(),
+        vec![Point::new(1.0, 2.0)],
+        vec![Point::new(1.0, 2.0), Point::new(3.0, 4.0)],
+    ] {
+        report.worst_cells[0].ring = ring;
+        let geojson = io::to_worst_cells_geojson(&report);
+        assert!(geojson.contains("\"geometry\": null"), "{geojson}");
+        assert!(!geojson.contains("\"coordinates\": [[]]"), "{geojson}");
+        assert!(
+            !geojson.contains("\"coordinates\": [[1,2],[1,2]]"),
+            "{geojson}"
+        );
+    }
+}
+
+#[test]
 fn transition_gate_reports_the_configured_physical_scale_threshold() {
     let mut mesh = two_square_mesh();
     mesh.vertices[4].x = 5.0;

@@ -81,7 +81,7 @@ pub use quality_domain::{
     QualityPolicy, QualityZone, SpatialQualityDomain, SpatialQualityDomainSpec,
 };
 mod stage_cache;
-pub use stage_cache::{content_addressed_stage_key, StageCache};
+pub use stage_cache::{content_addressed_stage_key, file_sha256, sha256_hex, StageCache};
 mod validation;
 
 // ----------------------------- tests -----------------------------

@@ -34,7 +34,7 @@ use crate::project_queries::*;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    tauri::Builder::default()
+    let app = tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         .invoke_handler(tauri::generate_handler![
             list_criteria,
@@ -84,8 +84,34 @@ pub fn run() {
             mesh_merit_cells,
             shapefile_boundary_geojson
         ])
-        .run(tauri::generate_context!())
+        .build(tauri::generate_context!())
         .expect("error while running tauri application");
+
+    // Never leave the engine child behind when Studio quits mid-run: a
+    // `std::process::Child` does not kill on drop, and the only other handle is
+    // held by the in-flight command future, which an exiting process never polls.
+    //
+    // Both events are needed, not just one:
+    // - `ExitRequested` fires while the event loop is still running when the last
+    //   window is destroyed (all platforms) and for programmatic
+    //   `AppHandle::exit`, so there is still time to spawn the kill helper;
+    // - macOS Cmd-Q / dock "Quit" terminates through NSApplication, and tao
+    //   0.35.3 only installs `applicationWillTerminate:` (not
+    //   `applicationShouldTerminate:`), which ends in `RunEvent::Exit` without
+    //   ever emitting `ExitRequested`.
+    // `Exit` is also the last callback before `std::process::exit`, so it is the
+    // final point at which the child can be signalled. Studio never calls
+    // `api.prevent_exit()`, so after `ExitRequested` the app always reaches
+    // `Exit`; the stop is idempotent, which makes that second call a harmless
+    // no-op.
+    app.run(|_app_handle, event| {
+        if matches!(
+            event,
+            tauri::RunEvent::ExitRequested { .. } | tauri::RunEvent::Exit
+        ) {
+            stop_running_child_on_exit();
+        }
+    });
 }
 
 #[cfg(test)]

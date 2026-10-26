@@ -119,6 +119,14 @@ pub(crate) fn running_child_pid() -> Option<u32> {
 /// Kills by PID — SIGKILL on unix, `taskkill /F /T` on Windows.
 #[tauri::command]
 pub(crate) fn kill_run() -> Result<bool, String> {
+    kill_active_run()
+}
+
+/// Shared implementation of [`kill_run`] and [`stop_running_child_on_exit`].
+///
+/// `Ok(false)` means there was no run to cancel; `Ok(true)` means the run slot
+/// was found and its child (if any) was signalled.
+fn kill_active_run() -> Result<bool, String> {
     let mut slot = RUN_STATE
         .lock()
         .map_err(|_| "run process state lock poisoned".to_string())?;
@@ -154,4 +162,33 @@ pub(crate) fn kill_run() -> Result<bool, String> {
         *slot = None;
     }
     Ok(true)
+}
+
+/// Best-effort stop of the mesh engine child when Studio is quitting.
+///
+/// The Tauri run loop calls this from `RunEvent::ExitRequested` (the event loop
+/// is still alive there, so the `kill`/`taskkill` helper process can still be
+/// spawned) and again from `RunEvent::Exit`, the last callback before
+/// `std::process::exit`. The second call finds no run and is a no-op.
+///
+/// Never panics: a poisoned state lock or a failed kill is reported on stderr
+/// and otherwise ignored. Returns whether an active run slot was found and a
+/// stop was attempted; `false` means there was nothing to stop.
+pub(crate) fn stop_running_child_on_exit() -> bool {
+    match kill_active_run() {
+        Ok(true) => {
+            eprintln!("[earthmesh-studio] exit: cancelled the active mesh run");
+            true
+        }
+        Ok(false) => {
+            eprintln!("[earthmesh-studio] exit: no active mesh run to stop");
+            false
+        }
+        Err(err) => {
+            eprintln!("[earthmesh-studio] exit: failed to cancel the mesh run: {err}");
+            // A lock or signal failure does not prove the child is gone; report
+            // that a run was present rather than claiming a clean no-op.
+            true
+        }
+    }
 }

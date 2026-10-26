@@ -746,21 +746,30 @@ pub fn to_worst_cells_geojson(r: &MeshQualityReport) -> String {
     s.push_str("  \"features\": [\n");
     for (i, wc) in r.worst_cells.iter().enumerate() {
         let comma = if i + 1 < r.worst_cells.len() { "," } else { "" };
-        let mut coords = String::from("[");
-        // GeoJSON polygons must be closed: repeat the first vertex.
-        let mut ring = wc.ring.clone();
-        if let Some(first) = ring.first().copied() {
-            ring.push(first);
-        }
-        for (k, p) in ring.iter().enumerate() {
-            let c2 = if k + 1 < ring.len() { "," } else { "" };
-            coords.push_str(&format!("[{},{}]{}", num(p.x), num(p.y), c2));
-        }
-        coords.push(']');
+        // A LinearRing needs at least four positions (three corners plus the
+        // closing repeat). A malformed cell can leave a shorter ring in the
+        // report; emit a null geometry instead of an invalid Polygon, which
+        // would make strict GeoJSON readers reject the whole FeatureCollection.
+        let geometry = if wc.ring.len() < 3 {
+            "null".to_string()
+        } else {
+            let mut coords = String::from("[");
+            // GeoJSON polygons must be closed: repeat the first vertex.
+            let mut ring = wc.ring.clone();
+            if let Some(first) = ring.first().copied() {
+                ring.push(first);
+            }
+            for (k, p) in ring.iter().enumerate() {
+                let c2 = if k + 1 < ring.len() { "," } else { "" };
+                coords.push_str(&format!("[{},{}]{}", num(p.x), num(p.y), c2));
+            }
+            coords.push(']');
+            format!("{{\"type\": \"Polygon\", \"coordinates\": [{}]}}", coords)
+        };
         s.push_str(&format!(
-            "    {{\"type\": \"Feature\", \"geometry\": {{\"type\": \"Polygon\", \"coordinates\": [{}]}}, \
+            "    {{\"type\": \"Feature\", \"geometry\": {}, \
              \"properties\": {{\"cell_index\": {}, \"center_lon\": {}, \"center_lat\": {}, \"refine_level\": {}, \"metric\": \"{}\", \"value\": {}, \"level\": \"{}\"}}}}{}\n",
-            coords,
+            geometry,
             wc.cell_index,
             num(wc.centroid.x),
             num(wc.centroid.y),

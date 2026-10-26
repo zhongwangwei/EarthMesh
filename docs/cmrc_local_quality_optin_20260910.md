@@ -37,6 +37,20 @@ All control cell positions, face topology and physical refinement levels are
 bound to the current construction before updates. Repeated/out-of-range IDs,
 non-finite/non-unit coordinates, original pentagon anchor moves, mixed-level
 interface moves, and displacements above 3% of each site's local spacing fail.
+The request schema rejects unknown fields (a misspelled optional key such as
+`"Flips"` is an `InvalidInput` error, not a silent no-op), matching the strict
+project-YAML style.
+
+The delivered manifest's `experimental_local_update.proposal_validation` embeds
+the apply report, which records `provenance` for the accepted update: the
+absolute request path and SHA-256 of the request bytes that were parsed, plus
+each baseline's absolute path and the streaming SHA-256 of its file bytes
+(`request_sha256`, `source_mpas_sha256`, `source_gridfile_sha256`,
+`hash_algorithm: "sha256"`). The hashes bind the delivered coordinates to the
+exact read inputs; they are not a re-hash after publication. The baseline files
+are hashed and then opened by the NetCDF reader as a separate step, so a file
+replaced inside that window is a residual TOCTOU caveat — freeze the inputs
+until the run finishes when reproducer-grade provenance matters.
 
 ## Acceptance and failure semantics
 

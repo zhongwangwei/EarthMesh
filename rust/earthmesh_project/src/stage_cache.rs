@@ -1,11 +1,35 @@
 use std::fs;
 use std::io;
+use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use sha2::{Digest, Sha256};
 
 const CACHE_MAGIC: &[u8] = b"EARTHMESH_STAGE_CACHE_V1\0";
+
+/// Lowercase hex SHA-256 of an in-memory byte slice.
+pub fn sha256_hex(bytes: &[u8]) -> String {
+    hex(&Sha256::digest(bytes))
+}
+
+/// Streaming lowercase hex SHA-256 of a file's bytes.
+///
+/// Used to bind delivered artifacts to the exact inputs a run read, so the
+/// whole file is not loaded into memory (the baseline meshes can be large).
+pub fn file_sha256(path: &Path) -> io::Result<String> {
+    let mut file = fs::File::open(path)?;
+    let mut hash = Sha256::new();
+    let mut buffer = [0_u8; 64 * 1024];
+    loop {
+        let read = file.read(&mut buffer)?;
+        if read == 0 {
+            break;
+        }
+        hash.update(&buffer[..read]);
+    }
+    Ok(hex(&hash.finalize()))
+}
 
 /// Build a stable SHA-256 key from ordered, length-delimited named inputs.
 pub fn content_addressed_stage_key(stage: &str, parts: &[(&str, &[u8])]) -> String {
@@ -134,6 +158,26 @@ mod tests {
         fs::write(&path, b"corrupt").unwrap();
         assert_eq!(cache.load(&key).unwrap(), None);
         assert!(!path.exists());
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn sha256_known_answer_and_file_streaming_match() {
+        // NIST FIPS 180-4 example: SHA-256("abc").
+        let expected = "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad";
+        assert_eq!(sha256_hex(b"abc"), expected);
+
+        let root = temp_root("file_sha256");
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).expect("hash root");
+        let path = root.join("payload.bin");
+        // Larger than one 64 KiB read buffer to exercise the streaming loop.
+        let mut payload = vec![0_u8; 200 * 1024];
+        for (index, byte) in payload.iter_mut().enumerate() {
+            *byte = (index % 251) as u8;
+        }
+        fs::write(&path, &payload).expect("write payload");
+        assert_eq!(file_sha256(&path).expect("hash file"), sha256_hex(&payload));
         let _ = fs::remove_dir_all(root);
     }
 }

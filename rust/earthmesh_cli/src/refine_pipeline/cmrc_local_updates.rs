@@ -4,6 +4,7 @@ use std::path::{Path, PathBuf};
 
 use earthmesh_geometry::Point;
 use earthmesh_mesh::{lonlat_degrees_to_unit_xyz, CartesianPoint, LonLatDegrees, MeshState};
+use earthmesh_project::{file_sha256, sha256_hex};
 use earthmesh_quality::{compute, QualityCell, QualityMeshInput, QualityThresholds};
 use earthmesh_refine_certified::{AngleContractId, Certificate, GeometryCertificateReport};
 use serde::Deserialize;
@@ -18,7 +19,8 @@ const MAX_MOVE_FRACTION: f64 = 0.03;
 const PREFERRED_MIN_DEG: f64 = 40.0;
 const PREFERRED_MAX_DEG: f64 = 80.0;
 
-#[derive(Deserialize)]
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
 struct Request {
     source_mpas: String,
     source_gridfile: String,
@@ -30,7 +32,8 @@ struct Request {
     case: Option<String>,
 }
 
-#[derive(Deserialize)]
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
 struct Update {
     id: usize,
     xyz: [f64; 3],
@@ -68,7 +71,7 @@ pub(super) fn apply(
     request_path: &Path,
     contract: AngleContractId,
 ) -> io::Result<Value> {
-    let request = read_request(request_path)?;
+    let (request, request_sha256) = read_request(request_path)?;
     if !request.flips.is_empty() {
         return Err(invalid_input(format!(
             "local CMRC update delivery accepts no flips; got {}",
@@ -99,8 +102,13 @@ pub(super) fn apply(
     let target = id_for_physical(request.target_cell)?;
     let level_by_slot = level_by_slot(mesh, delivered_levels, &active_vertices);
 
+    // Bind the accepted coordinates to the exact inputs this run read: the
+    // manifest records these hashes, so a later bundle can answer which frozen
+    // control and which proposal produced the delivered mesh (audit A2).
+    let source_mpas_sha256 = hash_input("source_mpas", &request.source_mpas)?;
     let source = read_mpas(&request.source_mpas)?;
     verify_baseline(mesh, &source)?;
+    let source_gridfile_sha256 = hash_input("source_gridfile", &request.source_gridfile)?;
     let gridfile_levels = read_tail_levels(&request.source_gridfile, active_vertices.len())?;
     if gridfile_levels != delivered_levels {
         return Err(invalid_input(
@@ -155,6 +163,15 @@ pub(super) fn apply(
         "updated_count": updates.len(),
         "case": request.case,
         "target_cell": request.target_cell,
+        "provenance": {
+            "hash_algorithm": "sha256",
+            "request_path": request_path.display().to_string(),
+            "request_sha256": request_sha256,
+            "source_mpas": &request.source_mpas,
+            "source_mpas_sha256": source_mpas_sha256,
+            "source_gridfile": &request.source_gridfile,
+            "source_gridfile_sha256": source_gridfile_sha256,
+        },
         "certificates": {"candidate_final": cert_json(&candidate_final)},
         "target": {
             "before": cell_json(before_target),
@@ -170,20 +187,28 @@ pub(super) fn apply(
 }
 
 pub(super) fn input_paths(request_path: &Path) -> io::Result<[PathBuf; 2]> {
-    let request = read_request(request_path)?;
+    let (request, _) = read_request(request_path)?;
     Ok([
         PathBuf::from(request.source_mpas),
         PathBuf::from(request.source_gridfile),
     ])
 }
 
-fn read_request(request_path: &Path) -> io::Result<Request> {
+/// SHA-256 of an input file, wrapped with the field name for the diagnostic.
+fn hash_input(name: &str, path: &str) -> io::Result<String> {
+    file_sha256(Path::new(path))
+        .map_err(|error| invalid_input(format!("hash {name} {path}: {error}")))
+}
+
+fn read_request(request_path: &Path) -> io::Result<(Request, String)> {
     let request_text = std::fs::read_to_string(request_path).map_err(|error| {
         invalid_input(format!(
             "read local update request {}: {error}",
             request_path.display()
         ))
     })?;
+    // Hash the bytes actually deserialized, not a second read of the path.
+    let request_sha256 = sha256_hex(request_text.as_bytes());
     let request: Request = serde_json::from_str(&request_text).map_err(|error| {
         invalid_input(format!(
             "malformed local update request {}: {error}",
@@ -192,7 +217,7 @@ fn read_request(request_path: &Path) -> io::Result<Request> {
     })?;
     require_absolute("source_mpas", &request.source_mpas)?;
     require_absolute("source_gridfile", &request.source_gridfile)?;
-    Ok(request)
+    Ok((request, request_sha256))
 }
 
 fn require_absolute(name: &str, path: &str) -> io::Result<()> {
@@ -1036,6 +1061,69 @@ mod tests {
         let paths = input_paths(&request_path).expect("input paths");
 
         assert_eq!(paths, [source_mpas, source_gridfile]);
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn read_request_hashes_the_bytes_that_were_parsed() {
+        let root = request_root("request_hash");
+        let source_mpas = root.join("source.mpasi.nc");
+        let source_gridfile = root.join("source.grid.nc");
+        std::fs::write(&source_mpas, b"mpas").expect("source mpas");
+        std::fs::write(&source_gridfile, b"grid").expect("source gridfile");
+        let request_path = write_request(&root, &source_mpas, &source_gridfile, "request.json");
+
+        let (request, digest) = read_request(&request_path).expect("request");
+        assert_eq!(request.target_cell, 0);
+        let bytes = std::fs::read(&request_path).expect("request bytes");
+        assert_eq!(digest, sha256_hex(&bytes));
+        assert_eq!(digest.len(), 64);
+
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn local_update_request_rejects_unknown_fields() {
+        let root = request_root("request_unknown_field");
+        let source_mpas = root.join("source.mpasi.nc");
+        let source_gridfile = root.join("source.grid.nc");
+        std::fs::write(&source_mpas, b"mpas").expect("source mpas");
+        std::fs::write(&source_gridfile, b"grid").expect("source gridfile");
+
+        // A misspelled optional key used to be silently ignored (audit A13).
+        let typo_path = root.join("typo.json");
+        std::fs::write(
+            &typo_path,
+            serde_json::to_vec(&serde_json::json!({
+                "source_mpas": source_mpas.display().to_string(),
+                "source_gridfile": source_gridfile.display().to_string(),
+                "target_cell": 0,
+                "updates": [{"id": 0, "xyz": [1.0, 0.0, 0.0]}],
+                "Flips": []
+            }))
+            .expect("typo json"),
+        )
+        .expect("write typo request");
+        let error = read_request(&typo_path).expect_err("unknown request key must be rejected");
+        assert_eq!(error.kind(), io::ErrorKind::InvalidInput);
+        assert!(error.to_string().contains("unknown field"), "{error}");
+
+        let update_typo_path = root.join("update_typo.json");
+        std::fs::write(
+            &update_typo_path,
+            serde_json::to_vec(&serde_json::json!({
+                "source_mpas": source_mpas.display().to_string(),
+                "source_gridfile": source_gridfile.display().to_string(),
+                "target_cell": 0,
+                "updates": [{"id": 0, "xyz": [1.0, 0.0, 0.0], "delta": 0.1}]
+            }))
+            .expect("update typo json"),
+        )
+        .expect("write update typo request");
+        let error =
+            read_request(&update_typo_path).expect_err("unknown update key must be rejected");
+        assert!(error.to_string().contains("unknown field"), "{error}");
+
         let _ = std::fs::remove_dir_all(root);
     }
 
