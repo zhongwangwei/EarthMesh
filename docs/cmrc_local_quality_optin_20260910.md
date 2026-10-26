@@ -76,6 +76,13 @@ until the run finishes when reproducer-grade provenance matters.
   aborts the run.
 - Accepted coordinates precede the final source projection and freshly computed
   conservative remap. Old certificate metadata is not reused as new evidence.
+- The control's own final gates (source projection, fresh remap, delivery check)
+  are materialized lazily: they run only when the candidate is rejected and the
+  control is retained. A successful candidate always carries its own freshly
+  computed projection, conservative remap, geometry certificate and delivery
+  evidence, so the delivered mesh is certified exactly as before; what changes
+  is that the control is not separately re-certified past its geometry gate
+  when it will not be delivered.
   The successful manifest records `experimental_local_update.decision` and
   `full_delivery_recertified`; its nested `geometry_only` report describes only
   the earlier proposal-validation stage.

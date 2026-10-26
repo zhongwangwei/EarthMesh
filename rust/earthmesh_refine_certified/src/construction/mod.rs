@@ -1402,6 +1402,194 @@ fn build_region_certified_construction<R>(
     }
 }
 
+type FinalizedMixedConstruction = (
+    Box<crate::GeometryCertifiedMotherGrid>,
+    crate::remap::ConservativeRemap,
+    crate::remap::RemapCertificate,
+    crate::FinalCellRequirementCertificate,
+);
+
+/// Final-cell requirements for the mixed construction's final mesh: the raster
+/// projection, or the already-certified projection when the final mesh is the
+/// initial mother at the chosen level.
+fn mixed_final_requirements(
+    mesh: &MeshState,
+    initial_mesh: &MeshState,
+    projected: Option<crate::FinalCellRequirementCertificate>,
+    raster_requirements: &crate::RasterLevelField,
+    delivered_levels: &[usize],
+    chosen_level: usize,
+) -> io::Result<crate::FinalCellRequirementCertificate> {
+    if let Some(projected) = projected.filter(|_| {
+        mesh == initial_mesh && delivered_levels.iter().all(|&level| level == chosen_level)
+    }) {
+        return Ok(projected);
+    }
+    let final_levels =
+        crate::TargetLevelField::from_active_voronoi_cells(mesh, delivered_levels.to_vec())
+            .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?;
+    crate::certify_final_cell_requirements_from_raster(raster_requirements, mesh, &final_levels, 1)
+        .map_err(|error| {
+            io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!("CMRC final-cell certification failed: {error}"),
+            )
+        })
+}
+
+/// The conservative remap from the initial mother to `mesh` and its overlap
+/// certificate; the scheduler's last committed remap is reused when it joins
+/// this very pair (guide 11.103).
+fn mixed_final_remap(
+    mesh: &MeshState,
+    initial_mesh: &MeshState,
+    handed_on_remap: Option<crate::remap::ConservativeRemap>,
+) -> io::Result<(
+    crate::remap::ConservativeRemap,
+    crate::remap::RemapCertificate,
+)> {
+    let remap = if initial_mesh == mesh {
+        crate::remap::ConservativeRemap::identity_for_mesh(mesh)
+    } else if let Some(remap) = handed_on_remap.filter(|remap| remap.joins(initial_mesh, mesh)) {
+        remap
+    } else {
+        crate::remap::ConservativeRemap::between_voronoi_meshes(initial_mesh, mesh).map_err(
+            |error| {
+                io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    format!("CMRC mixed Voronoi remap failed: {error}"),
+                )
+            },
+        )?
+    };
+    let certificate =
+        remap.certify_spherical_overlap(initial_mesh.vertex_count(), mesh.vertex_count());
+    Ok((remap, certificate))
+}
+
+/// The geometry certificate for the mixed construction's final mesh.
+fn mixed_final_geometry(
+    mesh: MeshState,
+    angle_contract: crate::AngleContractId,
+) -> io::Result<Box<crate::GeometryCertifiedMotherGrid>> {
+    match crate::certify_geometry_with_contract(mesh, angle_contract) {
+        crate::CertifiedMeshOutcome::GeometryCertified(mesh) => Ok(mesh),
+        other => Err(certified_outcome_error(other)),
+    }
+}
+
+/// The final delivery certification. Optional updates must pass it before they
+/// replace the control; the dispatch mirrors the delivery caller (audit A24).
+fn mixed_final_delivery_check(
+    geometry: &crate::GeometryCertifiedMotherGrid,
+    final_cell_requirements: &crate::FinalCellRequirementCertificate,
+    remap_certificate: &crate::remap::RemapCertificate,
+    remap: &crate::remap::ConservativeRemap,
+) -> io::Result<()> {
+    let evidence = crate::FinalCertificationEvidence::from_final_cells(
+        final_cell_requirements,
+        remap_certificate.clone(),
+    )
+    .map_err(|error| {
+        io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!("CMRC final evidence failed: {error}"),
+        )
+    })?;
+    let delivery = match remap.covered_targets() {
+        None => crate::finalize_geometry_certified_mother(geometry.clone(), evidence),
+        Some(covered) => crate::finalize_region_geometry(geometry.clone(), evidence, covered.len()),
+    };
+    delivery.map_err(|error| {
+        io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!("CMRC final delivery certification failed: {error}"),
+        )
+    })?;
+    Ok(())
+}
+
+/// The final gates of the mixed construction, in the alpha11 order: projection,
+/// remap and its certificate, geometry certificate, and (for update runs) the
+/// delivery check.
+#[allow(clippy::too_many_arguments)]
+fn finalize_mixed_construction(
+    mesh: MeshState,
+    initial_mesh: &MeshState,
+    projected: Option<crate::FinalCellRequirementCertificate>,
+    handed_on_remap: Option<crate::remap::ConservativeRemap>,
+    delivered_levels: &[usize],
+    chosen_level: usize,
+    raster_requirements: &crate::RasterLevelField,
+    angle_contract: crate::AngleContractId,
+    recertify_delivery: bool,
+    timing_enabled: bool,
+) -> io::Result<FinalizedMixedConstruction> {
+    let mut phase_started = Instant::now();
+    let final_cell_requirements = mixed_final_requirements(
+        &mesh,
+        initial_mesh,
+        projected,
+        raster_requirements,
+        delivered_levels,
+        chosen_level,
+    )?;
+    log_cmrc_phase(
+        timing_enabled,
+        "final_requirement_projection",
+        &mut phase_started,
+    );
+    let (remap, remap_certificate) = mixed_final_remap(&mesh, initial_mesh, handed_on_remap)?;
+    log_cmrc_phase(timing_enabled, "voronoi_remap", &mut phase_started);
+    let geometry = mixed_final_geometry(mesh, angle_contract)?;
+    log_cmrc_phase(
+        timing_enabled,
+        "final_geometry_certificate",
+        &mut phase_started,
+    );
+    if recertify_delivery {
+        mixed_final_delivery_check(
+            &geometry,
+            &final_cell_requirements,
+            &remap_certificate,
+            &remap,
+        )?;
+    }
+    Ok((geometry, remap, remap_certificate, final_cell_requirements))
+}
+
+/// Finish the control construction after its geometry certificate has already
+/// run: the update path needs the certified primal before the callback and the
+/// control's remaining gates for the fallback.
+#[allow(clippy::too_many_arguments)]
+fn finish_mixed_control_from_geometry(
+    geometry: Box<crate::GeometryCertifiedMotherGrid>,
+    initial_mesh: &MeshState,
+    projected: Option<crate::FinalCellRequirementCertificate>,
+    handed_on_remap: Option<crate::remap::ConservativeRemap>,
+    delivered_levels: &[usize],
+    chosen_level: usize,
+    raster_requirements: &crate::RasterLevelField,
+) -> io::Result<FinalizedMixedConstruction> {
+    let final_cell_requirements = mixed_final_requirements(
+        geometry.primal(),
+        initial_mesh,
+        projected,
+        raster_requirements,
+        delivered_levels,
+        chosen_level,
+    )?;
+    let (remap, remap_certificate) =
+        mixed_final_remap(geometry.primal(), initial_mesh, handed_on_remap)?;
+    mixed_final_delivery_check(
+        &geometry,
+        &final_cell_requirements,
+        &remap_certificate,
+        &remap,
+    )?;
+    Ok((geometry, remap, remap_certificate, final_cell_requirements))
+}
+
 /// Reverse coarsening of a global run's mixed requirement: the finest mother
 /// over the whole sphere, coarsened where the demand allows.
 pub fn build_mixed_certified_construction<R>(
@@ -1560,142 +1748,109 @@ pub fn build_mixed_certified_construction<R>(
         .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?
         .levels()
         .to_vec();
-    let mut finalize =
-        |mesh: MeshState,
-         projected: Option<crate::FinalCellRequirementCertificate>,
-         handed_on_remap: Option<crate::remap::ConservativeRemap>| {
-            let final_cell_requirements = if let Some(projected) = projected.filter(|_| {
-                mesh == initial_mesh && delivered_levels.iter().all(|&level| level == chosen_level)
-            }) {
-                projected
-            } else {
-                let final_levels = crate::TargetLevelField::from_active_voronoi_cells(
-                    &mesh,
-                    delivered_levels.clone(),
-                )
-                .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?;
-                crate::certify_final_cell_requirements_from_raster(
-                    raster_requirements,
-                    &mesh,
-                    &final_levels,
-                    1,
-                )
-                .map_err(|error| {
-                    io::Error::new(
-                        io::ErrorKind::InvalidData,
-                        format!("CMRC final-cell certification failed: {error}"),
-                    )
-                })?
-            };
-            log_cmrc_phase(
+    let (certified, local_update) = match local_update {
+        None => (
+            finalize_mixed_construction(
+                mesh,
+                &initial_mesh,
+                Some(projected),
+                handed_on_remap,
+                &delivered_levels,
+                chosen_level,
+                raster_requirements,
+                options.angle_contract,
+                false,
                 timing_enabled,
-                "final_requirement_projection",
-                &mut phase_started,
-            );
-            let remap = if initial_mesh == mesh {
-                crate::remap::ConservativeRemap::identity_for_mesh(&mesh)
-            } else if let Some(remap) =
-                handed_on_remap.filter(|remap| remap.joins(&initial_mesh, &mesh))
-            {
-                // The last committed component certified this very remap; computing it
-                // again cost as much as all the components' own (guide 11.103).
-                remap
-            } else {
-                crate::remap::ConservativeRemap::between_voronoi_meshes(&initial_mesh, &mesh)
-                    .map_err(|error| {
-                        io::Error::new(
-                            io::ErrorKind::InvalidData,
-                            format!("CMRC mixed Voronoi remap failed: {error}"),
-                        )
-                    })?
-            };
-            log_cmrc_phase(timing_enabled, "voronoi_remap", &mut phase_started);
-            let remap_certificate =
-                remap.certify_spherical_overlap(initial_mesh.vertex_count(), mesh.vertex_count());
-            let geometry = match crate::certify_geometry_with_contract(mesh, options.angle_contract)
-            {
-                crate::CertifiedMeshOutcome::GeometryCertified(mesh) => mesh,
-                other => return Err(certified_outcome_error(other)),
-            };
+            )?,
+            None,
+        ),
+        Some(apply) => {
+            // The callback mutates the control's certified primal, so that
+            // certificate has to run first. The control's remaining final gates
+            // are fallback evidence only: they are materialized lazily when the
+            // candidate is rejected, while a delivered candidate always carries
+            // its own freshly computed projection, remap, geometry and delivery
+            // certificates (audit A23, guide 11.163).
+            let mut phase_started = Instant::now();
+            let control_geometry = mixed_final_geometry(mesh, options.angle_contract)?;
             log_cmrc_phase(
                 timing_enabled,
                 "final_geometry_certificate",
                 &mut phase_started,
             );
-            // Optional updates must pass the delivery gates before replacing control.
-            if local_update.is_some() {
-                let evidence = crate::FinalCertificationEvidence::from_final_cells(
-                    &final_cell_requirements,
-                    remap_certificate.clone(),
-                )
-                .map_err(|error| {
-                    io::Error::new(
-                        io::ErrorKind::InvalidData,
-                        format!("CMRC final evidence failed: {error}"),
-                    )
-                })?;
-                // Dispatch exactly like the delivery caller: a built region
-                // certifies only the remap rows its coverage names, a global
-                // run the whole mesh (audit A24). The mixed construction is
-                // global today, so the region arm is future-proofing.
-                let delivery = match remap.covered_targets() {
-                    None => {
-                        crate::finalize_geometry_certified_mother((*geometry).clone(), evidence)
-                    }
-                    Some(covered) => crate::finalize_region_geometry(
-                        (*geometry).clone(),
-                        evidence,
-                        covered.len(),
-                    ),
-                };
-                delivery.map_err(|error| {
-                    io::Error::new(
-                        io::ErrorKind::InvalidData,
-                        format!("CMRC final delivery certification failed: {error}"),
-                    )
-                })?;
-            }
-            Ok((geometry, remap, remap_certificate, final_cell_requirements))
-        };
-    let control = finalize(mesh, Some(projected), handed_on_remap)?;
-    let (certified, local_update) = match local_update {
-        None => (control, None),
-        Some(apply) => {
-            let mut candidate = control.0.primal().clone();
+            let mut candidate = control_geometry.primal().clone();
             match apply(
                 &mut candidate,
                 &delivered_levels,
                 &pentagons,
                 options.angle_contract,
             ) {
+                Err(error) if error.kind() == io::ErrorKind::InvalidData => {
+                    let control = finish_mixed_control_from_geometry(
+                        control_geometry,
+                        &initial_mesh,
+                        Some(projected),
+                        handed_on_remap,
+                        &delivered_levels,
+                        chosen_level,
+                        raster_requirements,
+                    )?;
+                    (
+                        control,
+                        Some(LocalUpdateDecision::Control(error.to_string())),
+                    )
+                }
+                Err(error) => return Err(error),
                 Ok(report) => {
                     // A position-preserving callback leaves the candidate
-                    // bit-identical to the control's certified primal. The
-                    // control construction already is the fully certified
-                    // result for this exact mesh (projection, fresh remap,
-                    // remap certificate, delivery check), so re-finalizing it
-                    // would repeat the most expensive gates on an unchanged
-                    // mesh (audit A23; guide 11.155 measured the double pass
-                    // as +39.8% elapsed on a real run).
-                    if candidate == *control.0.primal() {
+                    // bit-identical to the control's certified primal, so the
+                    // control itself is the fully certified construction for
+                    // this exact mesh; finalizing it once is enough (audit A23).
+                    if candidate == *control_geometry.primal() {
+                        let control = finish_mixed_control_from_geometry(
+                            control_geometry,
+                            &initial_mesh,
+                            Some(projected),
+                            handed_on_remap,
+                            &delivered_levels,
+                            chosen_level,
+                            raster_requirements,
+                        )?;
                         (control, Some(LocalUpdateDecision::Candidate(report)))
                     } else {
-                        match finalize(candidate, None, None) {
+                        match finalize_mixed_construction(
+                            candidate,
+                            &initial_mesh,
+                            None,
+                            None,
+                            &delivered_levels,
+                            chosen_level,
+                            raster_requirements,
+                            options.angle_contract,
+                            true,
+                            timing_enabled,
+                        ) {
                             Ok(candidate) => {
                                 (candidate, Some(LocalUpdateDecision::Candidate(report)))
                             }
-                            Err(error) => (
-                                control,
-                                Some(LocalUpdateDecision::Control(error.to_string())),
-                            ),
+                            Err(error) => {
+                                let control = finish_mixed_control_from_geometry(
+                                    control_geometry,
+                                    &initial_mesh,
+                                    Some(projected),
+                                    handed_on_remap,
+                                    &delivered_levels,
+                                    chosen_level,
+                                    raster_requirements,
+                                )?;
+                                (
+                                    control,
+                                    Some(LocalUpdateDecision::Control(error.to_string())),
+                                )
+                            }
                         }
                     }
                 }
-                Err(error) if error.kind() == io::ErrorKind::InvalidData => (
-                    control,
-                    Some(LocalUpdateDecision::Control(error.to_string())),
-                ),
-                Err(error) => return Err(error),
             }
         }
     };

@@ -258,9 +258,10 @@ For questions or support, please contact:
 
 - 2026.10.26 - v3.0.0-alpha12 is the deep-audit release. Twenty-four findings
   were reviewed end to end: twenty-three are fixed and the last is optimized
-  where it is provably safe (a no-op accepted candidate reuses the control's
-  fully certified construction; a moved candidate still pays its fresh
-  certification pass by design), plus a parallel-session fix that keeps
+  where it is provably safe (a successful candidate always carries its own
+  fresh certification, while the control's final gates run only when it is
+  actually retained; a no-op candidate reuses the control construction), plus a
+  parallel-session fix that keeps
   completed elastic work when a later certification rejects a candidate.
   Highlights: the
   Studio dashboard receives quality-gate details; CMRC local-update manifests

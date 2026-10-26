@@ -6925,22 +6925,27 @@ Window移动认证未成立；下一步验证同一候选的实际Window→Whole
 该测试直接验证候选认证失败隔离，不代表私有四点注入已通过外层调度器重试验收。
 验证记录与未覆盖范围见[后期失败计数修复](cmrc_late_failure_accounting_20261026.md)。
 
-### 11.163 局部更新 no-op 复用与最终交付变体分派（2026-10-26）
+### 11.163 局部更新复用 control 已有工作与最终交付变体分派（2026-10-26）
 
-审计 A23/A24 的两项小改动，不改变已认证语义。
+审计 A23/A24 的 CMRC 优化，不改变任何被交付网格的认证强度。
 
-A23（成本，仅 opt-in 局部更新路径）：候选回调返回后先与 control 的认证 primal 做逐位 `MeshState` 比较。
-位置保持型 no-op 候选与 control 完全相同，此时 control 的最终单元投影、fresh remap、remap 证书和交付校验
-已经是对同一张网格的完整认证，直接复用该构造，跳过第二次 finalize。移动候选不受影响：它们仍必须重新做
-源需求投影、保守重映射、几何证书和交付校验（“先完整认证 control、候选再 fresh 认证”是采纳安全要求，
-guide 11.153/11.155 记录的 +39.8% 耗时主要来自这部分，本次不改变）。因此本项只消除 no-op 的重复认证，
-不代表移动候选成本已优化，也未启用生产优化器。
+A23（成本，仅 opt-in 局部更新路径）：候选回调需要 control 的已认证 primal，所以先只做 control 的几何证书；
+control 的其余最终门禁（最终单元投影、fresh remap、remap 证书、交付校验）只在候选被拒绝时惰性物化。
+成功交付的候选始终携带自己 fresh 计算的源需求投影、保守重映射、几何证书与交付证据——采纳安全要求不变，
+被交付网格的认证强度不变。改变的是：成功候选路径不再为“不会被交付的 control”重复支付这些门禁。
+位置保持型 no-op 候选与 control 认证 primal 逐位相同，此时只做一次 control 的完整认证并复用。
+guide 11.153/11.155 记录的 +39.8% 耗时中，control 侧重复认证的部分由此消除；移动候选自身的 fresh 二次认证
+仍然保留，真实多案例成本验收尚未进行，生产优化器仍未启用。
+
+语义边界：control 的最终门禁失败不再出现在“候选成功”的运行里——候选自身已完整认证，交付物是 candidate；
+回退路径仍会先补齐 control 的完整认证再采用（control 门禁错误照旧传播）。callback 的非 `InvalidData` 错误
+仍立即中止。若未来要把该实验接入生产，需要多案例成本与门禁语义验收。
 
 A24（防御一致性）：内置最终交付校验原先固定调用 `finalize_geometry_certified_mother`。混合构造当前只服务
 整球，所有可达 remap 的 `covered_targets()` 都是 `None`，所以现网行为不变；现在改为与 CLI delivery caller
 相同的 `remap.covered_targets()` 分派——`None` 走 global 变体，`Some(covered)` 走 `finalize_region_geometry(…,
 covered.len())`，为未来区域复用消除“变体写死”的隐患。
 
-验证：`cargo test -p earthmesh_refine_certified --test local_update_transaction` 7 passed
-（`accepted_noop_retains_candidate_report` 现走复用分支且结果与 control 完全一致）；`--lib` 333 passed / 7 ignored；
-fmt、clippy 通过。未覆盖：移动候选二次认证的并行化/增量 remap、真实多案例成本验收，生产优化器仍未启用。
+验证：`cargo test -p earthmesh_refine_certified --test local_update_transaction` 7 passed ×3 次（成功移动、
+no-op 复用、候选晚期拒绝回退、callback 错误传播等所有分支）；`--lib` 333 passed / 7 ignored；fmt、clippy 通过。
+未覆盖：增量 remap/投影（按改动单元只重算受影响行）、真实多案例成本验收，生产优化器仍未启用。
