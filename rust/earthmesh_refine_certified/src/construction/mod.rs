@@ -48,6 +48,27 @@ pub fn log_cmrc_phase(enabled: bool, phase: &str, started: &mut Instant) {
     }
 }
 
+/// Refuse a local update on a construction path that never applies it.
+///
+/// `build_certified_construction` forwards the callback only to the mixed
+/// reverse-coarsening construction (guide 11.153). Every other mode used to
+/// return a valid mesh with the callback silently dropped -- the guide §11.1
+/// "valid output, request not honoured" class. The CLI validates the mode
+/// before it gets here; the public API must not.
+fn refuse_local_update<R>(local_update: Option<&LocalUpdate<'_, R>>, path: &str) -> io::Result<()> {
+    if local_update.is_some() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!(
+                "the experimental CMRC local update is only applied by the mixed \
+                 reverse-coarsening construction; {path} would ignore it -- unset \
+                 EARTHMESH_CMRC_LOCAL_UPDATE or use a mixed requirement"
+            ),
+        ));
+    }
+    Ok(())
+}
+
 pub struct CertifiedConstruction<R = ()> {
     pub geometry: Box<crate::GeometryCertifiedMotherGrid>,
     pub pentagons: [usize; 12],
@@ -252,6 +273,10 @@ pub fn build_certified_construction<R>(
     };
     match moved {
         Some(Ok(adapted)) => {
+            refuse_local_update(
+                local_update,
+                "a moved mother (stretched or equidistributed)",
+            )?;
             for reason in &adapted.rejected {
                 eprintln!("earthmesh_cli: CMRC moved mother: set aside {reason}");
             }
@@ -335,6 +360,7 @@ pub fn build_certified_construction<R>(
             | CertifiedMode::StretchedMother
             | CertifiedMode::EquidistributedMother
     ) {
+        refuse_local_update(local_update, "a safe mother")?;
         let subdivision = certified_subdivision(base_nxp, chosen_level)?;
         let mut config = crate::CertifiedConfig::mother_only(subdivision);
         config.angle_contract = options.angle_contract;
@@ -449,6 +475,7 @@ pub fn build_certified_construction<R>(
             remap: _,
             remap_certificate: _,
         } => {
+            refuse_local_update(local_update, "the complete-hierarchy rebuild")?;
             let remap = crate::remap::ConservativeRemap::between_voronoi_meshes(
                 &initial_mesh,
                 mesh.primal(),
@@ -495,6 +522,7 @@ pub fn build_certified_construction<R>(
             snapshot_unchanged,
             mesh,
         } => {
+            refuse_local_update(local_update, "the retained fine mother")?;
             if !snapshot_unchanged {
                 return Err(io::Error::new(
                     io::ErrorKind::InvalidData,

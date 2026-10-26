@@ -223,3 +223,57 @@ fn accepted_motion_has_fresh_remap_and_complete_delivery_evidence() {
     .unwrap();
     finalize_geometry_certified_mother((*actual.geometry).clone(), evidence).unwrap();
 }
+
+#[test]
+fn non_mixed_constructions_refuse_an_ignored_local_update() {
+    use earthmesh_refine_certified::construction::{build_certified_construction, CertifiedMode};
+
+    let raster = RasterLevelField::new(8, 4, vec![1; 32]).unwrap();
+    let update = |_: &mut MeshState, _: &[usize], _: &[usize; 12], _| Ok(7usize);
+
+    // Safe mother: the callback would never be invoked (audit A6). The CLI
+    // validates the mode, but the public API used to return Ok with the
+    // update silently dropped.
+    let options = CertifiedRunOptions {
+        mode: CertifiedMode::SafeMotherOnly,
+        ..CertifiedRunOptions::default()
+    };
+    let error = build_certified_construction(
+        1,
+        1,
+        &options,
+        &raster,
+        100,
+        Some(&update),
+        false,
+        None,
+        None,
+    )
+    .err()
+    .expect("a safe-mother construction must refuse a local update");
+    assert_eq!(error.kind(), io::ErrorKind::InvalidInput);
+    assert!(error.to_string().contains("local update"), "{error}");
+
+    // Reverse coarsening without a mixed requirement takes the complete
+    // hierarchy rebuild branch, which also never applies the callback.
+    let options = CertifiedRunOptions {
+        mode: CertifiedMode::ReverseCoarsening,
+        maximum_level: 8,
+        ..CertifiedRunOptions::default()
+    };
+    let error = build_certified_construction(
+        1,
+        1,
+        &options,
+        &raster,
+        10_000_000,
+        Some(&update),
+        false,
+        None,
+        None,
+    )
+    .err()
+    .expect("a non-mixed reverse-coarsening construction must refuse a local update");
+    assert_eq!(error.kind(), io::ErrorKind::InvalidInput);
+    assert!(error.to_string().contains("local update"), "{error}");
+}
