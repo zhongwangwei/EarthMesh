@@ -1242,12 +1242,17 @@ pub fn compute_with_options(
                 }
 
                 if supports_local_shape_metrics(&ring) {
-                    geom.local_shape_metric_sample_count += 1;
                     // Eta/NSR use Euclidean Heron/inradius/circumradius formulas.
                     // Keep those two compatibility metrics local and explicitly
                     // exclude coarse cells rather than claiming a unique spherical
                     // extension that the literature does not define.
+                    //
+                    // Count a sample only when one is actually produced: a hex
+                    // (or other non-triangular) cell has short enough edges to
+                    // be "eligible" but can never contribute eta/NSR, and used
+                    // to inflate the sample count while both metrics stayed null.
                     if let Some((eta, nsr)) = triangle_quality(&km_lens) {
+                        geom.local_shape_metric_sample_count += 1;
                         triangle_etas.push(eta);
                         triangle_nsrs.push(nsr);
                         group.triangle_etas.push(eta);

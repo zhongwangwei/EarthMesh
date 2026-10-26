@@ -339,12 +339,70 @@ fn margin_rows(level: u32, deepest: u32, options: &IconNestOptions) -> u32 {
     child_rows.div_ceil(2)
 }
 
+/// The deepest nest level covering each triangle of the global grid.
+///
+/// Domain ids are 1-based and a parent is always emitted before its children,
+/// so a chain of `parent_triangle` indexes maps every nest triangle back to
+/// exactly one global triangle (guide 11.86).
+fn covered_depths(domains: &[IconNestDomain]) -> Vec<u32> {
+    let Some(global) = domains.first() else {
+        return Vec::new();
+    };
+    let mut depths = vec![0u32; global.triangles.len()];
+    let mut roots: Vec<Vec<usize>> = vec![(0..global.triangles.len()).collect()];
+    for domain in &domains[1..] {
+        let parent_roots = domain
+            .parent
+            .checked_sub(1)
+            .and_then(|index| roots.get(index))
+            .cloned()
+            .unwrap_or_default();
+        let own = domain
+            .parent_triangle
+            .iter()
+            .filter_map(|&triangle| parent_roots.get(triangle).copied())
+            .collect::<Vec<_>>();
+        for &root in &own {
+            depths[root] = depths[root].max(domain.depth);
+        }
+        roots.push(own);
+    }
+    depths
+}
+
+/// The first global triangle whose demand the planned nests do not reach.
+///
+/// `Ok(domains)` alone does not prove coverage: a demand inside a parent's
+/// boundary indexing band is dropped by the planner, and a closed-form
+/// `margin_rows` can leave too little interior for the actual geometry.
+/// Returns `(global_triangle, deepest_covered_level, demanded_level)`.
+fn first_uncovered_demand(
+    domains: &[IconNestDomain],
+    target: impl Fn(P) -> u32,
+) -> Option<(usize, u32, u32)> {
+    let global = domains.first()?;
+    let covered = covered_depths(domains);
+    global
+        .triangles
+        .iter()
+        .enumerate()
+        .find_map(|(triangle, &tri)| {
+            let wanted = triangle_target(&global.points, tri, &target);
+            let reached = covered[triangle];
+            (wanted > reached).then_some((triangle, reached, wanted))
+        })
+}
+
 /// Plan the global domain plus nests serving `target` (a level per point).
 ///
 /// Nest level `k` holds every triangle of its parent whose target is at
 /// least `k`, widened by `margin_rows`, kept outside the parent's own
 /// boundary indexing depth, with holes and pinched vertices closed. Each
 /// vertex-connected part is its own sibling nest.
+///
+/// The plan is refused if any demanded triangle is not covered by a nest deep
+/// enough for its target: a valid file that silently serves less than the
+/// demand is the failure mode this postcondition exists to prevent.
 pub fn plan_icon_nests(
     points: Vec<P>,
     triangles: Vec<[usize; 3]>,
@@ -423,6 +481,15 @@ pub fn plan_icon_nests(
             }
         }
         domains.extend(next);
+    }
+    if let Some((triangle, reached, wanted)) = first_uncovered_demand(&domains, &target) {
+        return Err(format!(
+            "ICON nesting leaves demanded triangles uncovered: global triangle {triangle} asks \
+             level {wanted} but the planned nests only reach level {reached}; the demand lies \
+             inside a parent boundary band (boundary_depth {}) or the margins are too small for \
+             this geometry -- move or merge the demand, or lower the requested level",
+            options.boundary_depth
+        ));
     }
     Ok(domains)
 }

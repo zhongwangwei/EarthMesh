@@ -265,3 +265,36 @@ fn margins_leave_room_for_every_deeper_level() {
     assert_eq!(margin_rows(1, 2, &options), 11);
     assert_eq!(margin_rows(1, 3, &options), 13);
 }
+
+#[test]
+fn planned_nests_cover_every_demand_level() {
+    let options = IconNestOptions::default();
+    let (points, triangles) = icosphere(5);
+    let centre = lonlat(115.0, 23.0);
+    let target = circles(vec![(centre, 6.0, 1), (centre, 2.0, 2)]);
+    let domains = plan_icon_nests(points, triangles, &target, &options).unwrap();
+    assert!(
+        first_uncovered_demand(&domains, &target).is_none(),
+        "a normal two-level plan must serve its whole demand"
+    );
+}
+
+#[test]
+fn uncovered_demand_is_detected_from_the_planned_domains() {
+    let options = IconNestOptions::default();
+    let (points, triangles) = icosphere(5);
+    let centre = lonlat(115.0, 23.0);
+    let target = circles(vec![(centre, 6.0, 1), (centre, 2.0, 2)]);
+    let domains = plan_icon_nests(points, triangles, &target, &options).unwrap();
+    assert_eq!(domains.len(), 3, "global + level-1 nest + level-2 nest");
+
+    // Dropping the level-2 nest leaves its demand unserved; the postcondition
+    // must see that from the returned domains alone, not from planner internals.
+    let mut two_levels = domains;
+    two_levels.truncate(2);
+    let (triangle, reached, wanted) =
+        first_uncovered_demand(&two_levels, &target).expect("uncovered demand must be reported");
+    assert_eq!(reached, 1);
+    assert_eq!(wanted, 2);
+    assert!(triangle < two_levels[0].triangles.len());
+}

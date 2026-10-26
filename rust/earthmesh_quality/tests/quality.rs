@@ -191,8 +191,22 @@ fn quality_reports_reflex_angle_for_local_concave_polygon() {
     );
 
     assert!(r.geometry.max_angle_deg > 180.0);
-    assert_eq!(r.geometry.local_shape_metric_sample_count, 1);
+    // A pentagon has no eta/NSR samples: "eligible" no longer means "sampled",
+    // so the count stays 0 while the cell is not excluded either (audit A10).
+    assert_eq!(r.geometry.local_shape_metric_sample_count, 0);
     assert_eq!(r.geometry.local_shape_metric_excluded_cell_count, 0);
+    assert!(r.geometry.triangle_eta.min.is_nan());
+}
+
+#[test]
+fn hex_view_cells_do_not_inflate_the_triangle_shape_sample_count() {
+    // Two short-edge quads are eligible for local shape metrics but can never
+    // produce eta/NSR; the count must match the samples that exist (none).
+    let r = compute(&two_square_mesh(), &QualityThresholds::default());
+    assert_eq!(r.geometry.local_shape_metric_sample_count, 0);
+    assert_eq!(r.geometry.local_shape_metric_excluded_cell_count, 0);
+    assert!(r.geometry.triangle_eta.min.is_nan());
+    assert!(r.geometry.triangle_nsr.min.is_nan());
 }
 
 #[test]

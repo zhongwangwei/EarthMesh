@@ -1501,6 +1501,8 @@ log("discrete mask is existing-project-only");
   const used = [
     ...new Set(
       [...html.matchAll(/data-i18n="([^"]+)"/g)].map((m) => m[1]).concat(
+        [...html.matchAll(/data-i18n-title="([^"]+)"/g)].map((m) => m[1]),
+        [...html.matchAll(/data-i18n-aria-label="([^"]+)"/g)].map((m) => m[1]),
         [...html.matchAll(/L\("([^"]+)"\)/g)].map((m) => m[1]),
       ),
     ),
@@ -1509,6 +1511,26 @@ log("discrete mask is existing-project-only");
   const missing = used.filter((k) => !keys.includes(k));
   check(!stale.length && !missing.length, "i18n key drift", { stale, missing });
   log(`checked ${keys.length} i18n keys`);
+
+  // Tooltips and accessible names need their own data-i18n-* keys: a plain
+  // title/aria-label literal never changes with the language toggle (audit A11).
+  const attributeRefs = [...html.matchAll(/data-i18n-(?:title|aria-label)="([^"]+)"/g)].map(
+    (m) => m[1],
+  );
+  check(attributeRefs.length >= 6, "attribute i18n coverage", { attributeRefs });
+  const hardcoded = [
+    'aria-label="Case name"',
+    'title="Case name — follows the project name"',
+    'title="theme"',
+    'title="copy log"',
+    'title="clear log"',
+    'title="close"',
+  ];
+  const leftovers = hardcoded.filter((literal) => html.includes(literal));
+  check(!leftovers.length, "unlocalized tooltip/accessible-name literals remain", {
+    leftovers,
+  });
+  log(`checked ${attributeRefs.length} attribute i18n keys`);
 }
 
 // Execute the actual delivery renderer, including legacy/failed paths, without a DOM dependency.

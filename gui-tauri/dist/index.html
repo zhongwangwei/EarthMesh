@@ -292,7 +292,7 @@ body.map-window #mapStage{height:100%!important;min-height:0!important;border-ra
   <header class="top">
     <div class="brand"><span class="glyph">◈</span><span>EarthMesh <span style="color:var(--muted);font-weight:500">Studio</span></span></div>
     <div class="sep"></div>
-    <input class="proj-name" value="earthmesh-project" readonly aria-label="Case name" title="Case name — follows the project name">
+    <input class="proj-name" value="earthmesh-project" readonly data-i18n-aria-label="ui.caseName" data-i18n-title="ui.caseNameHint">
     <div class="grow"></div>
     <div class="seg" id="langSeg">
       <button class="on" data-lang="zh" data-i18n="lang.zh">中文</button>
@@ -302,7 +302,7 @@ body.map-window #mapStage{height:100%!important;min-height:0!important;border-ra
       <button class="on" data-mode="normal" data-i18n="mode.normal">常规</button>
       <button data-mode="expert" data-i18n="mode.expert">专家</button>
     </div>
-    <button class="icon-btn" id="themeBtn" title="theme">🌙</button>
+    <button class="icon-btn" id="themeBtn" data-i18n-title="ui.theme">🌙</button>
   </header>
 
   <!-- LEFT RAIL -->
@@ -353,8 +353,8 @@ body.map-window #mapStage{height:100%!important;min-height:0!important;border-ra
             <span class="rdot" id="logDot" style="flex:none"></span>
             <span id="logStatus" style="flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:11px;color:var(--muted)"></span>
             <div style="display:flex;gap:8px;flex:none">
-              <button type="button" class="btn-ghost" id="copyLogBtn" title="copy log" style="padding:2px 9px;font-size:11px">⧉ <span data-i18n="log.copy">Copy</span></button>
-              <button type="button" class="btn-ghost" id="clearLogBtn" title="clear log" style="padding:2px 9px;font-size:11px">🗑 <span data-i18n="log.clear">Clear</span></button>
+              <button type="button" class="btn-ghost" id="copyLogBtn" data-i18n-title="ui.copyLog" style="padding:2px 9px;font-size:11px">⧉ <span data-i18n="log.copy">Copy</span></button>
+              <button type="button" class="btn-ghost" id="clearLogBtn" data-i18n-title="ui.clearLog" style="padding:2px 9px;font-size:11px">🗑 <span data-i18n="log.clear">Clear</span></button>
             </div>
           </div>
         </div>
@@ -441,7 +441,7 @@ body.map-window #mapStage{height:100%!important;min-height:0!important;border-ra
         </details>
         <span class="map-coordinate" id="mapCoordinate">—</span>
       </div>
-      <button class="icon-btn" id="mapModalCloseBtn" title="close">✕</button>
+      <button class="icon-btn" id="mapModalCloseBtn" data-i18n-title="ui.close">✕</button>
     </div>
     <div id="mapStage">
       <div id="mapsvgModal"></div>
@@ -456,6 +456,8 @@ const I = {
  "lang.zh":["中文","中文"],"lang.en":["EN","EN"],
  "mode.normal":["Normal","常规"],"mode.expert":["Expert","专家"],
  "rail.workflow":["Workflow","工作流"],
+ "ui.caseName":["Case name","案例名称"],"ui.caseNameHint":["Case name — follows the project name","案例名称 · 跟随项目名"],
+ "ui.theme":["theme","主题"],"ui.copyLog":["copy log","复制日志"],"ui.clearLog":["clear log","清空日志"],"ui.close":["close","关闭"],
  "est.cells":["Estimated cells","预计单元数"],
  "live.map":["Map","地图"],"live.quality":["Quality","质量"],"live.log":["Log","日志"],
  "map.hint":["Domain on a satellite base (no borders)","计算域 · 卫星底图(无边界线)"],"map.scroll":["scroll to zoom · drag to pan","滚轮缩放 · 拖动平移"],
@@ -479,6 +481,10 @@ let lang=PAGE_PARAMS.get("lang")==="en"?0:1; // 0=en, 1=zh — default to Chines
 function L(k){return (I[k]||["",""])[lang];}
 function applyI18n(){
   document.querySelectorAll("[data-i18n]").forEach(e=>{const k=e.getAttribute("data-i18n");if(I[k])e.textContent=L(k);});
+  // Attribute text (tooltips, accessible names) is localized the same way as
+  // visible text; plain title/aria-label literals would never change with lang.
+  document.querySelectorAll("[data-i18n-title]").forEach(e=>{const k=e.getAttribute("data-i18n-title");if(I[k])e.title=L(k);});
+  document.querySelectorAll("[data-i18n-aria-label]").forEach(e=>{const k=e.getAttribute("data-i18n-aria-label");if(I[k])e.setAttribute("aria-label",L(k));});
   document.querySelectorAll(".ol-cell-inspector-head>span").forEach((e)=>{e.textContent=lang?"单元详情":"Cell details";});
   document.querySelectorAll(".ol-cell-inspector-close").forEach((e)=>{e.setAttribute("aria-label",lang?"关闭单元详情":"Close cell details");});
   [existingOlMap("mapsvg"),existingOlMap("mapsvgModal")].forEach((map)=>{if(map){ syncOlProjectionOption(map); syncOlMeasureBadge(map); }});
