@@ -17,58 +17,85 @@ const MAX_PNG_BYTES: usize = 64 * 1024 * 1024;
 /// `None` if the user cancels.
 #[tauri::command]
 pub(crate) async fn pick_data_file(app: AppHandle) -> Option<String> {
-    app.dialog()
-        .file()
-        .add_filter(
-            "Geospatial data",
-            &[
-                "nc", "nc4", "nml", "tif", "tiff", "grib", "grib2", "shp", "bin", "dat", "txt",
-                "csv",
-            ],
-        )
-        .blocking_pick_file()
-        .map(|p| p.to_string())
+    // The `blocking_*` dialog helpers only wait on a channel while the dialog
+    // itself runs on the main thread; park a blocking-pool thread for that wait
+    // instead of a tokio async worker (audit A20).
+    tauri::async_runtime::spawn_blocking(move || {
+        app.dialog()
+            .file()
+            .add_filter(
+                "Geospatial data",
+                &[
+                    "nc", "nc4", "nml", "tif", "tiff", "grib", "grib2", "shp", "bin", "dat", "txt",
+                    "csv",
+                ],
+            )
+            .blocking_pick_file()
+            .map(|p| p.to_string())
+    })
+    .await
+    .ok()
+    .flatten()
 }
 
 /// Native folder picker for tiled data-layer sources (MERIT-Hydro, CaMa).
 #[tauri::command]
 pub(crate) async fn pick_data_folder(app: AppHandle) -> Option<String> {
-    app.dialog()
-        .file()
-        .blocking_pick_folder()
-        .map(|p| p.to_string())
+    // Same channel-wait as `pick_data_file`: keep it off the async workers
+    // (audit A20).
+    tauri::async_runtime::spawn_blocking(move || {
+        app.dialog()
+            .file()
+            .blocking_pick_folder()
+            .map(|p| p.to_string())
+    })
+    .await
+    .ok()
+    .flatten()
 }
 
 /// Open a project file (YAML or JSON), validate it, return canonical YAML.
 #[tauri::command]
 pub(crate) async fn open_project(app: AppHandle) -> Result<Option<OpenedProject>, String> {
-    let picked = app
-        .dialog()
-        .file()
-        .add_filter("EarthMesh project", &["yaml", "yml", "json"])
-        .blocking_pick_file();
-    let Some(fp) = picked else {
-        return Ok(None);
-    };
-    let path = fp.to_string();
-    read_project(path).map(Some)
+    // Native dialog plus file read both block; run them on the blocking pool so
+    // the async IPC runtime stays free (audit A20). Cancel/error semantics are
+    // unchanged.
+    tauri::async_runtime::spawn_blocking(move || -> Result<Option<OpenedProject>, String> {
+        let picked = app
+            .dialog()
+            .file()
+            .add_filter("EarthMesh project", &["yaml", "yml", "json"])
+            .blocking_pick_file();
+        let Some(fp) = picked else {
+            return Ok(None);
+        };
+        read_project(fp.to_string()).map(Some)
+    })
+    .await
+    .map_err(|err| format!("open project task failed: {err}"))?
 }
 
 /// Save a validated project YAML via a native dialog. Returns the chosen path.
 #[tauri::command]
 pub(crate) async fn save_project(app: AppHandle, yaml: String) -> Result<Option<String>, String> {
-    let yaml = saved_project_yaml(&yaml)?;
-    let picked = app
-        .dialog()
-        .file()
-        .add_filter("EarthMesh project", &["yaml", "yml"])
-        .blocking_save_file();
-    let Some(fp) = picked else {
-        return Ok(None);
-    };
-    let path = fp.to_string();
-    fs::write(&path, yaml.as_bytes()).map_err(|e| format!("write {path}: {e}"))?;
-    Ok(Some(path))
+    // Validation (filesystem path resolution), the dialog wait and the file write
+    // are blocking; move them to the blocking pool (audit A20).
+    tauri::async_runtime::spawn_blocking(move || -> Result<Option<String>, String> {
+        let yaml = saved_project_yaml(&yaml)?;
+        let picked = app
+            .dialog()
+            .file()
+            .add_filter("EarthMesh project", &["yaml", "yml"])
+            .blocking_save_file();
+        let Some(fp) = picked else {
+            return Ok(None);
+        };
+        let path = fp.to_string();
+        fs::write(&path, yaml.as_bytes()).map_err(|e| format!("write {path}: {e}"))?;
+        Ok(Some(path))
+    })
+    .await
+    .map_err(|err| format!("save project task failed: {err}"))?
 }
 
 pub(crate) fn saved_project_yaml(yaml: &str) -> Result<String, String> {

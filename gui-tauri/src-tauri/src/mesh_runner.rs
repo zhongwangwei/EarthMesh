@@ -10,7 +10,7 @@ use std::process::{Child, Command, Stdio};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread::{self, JoinHandle};
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use std::{env, fs};
 
 use earthmesh_project::{read_shapefile_polygon_rings, DomainConfig, ProjectConfig, RegionShape};
@@ -23,6 +23,12 @@ use crate::engine::resolve_mkgrd;
 use crate::mesh_process::{begin_run, clear_running_child, record_running_child, RunId, RunLease};
 
 static RUN_DIR_SEQUENCE: AtomicU64 = AtomicU64::new(0);
+
+/// How often the owner of a run polls its child while waiting for it to exit.
+/// The wait must happen under the child mutex (audit A19), which is why it is a
+/// poll loop instead of a blocking `Child::wait`; 10 ms is invisible next to a
+/// mesh run and keeps Stop latency imperceptible.
+const CHILD_WAIT_POLL_MILLIS: u64 = 10;
 
 #[derive(Debug, Default)]
 pub(crate) struct ProjectOutput {
@@ -38,10 +44,19 @@ pub(crate) async fn run_project(
     yaml: String,
     outdir: Option<String>,
 ) -> Result<RunResult, String> {
-    let run = begin_run()?;
-    let mut cfg = ProjectConfig::from_yaml(&yaml).map_err(|e| format!("invalid project: {e}"))?;
-    absolutize_gui_project_inputs(&mut cfg)?;
-    run_project_cli(app, cfg, outdir, &run).await
+    // A run is entirely blocking work: staging files, spawning and reaping the
+    // engine CLI, then reading its outputs (audit A20). Park it on the blocking
+    // pool instead of a tokio async worker so other async IPC keeps flowing for
+    // the minutes-to-hours a mesh run takes.
+    tauri::async_runtime::spawn_blocking(move || {
+        let run = begin_run()?;
+        let mut cfg =
+            ProjectConfig::from_yaml(&yaml).map_err(|e| format!("invalid project: {e}"))?;
+        absolutize_gui_project_inputs(&mut cfg)?;
+        run_project_cli(app, cfg, outdir, &run)
+    })
+    .await
+    .map_err(|err| format!("mesh run task failed: {err}"))?
 }
 
 /// What CMRC's merge criteria alone ask of the project's domain, before a run
@@ -49,7 +64,16 @@ pub(crate) async fn run_project(
 /// the criterion mesh per level, in seconds rather than a run.
 #[tauri::command]
 pub(crate) async fn preview_certified_merge(yaml: String) -> Result<serde_json::Value, String> {
-    let mut cfg = ProjectConfig::from_yaml(&yaml).map_err(|e| format!("invalid project: {e}"))?;
+    // Engine discovery runs the CLI's `--version`/`--studio-protocol` probes and
+    // the preview shells out to `--cmrc-merge-preview`; both block (audit A20),
+    // so the whole sequence runs on the blocking pool.
+    tauri::async_runtime::spawn_blocking(move || preview_certified_merge_blocking(&yaml))
+        .await
+        .map_err(|err| format!("merge preview task failed: {err}"))?
+}
+
+fn preview_certified_merge_blocking(yaml: &str) -> Result<serde_json::Value, String> {
+    let mut cfg = ProjectConfig::from_yaml(yaml).map_err(|e| format!("invalid project: {e}"))?;
     absolutize_gui_project_inputs(&mut cfg)?;
     let bin = resolve_mkgrd()?;
     let staging = env::temp_dir().join(format!(
@@ -94,7 +118,8 @@ pub(crate) fn project_cli_command(bin: &str, project_path: &Path, run_dir: &Path
     command
 }
 
-async fn run_project_cli(
+/// Blocking body of [`run_project`]: only ever called from the blocking pool.
+fn run_project_cli(
     app: AppHandle,
     cfg: ProjectConfig,
     outdir: Option<String>,
@@ -477,9 +502,15 @@ where
         let _ = child.wait();
         "child stderr pipe was not available".to_string()
     })?;
-    if let Err(error) = record_running_child(run_id, pid) {
-        let _ = child.kill();
-        let _ = child.wait();
+    // Own the child behind the mutex that `kill_active_run` also takes, so the
+    // kill signals this exact process and never a PID recycled after reaping
+    // (audit A19).
+    let child = Arc::new(Mutex::new(child));
+    if let Err(error) = record_running_child(run_id, Arc::clone(&child)) {
+        if let Ok(mut handle) = child.lock() {
+            let _ = handle.kill();
+            let _ = handle.wait();
+        }
         return Err(error);
     }
 
@@ -505,11 +536,42 @@ where
         })
     });
 
-    let wait_result = child.wait();
-    clear_running_child(run_id, pid);
+    // Poll `try_wait` under the child mutex instead of blocking in `wait()`:
+    // reaping and `kill_run`'s signal must be mutually exclusive (audit A19), and
+    // they are serialized by this mutex. The mutex is held while the child is
+    // reaped and deregistered, so a concurrent kill either signals before the
+    // reap or observes the cached exit status; the PID cannot be recycled in
+    // between. The state lock is taken after the child mutex here and in
+    // `kill_active_run` the order is state lock first but released before the
+    // child mutex, so there is no lock-order inversion.
+    let wait_result: Result<std::process::ExitStatus, String> = loop {
+        let mut handle = match child.lock() {
+            Ok(handle) => handle,
+            Err(_) => {
+                // The handle cannot be reaped through a poisoned mutex; free the
+                // run slot instead of wedging it forever. Unreachable in practice:
+                // nothing in this module panics while holding the child lock.
+                clear_running_child(run_id, pid);
+                break Err("mesh child process state lock poisoned".to_string());
+            }
+        };
+        match handle.try_wait() {
+            Ok(Some(status)) => {
+                clear_running_child(run_id, pid);
+                break Ok(status);
+            }
+            Ok(None) => {}
+            Err(error) => {
+                clear_running_child(run_id, pid);
+                break Err(format!("wait failed: {error}"));
+            }
+        }
+        drop(handle);
+        thread::sleep(Duration::from_millis(CHILD_WAIT_POLL_MILLIS));
+    };
     let stdout_result = join_output_thread(stdout_thread, "stdout");
     let stderr_result = join_output_thread(stderr_thread, "stderr");
-    let status = wait_result.map_err(|error| format!("wait failed: {error}"))?;
+    let status = wait_result?;
     stdout_result?;
     stderr_result?;
 

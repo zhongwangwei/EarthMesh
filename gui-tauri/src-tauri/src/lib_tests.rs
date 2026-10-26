@@ -12,9 +12,40 @@ use std::{
     process::{self, Child, Command, Stdio},
     sync::{Arc, Mutex},
     thread,
+    time::{Duration, Instant},
 };
 
 static RUN_STATE_TEST_LOCK: Mutex<()> = Mutex::new(());
+
+/// A real child that stays alive until the test kills and reaps it. The run-state
+/// tests use a genuine `Child` instead of a fake PID so the kill path is
+/// exercised against an owned handle (audit A19: signal identity, never a PID).
+fn spawn_test_sleeper() -> Child {
+    #[cfg(unix)]
+    let mut command = {
+        let mut command = Command::new("sh");
+        command.arg("-c").arg("exec sleep 60");
+        command
+    };
+    #[cfg(windows)]
+    let mut command = {
+        let mut command = Command::new("cmd");
+        command.arg("/C").arg("ping -n 60 127.0.0.1 >NUL");
+        command
+    };
+    command
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("spawn synthetic sleeper")
+}
+
+/// Kill and reap a test child that was not released through `RUN_STATE`.
+fn reap_test_child(child: &Arc<Mutex<Child>>) -> process::ExitStatus {
+    let mut child = child.lock().expect("lock test child");
+    let _ = child.kill();
+    child.wait().expect("reap test child")
+}
 
 #[test]
 fn gui_run_state_rejects_overlap_and_ignores_stale_pid_cleanup() {
@@ -24,24 +55,38 @@ fn gui_run_state_rejects_overlap_and_ignores_stale_pid_cleanup() {
     assert!(mesh_process::begin_run()
         .unwrap_err()
         .contains("already starting"));
-    mesh_process::record_running_child(first_id, 101).expect("record first child");
-    assert!(mesh_process::begin_run().unwrap_err().contains("PID 101"));
-    assert!(mesh_process::record_running_child(first_id, 102)
+    let first_child = Arc::new(Mutex::new(spawn_test_sleeper()));
+    let first_pid = first_child.lock().expect("lock first child").id();
+    mesh_process::record_running_child(first_id, Arc::clone(&first_child))
+        .expect("record first child");
+    assert!(mesh_process::begin_run()
         .unwrap_err()
-        .contains("PID 101"));
-    mesh_process::clear_running_child(first_id, 999);
-    assert_eq!(mesh_process::running_child_pid(), Some(101));
-    mesh_process::clear_running_child(first_id, 101);
+        .contains(&format!("PID {first_pid}")));
+    let rejected_child = Arc::new(Mutex::new(spawn_test_sleeper()));
+    assert!(
+        mesh_process::record_running_child(first_id, Arc::clone(&rejected_child))
+            .unwrap_err()
+            .contains(&format!("PID {first_pid}"))
+    );
+    mesh_process::clear_running_child(first_id, first_pid.wrapping_add(1));
+    assert_eq!(mesh_process::running_child_pid(), Some(first_pid));
+    mesh_process::clear_running_child(first_id, first_pid);
     drop(first);
 
     let second = mesh_process::begin_run().expect("reserve second run");
     let second_id = second.id();
-    mesh_process::record_running_child(second_id, 202).expect("record second child");
-    mesh_process::clear_running_child(first_id, 101);
-    assert_eq!(mesh_process::running_child_pid(), Some(202));
-    mesh_process::clear_running_child(second_id, 202);
+    let second_child = Arc::new(Mutex::new(spawn_test_sleeper()));
+    let second_pid = second_child.lock().expect("lock second child").id();
+    mesh_process::record_running_child(second_id, Arc::clone(&second_child))
+        .expect("record second child");
+    mesh_process::clear_running_child(first_id, first_pid);
+    assert_eq!(mesh_process::running_child_pid(), Some(second_pid));
+    mesh_process::clear_running_child(second_id, second_pid);
     drop(second);
     assert_eq!(mesh_process::running_child_pid(), None);
+    reap_test_child(&first_child);
+    reap_test_child(&rejected_child);
+    reap_test_child(&second_child);
 }
 
 #[test]
@@ -49,9 +94,13 @@ fn gui_cancel_before_spawn_rejects_late_child_and_releases_run() {
     let _guard = RUN_STATE_TEST_LOCK.lock().expect("lock run-state test");
     let run = mesh_process::begin_run().expect("reserve run");
     assert!(mesh_process::kill_run().expect("cancel pending run"));
-    assert!(mesh_process::record_running_child(run.id(), 101)
-        .unwrap_err()
-        .contains("cancelled"));
+    let child = Arc::new(Mutex::new(spawn_test_sleeper()));
+    assert!(
+        mesh_process::record_running_child(run.id(), Arc::clone(&child))
+            .unwrap_err()
+            .contains("cancelled")
+    );
+    reap_test_child(&child);
     drop(run);
     let next = mesh_process::begin_run().expect("start after cancellation");
     drop(next);
@@ -75,12 +124,51 @@ fn exit_stop_cancels_a_run_that_has_not_spawned_its_child() {
     let run = mesh_process::begin_run().expect("reserve run");
     assert!(mesh_process::stop_running_child_on_exit());
     // The child must not be allowed to start after the exit stop cancelled the run.
-    assert!(mesh_process::record_running_child(run.id(), 101)
-        .unwrap_err()
-        .contains("cancelled"));
+    let child = Arc::new(Mutex::new(spawn_test_sleeper()));
+    assert!(
+        mesh_process::record_running_child(run.id(), Arc::clone(&child))
+            .unwrap_err()
+            .contains("cancelled")
+    );
+    reap_test_child(&child);
     drop(run);
     // The cancelled run released its slot, so a later exit event is a no-op.
     assert!(!mesh_process::stop_running_child_on_exit());
+}
+
+#[test]
+fn kill_run_terminates_a_live_engine_child() {
+    let _guard = RUN_STATE_TEST_LOCK.lock().expect("lock run-state test");
+    let run = mesh_process::begin_run().expect("reserve run");
+    let child = Arc::new(Mutex::new(spawn_test_sleeper()));
+    let pid = child.lock().expect("lock child").id();
+    mesh_process::record_running_child(run.id(), Arc::clone(&child)).expect("record child");
+    assert!(mesh_process::kill_run().expect("kill a live run"));
+    // The owner reaps through the same handle the wait loop uses.
+    assert!(
+        !reap_test_child(&child).success(),
+        "a killed child must not report a successful exit"
+    );
+    mesh_process::clear_running_child(run.id(), pid);
+    drop(run);
+    assert_eq!(mesh_process::running_child_pid(), None);
+    assert!(!mesh_process::kill_run().expect("no run after release"));
+}
+
+#[test]
+fn kill_run_after_capture_finishes_is_a_clean_noop() {
+    let _guard = RUN_STATE_TEST_LOCK.lock().expect("lock run-state test");
+    let run = mesh_process::begin_run().expect("reserve run");
+    let child = spawn_test_sidecar("done", "", 0);
+    let (ok, code, _) = mesh_runner::capture_mesh_child_with_logger(child, run.id(), |_| {})
+        .expect("capture finished sidecar");
+    assert!(ok);
+    assert_eq!(code, Some(0));
+    // The wait loop deregistered the reaped child, so the slot holds no handle.
+    assert_eq!(mesh_process::running_child_pid(), None);
+    drop(run);
+    // With the run released there is nothing left for Stop/exit to cancel.
+    assert!(!mesh_process::kill_run().expect("no run to cancel"));
 }
 
 #[test]
@@ -731,19 +819,34 @@ fn saved_project_reopens_with_the_same_inputs_as_run() {
 }
 
 #[test]
-fn failed_kill_keeps_the_running_pid_for_a_retry() {
+fn kill_run_of_a_reaped_handle_is_ok_and_never_signals_a_recycled_pid() {
     let _guard = RUN_STATE_TEST_LOCK.lock().expect("lock run-state test");
     let run = mesh_process::begin_run().expect("reserve run");
-    // Keep the fake PID positive after conversion to Linux pid_t. u32::MAX
-    // becomes -1 there, and `kill(-1, SIGKILL)` targets every permitted process.
-    let impossible_pid = i32::MAX as u32;
-    mesh_process::record_running_child(run.id(), impossible_pid).expect("record impossible PID");
-    assert!(mesh_process::kill_run().is_err());
-    assert_eq!(mesh_process::running_child_pid(), Some(impossible_pid));
-    mesh_process::clear_running_child(run.id(), impossible_pid);
-    assert!(mesh_process::record_running_child(run.id(), 101)
-        .unwrap_err()
-        .contains("cancelled"));
+    let child = Arc::new(Mutex::new(spawn_test_sidecar("", "", 0)));
+    let pid = child.lock().expect("lock child").id();
+    mesh_process::record_running_child(run.id(), Arc::clone(&child)).expect("record child");
+    // Reap exactly as the wait loop does — while holding the child mutex — but
+    // skip deregistration, reproducing the instant before `clear_running_child`
+    // when the PID has just been released for reuse. SIGKILL to a recycled PID
+    // here is the audit A19 race.
+    {
+        let mut handle = child.lock().expect("lock child");
+        assert!(handle.wait().expect("reap child").success());
+    }
+    // The kill path checks the handle's exit state before signalling, so it must
+    // report success without touching the now-free PID.
+    assert!(mesh_process::kill_run().expect("kill of a reaped child is a no-op"));
+    assert_eq!(mesh_process::running_child_pid(), Some(pid));
+    mesh_process::clear_running_child(run.id(), pid);
+    assert_eq!(mesh_process::running_child_pid(), None);
+    // A cancelled run still refuses a late child, as before.
+    let late_child = Arc::new(Mutex::new(spawn_test_sleeper()));
+    assert!(
+        mesh_process::record_running_child(run.id(), Arc::clone(&late_child))
+            .unwrap_err()
+            .contains("cancelled")
+    );
+    reap_test_child(&late_child);
     drop(run);
 }
 
@@ -951,6 +1054,53 @@ fn sidecar_nonzero_exit_is_a_completed_failed_result() {
     let logs = logs.lock().unwrap();
     assert!(logs.iter().any(|line| line == "[stderr] synthetic failure"));
     assert!(logs.iter().any(|line| line == "— exited with 7"));
+}
+
+/// The production Stop-button flow: a run is owned by a waiting thread while the
+/// GUI kills it. The wait loop must reap the killed child and clear the slot, and
+/// the kill must go through the stored handle (audit A19).
+#[cfg(unix)]
+#[test]
+fn kill_run_during_capture_terminates_the_engine_child() {
+    let _guard = RUN_STATE_TEST_LOCK.lock().expect("lock run-state test");
+    let run = mesh_process::begin_run().expect("reserve run");
+    let logs = Arc::new(Mutex::new(Vec::new()));
+    let captured = Arc::clone(&logs);
+    let child = spawn_test_sleeper();
+    let capture = thread::spawn(move || {
+        mesh_runner::capture_mesh_child_with_logger(child, run.id(), move |line| {
+            captured.lock().expect("lock logs").push(line)
+        })
+    });
+
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while mesh_process::running_child_pid().is_none() {
+        assert!(
+            Instant::now() < deadline,
+            "sleeper child was not registered before the deadline"
+        );
+        thread::sleep(Duration::from_millis(5));
+    }
+    assert!(mesh_process::kill_run().expect("kill a running child"));
+
+    let (ok, code, _) = capture
+        .join()
+        .expect("join capture thread")
+        .expect("capture killed child");
+    assert!(!ok);
+    assert_eq!(
+        code, None,
+        "a killed child reports a signal, not an exit code"
+    );
+    assert_eq!(mesh_process::running_child_pid(), None);
+    // The lease is dropped inside the capture thread, so the slot is gone.
+    assert!(!mesh_process::kill_run().expect("no run after release"));
+    // The capture reports the signal-terminated exit, not a success code.
+    assert!(logs
+        .lock()
+        .expect("lock logs")
+        .iter()
+        .any(|line| line == "— exited with signal"));
 }
 
 #[test]
