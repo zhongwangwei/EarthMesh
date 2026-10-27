@@ -352,3 +352,15 @@ A/B harness 报 `errors=[]`、`grid_diffs` 全 0；初始与每次更新后的 p
 `fix-failure-path/phase-cache-experiment.patch`）。guide 11.170 记录负结果。
 剩余优化按实测规模排序：组件级 `install_delta`/窗口重建（完整 vertex5 约 208 s，非求解器内）、
 phase 三次扫描融合（收益小、逐字节安全）。两项都值得先做小规模设计再投入。
+
+## 十三、组件安装的整网格重建：成本分解（2026-10-27）
+
+新增 `EARTHMESH_CMRC_INSTALL_PROFILE=1` 分解 `component_install_delta`（guide 11.171）：`certify_candidate` 的
+`work.install`/`apply_positions`/`edge_scope` 与 `Work::window` 的 gather/rebuild/positions/edge；配合 TIMING 已有的
+`rebuild_{coverage,compact,orient,mesh_state}`。关闭时仅一次缓存 env 读取，A3 6/6 产物 SHA256 不变。
+
+结果：install_delta 几乎全部来自**整网格认证候选的 whole 重建**——`merit90m` 31 个候选中 5 个 whole install 占
+12.66/12.82 s；完整 vertex5 前 510 个候选中 7 个 whole install（467 万–638 万 faces）占 89.6/94.6 s，
+其余窗口 install 合计 <1 s。whole 重建内部 coverage 占 75%（17.3/23.1 s），mesh_state 16%、orient 6%、compact 3%。
+coverage 是串行 leaf→source-face 映射与覆盖检查，是明确热点。下一步：按 leaf 分块并行化 whole coverage
+（顺序拼接保证三角形地址顺序，原子 claimed 检测重复），预期 coverage 17 s → 2–3 s、墙钟 −5%～−8%，逐字节一致。

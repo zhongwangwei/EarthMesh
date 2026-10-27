@@ -7096,3 +7096,31 @@ incident-face/edge 遍历，预计梯度时间降到约 1/3，对应弹性 solve
 只有 ActiveTrust/少量变量移动的 solver mode 才可能受益，但生产默认不用它。实现已回退，实验分支删除；
 补丁保存在 `.omx/artifacts/cmrc-audit-20261027/fix-failure-path/phase-cache-experiment.patch`。
 剩余可选方向：把 phase 的三次扫描融合成一次（省一半角度计算，收益小）、或组件级窗口重建成增量（`install_delta` 约 208 s，非求解器内）。
+
+### 11.171 组件安装的整网格重建：成本分解（2026-10-27）
+
+§11.170 之后把目标移出弹性求解器：完整 vertex5 的 `component_install_delta` 约 208 s、`component_state_clone` 约 30 s。
+新增 env-gated 分解探针 `EARTHMESH_CMRC_INSTALL_PROFILE=1`：在 `certify_candidate` 打印
+`cmrc_install_detail phase=install rebuild_ms/positions_ms/edge_scope_ms/faces/vertices`，
+在 `Work::window` 打印 `phase=window_build gather_ms/rebuild_ms/positions_ms/edge_ms`；
+配合已有的 `EARTHMESH_CMRC_TIMING=1`（`cmrc_detail phase=rebuild_{coverage,compact,orient,mesh_state}`）
+就能把一次整网格重建（`rebuild_within` 的 whole 路径）拆开。关闭探针时只有一次缓存 env 读取，A3 6/6 产物 SHA256 不变。
+
+T7920 实测（release；日志只加计时，产物不变）：
+
+| 案例 | 候选数 | install_delta | 其中整网格 install | 整网格 faces | 窗口 install |
+|---|---:|---:|---:|---:|---:|
+| `vertex5_2l`（缩减） | 101 | 2.89 s | 4 次，1.95 s（rebuild 89%） | 42 万–50 万 | 平均 ~3000 faces，0.2–8 ms |
+| `merit90m` | 31 | 12.82 s | 5 次，12.66 s（99%） | 137 万–180 万 | 26 次，~0.03 s 合计 |
+| `vertex5`（完整，部分 510/1118 候选，共享机 load≈129） | 510 | 94.6 s（已） | 7 次，89.6 s（95%） | 467 万–638 万 | 503 次内部重建合计 4.7 s，最大 316 ms |
+
+整网格重建内部（`merit90m` 的 13 次 whole rebuild 合计 23.1 s）：**coverage 17.3 s（75%）**、
+mesh_state 3.6 s（16%）、orient 1.5 s（6%）、compact 0.7 s（3%）。`coverage` 是
+`rebuild_within` 里把 `leaf_set.leaves` 逐个映射回 source faces、claim 覆盖并收集三角形地址的串行循环；
+窗口路径的重建只有毫秒级，不是目标。
+
+**结论与下一项**：整网格 install 的重建时间几乎全在串行 coverage 上，且只有“整网格认证”的少量候选会走这条路
+（其余候选的窗口重建可忽略）。下一步把 whole 路径的 coverage 并行化：leaf 集合是 source faces 的划分、彼此不重叠，
+可以按顺序分块并行处理（原子 claimed 标志检测重复覆盖，按块序拼接以保持三角形地址顺序），预期把
+coverage 的 17 s 量级降到 2–3 s，对应两个真实案例墙钟约 −5%～−8%，且产物逐字节一致。
+更激进的做法是跨候选缓存 leaf→source-face 映射（候选只改少数 transition parents），但设计成本更高。

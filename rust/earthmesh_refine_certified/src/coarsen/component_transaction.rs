@@ -35,6 +35,23 @@ use std::{
     time::Instant,
 };
 
+/// Whether the install path's sub-phases are reported (guide 11.171).
+/// Diagnostics only: every instrumented branch is a timer around code that
+/// already runs.
+fn install_profile_enabled() -> bool {
+    static ENABLED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ENABLED.get_or_init(|| std::env::var("EARTHMESH_CMRC_INSTALL_PROFILE").as_deref() == Ok("1"))
+}
+
+fn log_install_detail(component: u64, phase: &str, fields: &[(&str, f64)]) {
+    let fields = fields
+        .iter()
+        .map(|(name, value)| format!("{name}={value:.1}"))
+        .collect::<Vec<_>>()
+        .join(" ");
+    eprintln!("earthmesh_cli: cmrc_install_detail component={component} phase={phase} {fields}");
+}
+
 fn log_component_phase(enabled: bool, component: u64, phase: &str, started: &mut Instant) {
     if enabled {
         eprintln!(
@@ -1514,11 +1531,17 @@ fn certify_candidate(
     phase_started: &mut Instant,
 ) -> Result<(ComponentCommitReport, (usize, usize)), CandidateAttemptFailure> {
     let timing_enabled = std::env::var("EARTHMESH_CMRC_TIMING").as_deref() == Ok("1");
+    let install_profile = install_profile_enabled();
+    let mut install_started = Instant::now();
     let candidate = transition.candidate.clone();
     work.install(source, &candidate).map_err(|reason| {
         CandidateAttemptFailure::invalid(ComponentTransactionStage::InstallDelta, reason)
     })?;
+    let install_rebuild_ms = install_started.elapsed().as_secs_f64() * 1000.0;
+    install_started = Instant::now();
     work.apply_positions(state);
+    let install_positions_ms = install_started.elapsed().as_secs_f64() * 1000.0;
+    install_started = Instant::now();
     // On a built region, the checks of the whole sphere become the region's
     // (`verify_geometry_within`), and in a window the window's, open along
     // its edge (guide 11.146); the numbering is fixed from here on.
@@ -1532,6 +1555,22 @@ fn certify_candidate(
         None => certificate.verify_geometry(mesh),
         Some(region) => certificate.verify_geometry_within(mesh, &region.edge_sites, region.euler),
     };
+    if install_profile {
+        log_install_detail(
+            component.id,
+            "install",
+            &[
+                ("rebuild_ms", install_rebuild_ms),
+                ("positions_ms", install_positions_ms),
+                (
+                    "edge_scope_ms",
+                    install_started.elapsed().as_secs_f64() * 1000.0,
+                ),
+                ("faces", work.mesh.mesh.triangle_count() as f64),
+                ("vertices", work.mesh.mesh.vertex_count() as f64),
+            ],
+        );
+    }
     log_component_phase(timing_enabled, component.id, "install_delta", phase_started);
 
     let mut elastic_iterations = 0usize;
@@ -2823,6 +2862,11 @@ impl Work {
         state: &ComponentTransactionState,
         parents: &BTreeSet<TriangleAddress>,
     ) -> Result<Self, String> {
+        let profile = install_profile_enabled();
+        let mut started = Instant::now();
+        let mut gather_ms = 0.0;
+        let mut rebuild_ms = 0.0;
+        let mut positions_ms = 0.0;
         let mut leaves = Vec::new();
         let mut custom = BTreeMap::new();
         let mut within = Vec::new();
@@ -2849,6 +2893,10 @@ impl Work {
                 }
             }
         }
+        if profile {
+            gather_ms = started.elapsed().as_secs_f64() * 1000.0;
+            started = Instant::now();
+        }
         leaves.sort_unstable();
         let leaf_set = HierarchyLeafSet {
             leaves: leaves.into_iter().collect(),
@@ -2862,7 +2910,15 @@ impl Work {
             &custom_triangles,
             Some(&within),
         )?;
+        if profile {
+            rebuild_ms = started.elapsed().as_secs_f64() * 1000.0;
+            started = Instant::now();
+        }
         apply_source_positions(&mut mesh, &state.source_positions);
+        if profile {
+            positions_ms = started.elapsed().as_secs_f64() * 1000.0;
+            started = Instant::now();
+        }
         let (open, euler) = open_sites_and_euler(&mesh.mesh);
         let edge = open
             .into_iter()
@@ -2875,6 +2931,20 @@ impl Work {
             Some(region) => edge.difference(region.outer_boundary()).copied().collect(),
             None => edge.clone(),
         };
+        if profile {
+            log_install_detail(
+                0,
+                "window_build",
+                &[
+                    ("gather_ms", gather_ms),
+                    ("rebuild_ms", rebuild_ms),
+                    ("positions_ms", positions_ms),
+                    ("edge_ms", started.elapsed().as_secs_f64() * 1000.0),
+                    ("faces", mesh.mesh.triangle_count() as f64),
+                    ("vertices", mesh.mesh.vertex_count() as f64),
+                ],
+            );
+        }
         Ok(Self {
             within: Some(within),
             leaf_set,
