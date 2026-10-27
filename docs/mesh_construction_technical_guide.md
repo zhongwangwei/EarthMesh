@@ -6980,3 +6980,42 @@ target 单元调用 `spherical_overlap_partial` 重算行，其余行从 base（
   不再 clone 百万单元的 primal 再丢弃构造出的 final mesh；单测 `delivery_validation_agrees_with_the_finalize_functions`
   对比两者对同一证据的接受/拒绝一致。
 - 真实多案例成本未测；生产优化器仍未启用。
+
+### 11.165 弹性失败路径：一次认证、移动见证、诊断按需（2026-10-27）
+
+**问题。** 2026-10-27 的全链条审计（§7 P0）发现：每次弹性求解失败时，失败结果里塞进了大量生产不读的工作——
+`geometry_failure_reason` 对整张 level 网格跑一次完整 `verify_scoped`，分类时再跑一次；`angle_range` 串行扫全网；
+`geometry_failure_diagnostics` 再做两遍全网扫描，其中 `face_graph_distance_to_any` 给整张网格建
+`BTreeMap<edge, Vec<face>>` 做 BFS；`GeometryFailureWitness` 直接 `mesh.clone()` 整张 `HierarchyLeafMesh`。
+而 `component_transaction` 只消费 `failed_guard_face`、`global_angle_degrees` 和 witness 里的局部顶点/guard 面。
+
+**做法。** `elastic_block.rs` 的失败出口改为 `FailurePlan`：一次 `verify_scoped` 同时给出 reason 与
+`RequiresDifferentTopology` 分类（保留 `final_phase == DelaunayVoronoiFeasibility` 的强制分类），
+求解停下的 mesh/patch **按值移入** witness（不再 clone），`GeometryFailureDiagnostics` 默认不算、
+research 运行需要时设 `EARTHMESH_CMRC_FAILURE_DIAGNOSTICS=1`；全网格角度范围改为按固定 chunk 的 Rayon min/max
+（极值与顺序无关，与串行逐位相同，有回归测试）。失败分类、reason 字符串、角度值、witness 内容均逐字段不变。
+
+**验证。** 本机：`cargo test -p earthmesh_refine_certified --lib` **338 passed**（旧 336 + 2 个新回归）、
+fmt/clippy 通过；A3 端到端 6 个交付产物 SHA256 与修前完全相同。T7920（96 核，`7920l`）真实 MERIT A/B：
+`vertex5`（bbox 88.5–91.5E/57.3–59.3N，2.5 km 基面→150 m，40 min/次）两臂 acceptance errors=0，
+证书与两个 gridfile SHA 相同、失败日志逐行相同；**347 次弹性失败的 solve 合计 881.5 s → 762.0 s（−13.6%，
+平均 −344 ms/次）**，整跑墙钟 39:58 → 38:48（−2.9%；同机其它作业使 certified 路径反向多花 36 s，墙钟差被压缩）。
+`merit90m` 案例（4 min/次）失败分量 25.2 s → 22.1 s（−3.1 s）。**边界**：没有弹性失败的运行不受影响；
+失败路径约占硬案例墙钟的 5%，弹性迭代本身（vertex5 里 1118 次 solve 合计 960–1043 s）仍是主要成本，
+下一步是 §7 P1 的非角度相位梯度并行/解析化。证据：`.omx/artifacts/cmrc-audit-20261027/fix-failure-path/`。
+
+### 11.166 弹性热循环：惰性差分基值与相位内能量复用（2026-10-27）
+
+§11.165 之后，实测（vertex5 真实 MERIT，1118 次弹性 solve 合计 960–1043 s，失败 solve 占 ~80% 且全部停在
+AngleFeasibility）表明失败路径不是大头，迭代本身才是。对热循环做两处**逐位不变**的优化：
+
+- **差分基值惰性化**：中心差分只在单侧无效时才读基值；两侧都有效时省掉它。每个可移动顶点每次梯度的能量评估
+  从 5 次降到 4 次；基值不可评估时仍返回无梯度（语义不变）。
+- **相位内能量复用**：上一轮被接受一步后，`(phase, energy)` 已是当前网格在该相位下的精确值；下一轮若相位不变，
+  直接复用，相位变化才重算。AngleFeasibility 的 256 轮失败求解中几乎每轮省一次全 patch 能量评估。
+
+两处都保证浮点结果逐位不变（A3 端到端 6 个产物 SHA256 与 HEAD 相同；真实案例证书/gridfile/remap/失败日志逐字相同）。
+T7920 受控交替 A/B（缩减案例 vertex5_2l，75 s/次，仍有 32 次失败，p0/c2 各 3 次交替）：**弹性 solve 合计 −25.3%
+（24.45 s→18.26 s）、失败 solve −27.0%、certified solve −21.5%、整跑墙钟 −7.4%（79.45 s→73.57 s）**，三次之间无重叠、
+产物逐字节相同。完整 vertex5 复跑同臂对比为 solve −37.0%、墙钟 38:48→28:43，但两臂非同时段（共享机器），
+受控结论以上面的交替 A/B 为准。证据：`.omx/artifacts/cmrc-audit-20261027/fix-failure-path/`。
