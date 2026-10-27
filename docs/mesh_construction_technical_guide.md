@@ -7019,3 +7019,14 @@ T7920 受控交替 A/B（缩减案例 vertex5_2l，75 s/次，仍有 32 次失�
 （24.45 s→18.26 s）、失败 solve −27.0%、certified solve −21.5%、整跑墙钟 −7.4%（79.45 s→73.57 s）**，三次之间无重叠、
 产物逐字节相同。完整 vertex5 复跑同臂对比为 solve −37.0%、墙钟 38:48→28:43，但两臂非同时段（共享机器），
 受控结论以上面的交替 A/B 为准。证据：`.omx/artifacts/cmrc-audit-20261027/fix-failure-path/`。
+
+### 11.167 弹性求解的分相耗时探针（2026-10-27）
+
+§11.165/§11.166 的修复把失败路径和热循环的浪费收掉之后，要决定下一个大优化（解析梯度或组件级开销）需要先知道弹性求解内部的时间分布。
+新增 env-gated 探针 `EARTHMESH_CMRC_ELASTIC_PROFILE=1`：每次弹性 solve 结束时打印一行
+`cmrc_profile phase=elastic component=…`，含每个相位（Untangle/AngleFeasibility/DelaunayVoronoi/Interior）的迭代次数、
+`phase_ms`（每轮 `energy_phase`）、`energy_ms`/`energy_evals`/`cache_hits`（全 patch 能量评估与 §11.166 的复用命中）、
+`gradient_ms`/`gradient_calls`、`certify_ms`（每轮的 `geometry_region_passes_with` + `certify` 尝试）。
+仅当该变量为 `1` 时累计（原子计数，solve 串行），关闭时只有一次环境变量缓存读取与分支，不改任何结果：
+A3 端到端 6 个产物 SHA256 与未加探针时相同。探针用于定位“梯度 vs 能量 vs 相位判断 vs 认证”的占比，
+作为下一步解析角度梯度的定标依据；guide 11.168 记录首次定标结果。
