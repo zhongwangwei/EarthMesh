@@ -1512,63 +1512,52 @@ fn solve_elastic_patch_certifying<G>(
         };
     };
     if limits.elastic_iterations == 0 {
-        return ElasticBlockOutcome::SearchBudgetExhausted {
-            elastic_iterations: 0,
+        return failure_plan(
+            &certificate,
+            &current.mesh,
+            &patch,
+            &guard_faces,
+            &context,
+            scope,
+            FailureKind::BudgetExhausted,
+            0,
             initial_energy,
-            final_energy: initial_energy,
-            final_phase: phase,
-            reason: geometry_failure_reason(&certificate, &current.mesh, scope),
-            failed_guard_face: failed_guard_face(&certificate, &current.mesh, &patch),
-            global_angle_degrees: angle_range(&current.mesh, current.mesh.active_triangle_slots()),
-            guard_angle_degrees: angle_range(&current.mesh, guard_faces.iter().copied()),
-            diagnostics: geometry_failure_diagnostics(&current.mesh, &patch, &context),
-            witness: geometry_failure_witness(&current, &patch),
-        };
+            initial_energy,
+        )
+        .into_outcome(current, patch, &context);
     }
 
-    let no_step = |current: &HierarchyLeafMesh, iteration: usize, final_energy: f64| {
-        let mesh = &current.mesh;
-        let final_phase = energy_phase(&certificate, mesh, &guard_faces, &context);
-        let reason = geometry_failure_reason(&certificate, mesh, scope);
-        let failed_guard_face = failed_guard_face(&certificate, mesh, &patch);
-        if matches!(final_phase, ElasticBlockPhase::DelaunayVoronoiFeasibility)
-            || geometry_failure_requires_different_topology(&certificate, mesh, scope)
-        {
-            ElasticBlockOutcome::RequiresDifferentTopology {
-                elastic_iterations: iteration,
-                initial_energy,
-                final_energy,
-                final_phase,
-                reason,
-                failed_guard_face,
-                global_angle_degrees: angle_range(mesh, mesh.active_triangle_slots()),
-                guard_angle_degrees: angle_range(mesh, guard_faces.iter().copied()),
-                diagnostics: geometry_failure_diagnostics(mesh, &patch, &context),
-                witness: geometry_failure_witness(current, &patch),
-            }
-        } else {
-            ElasticBlockOutcome::ElasticNoImprovement {
-                elastic_iterations: iteration,
-                initial_energy,
-                final_energy,
-                final_phase,
-                reason,
-                failed_guard_face,
-                global_angle_degrees: angle_range(mesh, mesh.active_triangle_slots()),
-                guard_angle_degrees: angle_range(mesh, guard_faces.iter().copied()),
-                diagnostics: geometry_failure_diagnostics(mesh, &patch, &context),
-                witness: geometry_failure_witness(current, &patch),
-            }
-        }
-    };
-
     let mut energy = initial_energy;
+    let mut energy_state: Option<(ElasticBlockPhase, f64)> = Some((phase, initial_energy));
     let mut trust_radius = initial_step;
     let mut curvature = CurvatureMemory::default();
     for iteration in 1..=limits.elastic_iterations {
         let phase = energy_phase(&certificate, &current.mesh, &guard_faces, &context);
-        let Some(phase_energy) = elastic_energy(&current.mesh, &patch, phase, &context) else {
-            return no_step(&current, iteration, energy);
+        // The last accepted step left the energy of this mesh known for its
+        // phase: recompute it only when the phase changed (audit 2026-10-27).
+        // Equal phase means the same pure sum on the same mesh, so the value
+        // is reused bit for bit.
+        let phase_energy = match energy_state {
+            Some((cached_phase, cached_energy)) if cached_phase == phase => cached_energy,
+            _ => {
+                let Some(computed) = elastic_energy(&current.mesh, &patch, phase, &context) else {
+                    return failure_plan(
+                        &certificate,
+                        &current.mesh,
+                        &patch,
+                        &guard_faces,
+                        &context,
+                        scope,
+                        FailureKind::NoStep,
+                        iteration,
+                        initial_energy,
+                        energy,
+                    )
+                    .into_outcome(current, patch, &context);
+                };
+                energy_state = Some((phase, computed));
+                computed
+            }
         };
         energy = phase_energy;
 
@@ -1586,7 +1575,19 @@ fn solve_elastic_patch_certifying<G>(
                 trust_radius,
                 solver_mode,
             ) else {
-                return no_step(&current, iteration, energy);
+                return failure_plan(
+                    &certificate,
+                    &current.mesh,
+                    &patch,
+                    &guard_faces,
+                    &context,
+                    scope,
+                    FailureKind::NoStep,
+                    iteration,
+                    initial_energy,
+                    energy,
+                )
+                .into_outcome(current, patch, &context);
             };
             let trust_update = apply_active_trust_step(
                 &mut current.mesh,
@@ -1603,11 +1604,34 @@ fn solve_elastic_patch_certifying<G>(
             trust_radius = trust_update.next_radius;
             if !trust_update.accepted {
                 if trust_radius <= minimum_step {
-                    return no_step(&current, iteration, energy);
+                    return failure_plan(
+                        &certificate,
+                        &current.mesh,
+                        &patch,
+                        &guard_faces,
+                        &context,
+                        scope,
+                        FailureKind::NoStep,
+                        iteration,
+                        initial_energy,
+                        energy,
+                    )
+                    .into_outcome(current, patch, &context);
                 }
                 continue;
             }
-            energy = elastic_energy(&current.mesh, &patch, phase, &context).unwrap_or(phase_energy);
+            energy = match elastic_energy(&current.mesh, &patch, phase, &context) {
+                Some(value) => {
+                    energy_state = Some((phase, value));
+                    value
+                }
+                None => {
+                    // The old path kept the pre-step reference here; do not
+                    // cache it as this moved state's energy.
+                    energy_state = None;
+                    phase_energy
+                }
+            };
         } else {
             let Some(gradient) = (if solver_mode
                 == ElasticSolverMode::MarginFiniteDifferenceLexicographic
@@ -1617,7 +1641,19 @@ fn solve_elastic_patch_certifying<G>(
             } else {
                 finite_difference_gradient(&mut current.mesh, &patch, phase, initial_step, &context)
             }) else {
-                return no_step(&current, iteration, energy);
+                return failure_plan(
+                    &certificate,
+                    &current.mesh,
+                    &patch,
+                    &guard_faces,
+                    &context,
+                    scope,
+                    FailureKind::NoStep,
+                    iteration,
+                    initial_energy,
+                    energy,
+                )
+                .into_outcome(current, patch, &context);
             };
             let maximum_norm = gradient
                 .iter()
@@ -1625,7 +1661,19 @@ fn solve_elastic_patch_certifying<G>(
                 .max_by(f64::total_cmp)
                 .unwrap_or(0.0);
             if !maximum_norm.is_finite() || maximum_norm <= 1.0e-14 {
-                return no_step(&current, iteration, energy);
+                return failure_plan(
+                    &certificate,
+                    &current.mesh,
+                    &patch,
+                    &guard_faces,
+                    &context,
+                    scope,
+                    FailureKind::NoStep,
+                    iteration,
+                    initial_energy,
+                    energy,
+                )
+                .into_outcome(current, patch, &context);
             }
 
             let phase_minimum_step = if matches!(phase, ElasticBlockPhase::Untangle) {
@@ -1704,9 +1752,22 @@ fn solve_elastic_patch_certifying<G>(
             };
 
             let Some((candidate_energy, accepted_scale)) = accepted else {
-                return no_step(&current, iteration, energy);
+                return failure_plan(
+                    &certificate,
+                    &current.mesh,
+                    &patch,
+                    &guard_faces,
+                    &context,
+                    scope,
+                    FailureKind::NoStep,
+                    iteration,
+                    initial_energy,
+                    energy,
+                )
+                .into_outcome(current, patch, &context);
             };
             energy = candidate_energy;
+            energy_state = Some((phase, candidate_energy));
             if solver_mode == ElasticSolverMode::FiniteDifferenceElastic {
                 curvature.accepted(
                     phase,
@@ -1738,28 +1799,163 @@ fn solve_elastic_patch_certifying<G>(
         }
     }
 
-    ElasticBlockOutcome::SearchBudgetExhausted {
-        elastic_iterations: limits.elastic_iterations,
+    failure_plan(
+        &certificate,
+        &current.mesh,
+        &patch,
+        &guard_faces,
+        &context,
+        scope,
+        FailureKind::BudgetExhausted,
+        limits.elastic_iterations,
         initial_energy,
-        final_energy: energy,
-        final_phase: energy_phase(&certificate, &current.mesh, &guard_faces, &context),
-        reason: geometry_failure_reason(&certificate, &current.mesh, scope),
-        failed_guard_face: failed_guard_face(&certificate, &current.mesh, &patch),
-        global_angle_degrees: angle_range(&current.mesh, current.mesh.active_triangle_slots()),
-        guard_angle_degrees: angle_range(&current.mesh, guard_faces.iter().copied()),
-        diagnostics: geometry_failure_diagnostics(&current.mesh, &patch, &context),
-        witness: geometry_failure_witness(&current, &patch),
+        energy,
+    )
+    .into_outcome(current, patch, &context)
+}
+
+/// Whether a failed solve's diagnostics are computed. No production caller
+/// reads them -- `component_transaction` takes only the failed face, the
+/// angle range and the witness -- and they cost two whole-mesh objective
+/// scans plus a whole-edge graph search each. Research runs ask for them with
+/// `EARTHMESH_CMRC_FAILURE_DIAGNOSTICS=1`.
+fn cmrc_failure_diagnostics_enabled() -> bool {
+    std::env::var_os("EARTHMESH_CMRC_FAILURE_DIAGNOSTICS").is_some()
+}
+
+/// How a failed solve is retried: at the same topology, at a wider
+/// transition, or not at all (the budget ran out).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum FailureKind {
+    NoStep,
+    BudgetExhausted,
+}
+
+/// A failed solve's report before the state it stopped on is moved into the
+/// witness. Built once per failure: one verification of the level mesh gives
+/// both the reason string and the retry classification, where the old path
+/// verified it twice.
+struct FailurePlan {
+    kind: FailureKind,
+    needs_different_topology: bool,
+    elastic_iterations: usize,
+    initial_energy: f64,
+    final_energy: f64,
+    final_phase: ElasticBlockPhase,
+    reason: String,
+    failed_guard_face: Option<usize>,
+    global_angle_degrees: Option<(f64, f64)>,
+    guard_angle_degrees: Option<(f64, f64)>,
+}
+
+impl FailurePlan {
+    /// The outcome, with the whole level mesh moved -- not cloned -- into the
+    /// witness (audit 2026-10-27: a clone per failed attempt was pure copy on
+    /// a value the caller consumes immediately anyway).
+    fn into_outcome<G>(
+        self,
+        mesh: HierarchyLeafMesh,
+        patch: ElasticPatch,
+        context: &EnergyContext,
+    ) -> ElasticBlockOutcome<G> {
+        let diagnostics = if cmrc_failure_diagnostics_enabled() {
+            geometry_failure_diagnostics(&mesh.mesh, &patch, context)
+        } else {
+            None
+        };
+        let witness = Box::new(GeometryFailureWitness { mesh, patch });
+        let FailurePlan {
+            kind,
+            needs_different_topology,
+            elastic_iterations,
+            initial_energy,
+            final_energy,
+            final_phase,
+            reason,
+            failed_guard_face,
+            global_angle_degrees,
+            guard_angle_degrees,
+        } = self;
+        match (kind, needs_different_topology) {
+            (FailureKind::BudgetExhausted, _) => ElasticBlockOutcome::SearchBudgetExhausted {
+                elastic_iterations,
+                initial_energy,
+                final_energy,
+                final_phase,
+                reason,
+                failed_guard_face,
+                global_angle_degrees,
+                guard_angle_degrees,
+                diagnostics,
+                witness,
+            },
+            (FailureKind::NoStep, true) => ElasticBlockOutcome::RequiresDifferentTopology {
+                elastic_iterations,
+                initial_energy,
+                final_energy,
+                final_phase,
+                reason,
+                failed_guard_face,
+                global_angle_degrees,
+                guard_angle_degrees,
+                diagnostics,
+                witness,
+            },
+            (FailureKind::NoStep, false) => ElasticBlockOutcome::ElasticNoImprovement {
+                elastic_iterations,
+                initial_energy,
+                final_energy,
+                final_phase,
+                reason,
+                failed_guard_face,
+                global_angle_degrees,
+                guard_angle_degrees,
+                diagnostics,
+                witness,
+            },
+        }
     }
 }
 
-fn geometry_failure_witness(
-    mesh: &HierarchyLeafMesh,
+/// One failed solve's report, without the state it stopped on.
+#[allow(clippy::too_many_arguments)]
+fn failure_plan(
+    certificate: &Certificate,
+    mesh: &MeshState,
     patch: &ElasticPatch,
-) -> Box<GeometryFailureWitness> {
-    Box::new(GeometryFailureWitness {
-        mesh: mesh.clone(),
-        patch: patch.clone(),
-    })
+    guard_faces: &BTreeSet<usize>,
+    context: &EnergyContext,
+    scope: Option<&GeometryScope>,
+    kind: FailureKind,
+    iteration: usize,
+    initial_energy: f64,
+    final_energy: f64,
+) -> FailurePlan {
+    let final_phase = energy_phase(certificate, mesh, guard_faces, context);
+    // The same verification answers both questions the old path asked twice.
+    let verdict = verify_scoped(certificate, mesh, scope);
+    let reason = match &verdict {
+        Ok(_) => "geometry passed but the elastic objective had no descent step".into(),
+        Err(error) => format!("{error:?}"),
+    };
+    let needs_different_topology =
+        matches!(final_phase, ElasticBlockPhase::DelaunayVoronoiFeasibility)
+            || matches!(
+                verdict,
+                Err(CertificateError::Delaunay(_) | CertificateError::Dual(_))
+            );
+    FailurePlan {
+        kind,
+        needs_different_topology,
+        elastic_iterations: iteration,
+        initial_energy,
+        final_energy,
+        final_phase,
+        reason,
+        failed_guard_face: failed_guard_face(certificate, mesh, patch),
+        global_angle_degrees: angle_range_active(mesh),
+        guard_angle_degrees: angle_range(mesh, guard_faces.iter().copied()),
+    }
 }
 
 fn apply_geometry_start(
@@ -2355,6 +2551,65 @@ fn angle_range(mesh: &MeshState, faces: impl IntoIterator<Item = usize>) -> Opti
     min_angle.is_finite().then_some((min_angle, max_angle))
 }
 
+/// `angle_range` over every active triangle, in parallel chunks. Extrema do
+/// not depend on the order they are taken in, so this is bit-identical to the
+/// serial scan; only the cost changes. Failure classification reads it for the
+/// whole level mesh, which is large on production levels.
+fn angle_range_active(mesh: &MeshState) -> Option<(f64, f64)> {
+    use rayon::prelude::*;
+    const CHUNK: usize = 8192;
+    enum Chunk {
+        Empty,
+        Angles(f64, f64),
+        Invalid,
+    }
+    let chunks = mesh
+        .triangles()
+        .par_chunks(CHUNK)
+        .enumerate()
+        .map(|(chunk, triangles)| {
+            let start = chunk * CHUNK;
+            let mut min_angle = f64::INFINITY;
+            let mut max_angle = f64::NEG_INFINITY;
+            let mut seen = false;
+            for (offset, triangle) in triangles.iter().enumerate() {
+                let face = start + offset;
+                if !mesh.is_triangle_live(face) {
+                    continue;
+                }
+                let Some(angles) =
+                    spherical_triangle_angles(triangle.map(|site| mesh.vertices()[site]))
+                else {
+                    return Chunk::Invalid;
+                };
+                seen = true;
+                for angle in angles {
+                    min_angle = min_angle.min(angle);
+                    max_angle = max_angle.max(angle);
+                }
+            }
+            if seen {
+                Chunk::Angles(min_angle, max_angle)
+            } else {
+                Chunk::Empty
+            }
+        })
+        .collect::<Vec<_>>();
+    let mut min_angle = f64::INFINITY;
+    let mut max_angle = f64::NEG_INFINITY;
+    for chunk in chunks {
+        match chunk {
+            Chunk::Empty => {}
+            Chunk::Invalid => return None,
+            Chunk::Angles(lo, hi) => {
+                min_angle = min_angle.min(lo);
+                max_angle = max_angle.max(hi);
+            }
+        }
+    }
+    min_angle.is_finite().then_some((min_angle, max_angle))
+}
+
 fn geometry_failure_diagnostics(
     mesh: &MeshState,
     patch: &ElasticPatch,
@@ -2525,28 +2780,6 @@ fn failed_guard_face(
                 .is_err()
         })
     })
-}
-
-fn geometry_failure_reason(
-    certificate: &Certificate,
-    mesh: &MeshState,
-    scope: Option<&GeometryScope>,
-) -> String {
-    match verify_scoped(certificate, mesh, scope) {
-        Ok(_) => "geometry passed but the elastic objective had no descent step".into(),
-        Err(error) => format!("{error:?}"),
-    }
-}
-
-fn geometry_failure_requires_different_topology(
-    certificate: &Certificate,
-    mesh: &MeshState,
-    scope: Option<&GeometryScope>,
-) -> bool {
-    matches!(
-        verify_scoped(certificate, mesh, scope),
-        Err(CertificateError::Delaunay(_) | CertificateError::Dual(_))
-    )
 }
 
 fn source_set_to_compact(
@@ -4561,7 +4794,12 @@ fn finite_difference_angle_margin_gradient(
     for &site in &patch.movable_compact_vertices {
         let point = mesh.vertices()[site];
         let [first, second] = tangent_basis(point)?;
-        let base_loss = angle_margin_loss(mesh)?;
+        // The base loss is only read when one side is undefined: evaluating
+        // it lazily drops one of the five energy evaluations per vertex
+        // (audit 2026-10-27). The failure semantics are unchanged -- a base
+        // that cannot be evaluated still yields no gradient.
+        let mut base_loss: Option<f64> = None;
+        let mut base_undefined = false;
         let mut derivative = |direction: CartesianPoint| {
             let plus = exponential_map(point, scale_point(direction, epsilon))?;
             let minus = exponential_map(point, scale_point(direction, -epsilon))?;
@@ -4572,9 +4810,29 @@ fn finite_difference_angle_margin_gradient(
             mesh.move_vertex(site, point);
             match (plus_loss, minus_loss) {
                 (Some(plus), Some(minus)) => Some((plus - minus) / (2.0 * epsilon)),
-                (Some(plus), None) => Some((plus - base_loss) / epsilon),
-                (None, Some(minus)) => Some((base_loss - minus) / epsilon),
-                (None, None) => None,
+                (plus_loss, minus_loss) => {
+                    if base_undefined {
+                        return None;
+                    }
+                    let base = match base_loss {
+                        Some(base) => base,
+                        None => match angle_margin_loss(mesh) {
+                            Some(base) => {
+                                base_loss = Some(base);
+                                base
+                            }
+                            None => {
+                                base_undefined = true;
+                                return None;
+                            }
+                        },
+                    };
+                    match (plus_loss, minus_loss) {
+                        (Some(plus), None) => Some((plus - base) / epsilon),
+                        (None, Some(minus)) => Some((base - minus) / epsilon),
+                        _ => None,
+                    }
+                }
             }
         };
         let d_first = derivative(first)?;
@@ -4630,15 +4888,39 @@ fn finite_difference_gradient(
                     )
                     .filter(|energy| energy.is_finite())
                 };
-                let base_energy = energy_at(point)?;
-                let derivative = |direction: CartesianPoint| {
+                // Only a one-sided difference needs the base energy: this
+                // drops one of the five evaluations per vertex
+                // (audit 2026-10-27) with the same fallback semantics.
+                let mut base_energy: Option<f64> = None;
+                let mut base_undefined = false;
+                let mut derivative = |direction: CartesianPoint| {
                     let plus = exponential_map(point, scale_point(direction, epsilon))?;
                     let minus = exponential_map(point, scale_point(direction, -epsilon))?;
                     match (energy_at(plus), energy_at(minus)) {
                         (Some(plus), Some(minus)) => Some((plus - minus) / (2.0 * epsilon)),
-                        (Some(plus), None) => Some((plus - base_energy) / epsilon),
-                        (None, Some(minus)) => Some((base_energy - minus) / epsilon),
-                        (None, None) => None,
+                        (plus_energy, minus_energy) => {
+                            if base_undefined {
+                                return None;
+                            }
+                            let base = match base_energy {
+                                Some(base) => base,
+                                None => match energy_at(point) {
+                                    Some(base) => {
+                                        base_energy = Some(base);
+                                        base
+                                    }
+                                    None => {
+                                        base_undefined = true;
+                                        return None;
+                                    }
+                                },
+                            };
+                            match (plus_energy, minus_energy) {
+                                (Some(plus), None) => Some((plus - base) / epsilon),
+                                (None, Some(minus)) => Some((base - minus) / epsilon),
+                                _ => None,
+                            }
+                        }
                     }
                 };
                 let d_first = derivative(first)?;
@@ -4692,7 +4974,10 @@ fn serial_finite_difference_gradient(
                 crossing_index,
             )
         };
-        let base_energy = energy_at_current(mesh)?;
+        // Lazy base: only one-sided differences need it (audit 2026-10-27);
+        // an undefined base still yields no gradient, as before.
+        let mut base_energy: Option<f64> = None;
+        let mut base_undefined = false;
         let mut derivative = |direction: CartesianPoint| {
             let plus = exponential_map(point, scale_point(direction, epsilon))?;
             let minus = exponential_map(point, scale_point(direction, -epsilon))?;
@@ -4703,9 +4988,29 @@ fn serial_finite_difference_gradient(
             mesh.move_vertex(site, point);
             match (plus_energy, minus_energy) {
                 (Some(plus), Some(minus)) => Some((plus - minus) / (2.0 * epsilon)),
-                (Some(plus), None) => Some((plus - base_energy) / epsilon),
-                (None, Some(minus)) => Some((base_energy - minus) / epsilon),
-                (None, None) => None,
+                (plus_energy, minus_energy) => {
+                    if base_undefined {
+                        return None;
+                    }
+                    let base = match base_energy {
+                        Some(base) => base,
+                        None => match energy_at_current(mesh) {
+                            Some(base) => {
+                                base_energy = Some(base);
+                                base
+                            }
+                            None => {
+                                base_undefined = true;
+                                return None;
+                            }
+                        },
+                    };
+                    match (plus_energy, minus_energy) {
+                        (Some(plus), None) => Some((plus - base) / epsilon),
+                        (None, Some(minus)) => Some((base - minus) / epsilon),
+                        _ => None,
+                    }
+                }
             }
         };
         let d_first = derivative(first)?;
@@ -6919,6 +7224,50 @@ mod tests {
             ),
             ElasticBlockOutcome::SearchBudgetExhausted { .. }
         ));
+    }
+
+    #[test]
+    fn angle_range_active_is_the_serial_scan() {
+        let grid = crate::MotherGrid::generate(8).unwrap();
+        assert_eq!(
+            angle_range_active(&grid.mesh),
+            angle_range(&grid.mesh, grid.mesh.active_triangle_slots()),
+        );
+    }
+
+    /// A failure hands the state it stopped on to the witness by value: the
+    /// fields the old clone-based path reported are the same, and the
+    /// diagnostics that no production caller reads stay unset unless asked
+    /// for (audit 2026-10-27).
+    #[test]
+    fn a_failed_solve_moves_its_state_into_the_witness() {
+        let (source, patch) = inverted_elastic_fixture();
+        let outcome = solve_elastic_patch(
+            &source,
+            patch.clone(),
+            ElasticBlockLimits {
+                elastic_iterations: 0,
+            },
+        );
+        let ElasticBlockOutcome::SearchBudgetExhausted {
+            reason,
+            global_angle_degrees,
+            diagnostics,
+            witness,
+            ..
+        } = outcome
+        else {
+            panic!("zero elastic iterations must spend the budget: {outcome:?}");
+        };
+        assert!(!reason.is_empty());
+        if std::env::var_os("EARTHMESH_CMRC_FAILURE_DIAGNOSTICS").is_none() {
+            assert!(diagnostics.is_none());
+        }
+        // Zero iterations stop before the search starts, so the state in the
+        // witness is the fixture's source mesh.
+        assert_eq!(witness.mesh.mesh, source.mesh);
+        assert_eq!(witness.patch, patch);
+        assert_eq!(global_angle_degrees, angle_range_active(&witness.mesh.mesh),);
     }
 
     #[test]
