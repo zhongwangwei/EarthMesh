@@ -7019,3 +7019,38 @@ T7920 受控交替 A/B（缩减案例 vertex5_2l，75 s/次，仍有 32 次失�
 （24.45 s→18.26 s）、失败 solve −27.0%、certified solve −21.5%、整跑墙钟 −7.4%（79.45 s→73.57 s）**，三次之间无重叠、
 产物逐字节相同。完整 vertex5 复跑同臂对比为 solve −37.0%、墙钟 38:48→28:43，但两臂非同时段（共享机器），
 受控结论以上面的交替 A/B 为准。证据：`.omx/artifacts/cmrc-audit-20261027/fix-failure-path/`。
+
+### 11.167 弹性求解的分相耗时探针（2026-10-27）
+
+§11.165/§11.166 的修复把失败路径和热循环的浪费收掉之后，要决定下一个大优化（解析梯度或组件级开销）需要先知道弹性求解内部的时间分布。
+新增 env-gated 探针 `EARTHMESH_CMRC_ELASTIC_PROFILE=1`：每次弹性 solve 结束时打印一行
+`cmrc_profile phase=elastic component=…`，含每个相位（Untangle/AngleFeasibility/DelaunayVoronoi/Interior）的迭代次数、
+`phase_ms`（每轮 `energy_phase`）、`energy_ms`/`energy_evals`/`cache_hits`（全 patch 能量评估与 §11.166 的复用命中）、
+`gradient_ms`/`gradient_calls`、`certify_ms`（每轮的 `geometry_region_passes_with` + `certify` 尝试）。
+仅当该变量为 `1` 时累计（原子计数，solve 串行），关闭时只有一次环境变量缓存读取与分支，不改任何结果：
+A3 端到端 6 个产物 SHA256 与未加探针时相同。探针用于定位“梯度 vs 能量 vs 相位判断 vs 认证”的占比，
+作为下一步解析角度梯度的定标依据；guide 11.168 记录首次定标结果。
+
+### 11.168 弹性求解分相定标：梯度是最大头（2026-10-27）
+
+用 §11.167 的探针在 T7920 的真实 MERIT 案例上定标（release 二进制、16 线程 affinity、同一台共享机器；
+探针开启时绝对耗时不可与关闭时直接比较，下表看占比）。三个案例的迭代几乎全部落在 AngleFeasibility：
+失败候选在角度窗内收敛不了，成功候选在角度窗刚满足时就直接认证，没有走到 Interior/Delaunay 相位
+（完整 vertex5 的 87,929 次迭代里 87,912 次是 AngleFeasibility）。
+
+| 案例 | 弹性 solve 合计 | 迭代数 | phase | energy | gradient | certify | 四项和 / solve |
+|---|---:|---:|---:|---:|---:|---:|---:|
+| `vertex5_2l`（缩减，101 次 solve / 32 次失败） | 32,465 ms | 6,855 | 6,648 ms（20.5%） | 8,907 ms（27.4%） | 9,768 ms（30.1%） | 1,740 ms（5.4%） | 27,064 ms（83.4%） |
+| `merit90m`（真实 90 m，31 次 solve / 2 次失败） | 57,327 ms | 1,188 | 6,499 ms（11.3%） | 10,924 ms（19.1%） | 24,416 ms（42.6%） | 1,531 ms（2.7%） | 43,371 ms（75.7%） |
+| `vertex5`（完整真实案例，1118 次 solve / 347 次失败） | 915,757 ms | 87,929 | 170,580 ms（18.6%） | 220,142 ms（24.0%） | 296,340 ms（32.4%） | 35,911 ms（3.9%） | 722,974 ms（78.9%） |
+
+失败 solve 里梯度占比更高（缩减 case 34.5%、merit90m 60%、完整 vertex5 41.6%），phase 也更高
+（完整 vertex5 24.4%），因为 256 轮角度迭代都要重做一次整 guard 面的角度窗判断。其余约 21% 是 L-BFGS/曲率、
+线搜索步长/信任域更新与初始能量等未单独计时的部分。
+
+**结论与下一项**：梯度是最大单项（30–43%），其次能量（19–27%），相位判断 11–20%。下一个大优化定为
+**AngleFeasibility 角度/边长罚项的解析梯度**：现在每个可移动顶点每次梯度做 4 次局部能量差分，解析导数只需一次
+incident-face/edge 遍历，预计梯度时间降到约 1/3，对应弹性 solve 再降约 20–30%。它会改变搜索轨迹，
+必须用 §11.165 的真实案例 A/B harness 做质量验收（不要求逐字节一致）。之后才是相位判断的增量缓存
+（只更新被移动顶点的 incident guard faces/扇形，理论上可再省上表 11–20% 的 phase 时间）；组件级
+`install_delta`/窗口重建（完整 vertex5 约 208 s）不在 elastic solve 内，留作更后面的独立设计。

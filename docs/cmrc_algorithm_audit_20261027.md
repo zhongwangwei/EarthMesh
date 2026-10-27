@@ -304,3 +304,23 @@ vertex5 完整案例里 elastic solve 仍约 600 s / 29 min 墙钟（~35%），�
 （`component_install_delta`、`component_topology_search`、`component_remap` 等，合计约 10 min）。
 若继续优化，两条路：① 组件级开销（Window/Whole 刷新与 install 的增量更新）；② 角度梯度的解析化
 （把 4 次差分评估再降为一次解析遍历，预计还能再砍弹性求解的 30–50%，但会改变搜索轨迹，需要真实案例质量 A/B）。
+
+## 十、弹性求解分相定标与下一个优化（2026-10-27）
+
+§11.166 之后剩余成本集中在弹性迭代。新增 env-gated 探针 `EARTHMESH_CMRC_ELASTIC_PROFILE=1`
+（分支 `cmrc-elastic-profile-20261027`，PR #134；guide 11.167），每次 solve 记录
+phase/energy/gradient/certify 四类墙钟与每相位迭代数；探针关闭时只有一次缓存 env 读取与分支，A3 6/6 产物 SHA256 不变。
+
+T7920 真实 MERIT 定标（占比；绝对耗时受共享机器负载影响，不作横向比较）：
+
+| 案例 | solve 合计 | 迭代 | phase | energy | gradient | certify | 四项和 |
+|---|---:|---:|---:|---:|---:|---:|---:|
+| vertex5_2l（缩减，101 solve/32 失败） | 32.5 s | 6,855 | 20.5% | 27.4% | 30.1% | 5.4% | 83.4% |
+| merit90m（真实 90 m，31 solve/2 失败） | 57.3 s | 1,188 | 11.3% | 19.1% | 42.6% | 2.7% | 75.7% |
+| vertex5（完整，1118 solve/347 失败） | 915.8 s | 87,929 | 18.6% | 24.0% | 32.4% | 3.9% | 78.9% |
+
+迭代几乎全部落在 AngleFeasibility（完整 vertex5：87,912/87,929），失败 solve 的梯度/phase 占比更高
+（梯度 41.6%、phase 24.4%）。因此下一项定为 **AngleFeasibility 角度/边长罚项的解析梯度**：预计梯度时间降至约 1/3、
+弹性 solve 再降 20–30%；它会改变搜索轨迹，按 §11.165 的 A/B harness 做真实案例质量验收（不要求逐字节一致）。
+其后是**相位判断增量缓存**（只更新被移动顶点 incident 的 guard faces/扇形，理论上再省 11–20% 的 phase），
+组件级 `install_delta`/窗口重建（完整 vertex5 约 208 s）不在 elastic solve 内，作为独立设计项。

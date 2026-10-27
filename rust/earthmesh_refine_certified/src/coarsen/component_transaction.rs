@@ -1637,6 +1637,7 @@ fn certify_candidate(
         if timing_enabled {
             log_elastic_outcome(component.id, &outcome, patch_size);
         }
+        super::elastic_block::log_elastic_profile(component.id);
         let elastic = match outcome {
             ElasticBlockOutcome::Certified(trial) => trial,
             ElasticBlockOutcome::ElasticNoImprovement {

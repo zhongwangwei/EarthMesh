@@ -25,7 +25,83 @@ use earthmesh_mesh::{
 use rayon::prelude::*;
 use std::cell::RefCell;
 use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Mutex;
+use std::sync::OnceLock;
+use std::time::Instant;
+
+/// `EARTHMESH_CMRC_ELASTIC_PROFILE=1` splits one elastic solve's wall time
+/// into the phase test, energy evaluations, gradient and final certification,
+/// and counts the iterations spent in each phase. It is a diagnostic: no
+/// branch it adds changes the solve, and `log_elastic_profile` is the only
+/// reader. Guide 11.167.
+static ELASTIC_PROFILE_ENABLED: OnceLock<bool> = OnceLock::new();
+static ELASTIC_PROFILE_PHASE_NS: AtomicU64 = AtomicU64::new(0);
+static ELASTIC_PROFILE_ENERGY_NS: AtomicU64 = AtomicU64::new(0);
+static ELASTIC_PROFILE_GRADIENT_NS: AtomicU64 = AtomicU64::new(0);
+static ELASTIC_PROFILE_CERTIFY_NS: AtomicU64 = AtomicU64::new(0);
+static ELASTIC_PROFILE_ENERGY_EVALS: AtomicU64 = AtomicU64::new(0);
+static ELASTIC_PROFILE_GRADIENT_CALLS: AtomicU64 = AtomicU64::new(0);
+static ELASTIC_PROFILE_CACHE_HITS: AtomicU64 = AtomicU64::new(0);
+static ELASTIC_PROFILE_PHASE_ITERATIONS: [AtomicU64; 4] = [
+    AtomicU64::new(0),
+    AtomicU64::new(0),
+    AtomicU64::new(0),
+    AtomicU64::new(0),
+];
+
+fn elastic_profile_enabled() -> bool {
+    *ELASTIC_PROFILE_ENABLED
+        .get_or_init(|| std::env::var("EARTHMESH_CMRC_ELASTIC_PROFILE").as_deref() == Ok("1"))
+}
+
+fn reset_elastic_profile() {
+    for slot in [
+        &ELASTIC_PROFILE_PHASE_NS,
+        &ELASTIC_PROFILE_ENERGY_NS,
+        &ELASTIC_PROFILE_GRADIENT_NS,
+        &ELASTIC_PROFILE_CERTIFY_NS,
+        &ELASTIC_PROFILE_ENERGY_EVALS,
+        &ELASTIC_PROFILE_GRADIENT_CALLS,
+        &ELASTIC_PROFILE_CACHE_HITS,
+    ] {
+        slot.store(0, Ordering::Relaxed);
+    }
+    for slot in &ELASTIC_PROFILE_PHASE_ITERATIONS {
+        slot.store(0, Ordering::Relaxed);
+    }
+}
+
+fn profile_add(slot: &AtomicU64, started: Instant) {
+    slot.fetch_add(started.elapsed().as_nanos() as u64, Ordering::Relaxed);
+}
+
+/// One line per elastic solve with the phase/energy/gradient/certification
+/// split recorded since the previous call; a no-op unless
+/// `EARTHMESH_CMRC_ELASTIC_PROFILE=1`.
+pub(crate) fn log_elastic_profile(component: u64) {
+    if !elastic_profile_enabled() {
+        return;
+    }
+    let millis = |slot: &AtomicU64| slot.swap(0, Ordering::Relaxed) as f64 / 1.0e6;
+    let count = |slot: &AtomicU64| slot.swap(0, Ordering::Relaxed);
+    let iterations = ELASTIC_PROFILE_PHASE_ITERATIONS
+        .iter()
+        .map(|slot| slot.swap(0, Ordering::Relaxed))
+        .collect::<Vec<_>>();
+    eprintln!(
+        "earthmesh_cli: cmrc_profile phase=elastic component={component} \
+         phase_iterations={iterations:?} phase_ms={:.1} energy_ms={:.1} energy_evals={} \
+         cache_hits={} gradient_ms={:.1} gradient_calls={} certify_ms={:.1}",
+        millis(&ELASTIC_PROFILE_PHASE_NS),
+        millis(&ELASTIC_PROFILE_ENERGY_NS),
+        count(&ELASTIC_PROFILE_ENERGY_EVALS),
+        count(&ELASTIC_PROFILE_CACHE_HITS),
+        millis(&ELASTIC_PROFILE_GRADIENT_NS),
+        count(&ELASTIC_PROFILE_GRADIENT_CALLS),
+        millis(&ELASTIC_PROFILE_CERTIFY_NS),
+    );
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ElasticBlockLimits {
@@ -1471,6 +1547,10 @@ fn solve_elastic_patch_certifying<G>(
     scope: Option<&GeometryScope>,
     certify: &dyn Fn(&Certificate, &MeshState) -> Result<G, CertificateError>,
 ) -> ElasticBlockOutcome<G> {
+    let profile = elastic_profile_enabled();
+    if profile {
+        reset_elastic_profile();
+    }
     if !trust_fraction.is_finite()
         || !(0.0..=1.0).contains(&trust_fraction)
         || trust_fraction == 0.0
@@ -1532,15 +1612,36 @@ fn solve_elastic_patch_certifying<G>(
     let mut trust_radius = initial_step;
     let mut curvature = CurvatureMemory::default();
     for iteration in 1..=limits.elastic_iterations {
-        let phase = energy_phase(&certificate, &current.mesh, &guard_faces, &context);
+        let phase = if profile {
+            let started = Instant::now();
+            let phase = energy_phase(&certificate, &current.mesh, &guard_faces, &context);
+            profile_add(&ELASTIC_PROFILE_PHASE_NS, started);
+            ELASTIC_PROFILE_PHASE_ITERATIONS[phase as usize].fetch_add(1, Ordering::Relaxed);
+            phase
+        } else {
+            energy_phase(&certificate, &current.mesh, &guard_faces, &context)
+        };
         // The last accepted step left the energy of this mesh known for its
         // phase: recompute it only when the phase changed (audit 2026-10-27).
         // Equal phase means the same pure sum on the same mesh, so the value
         // is reused bit for bit.
         let phase_energy = match energy_state {
-            Some((cached_phase, cached_energy)) if cached_phase == phase => cached_energy,
+            Some((cached_phase, cached_energy)) if cached_phase == phase => {
+                if profile {
+                    ELASTIC_PROFILE_CACHE_HITS.fetch_add(1, Ordering::Relaxed);
+                }
+                cached_energy
+            }
             _ => {
-                let Some(computed) = elastic_energy(&current.mesh, &patch, phase, &context) else {
+                let Some(computed) = (if profile {
+                    let started = Instant::now();
+                    let energy = elastic_energy(&current.mesh, &patch, phase, &context);
+                    profile_add(&ELASTIC_PROFILE_ENERGY_NS, started);
+                    ELASTIC_PROFILE_ENERGY_EVALS.fetch_add(1, Ordering::Relaxed);
+                    energy
+                } else {
+                    elastic_energy(&current.mesh, &patch, phase, &context)
+                }) else {
                     return failure_plan(
                         &certificate,
                         &current.mesh,
@@ -1620,7 +1721,15 @@ fn solve_elastic_patch_certifying<G>(
                 }
                 continue;
             }
-            energy = match elastic_energy(&current.mesh, &patch, phase, &context) {
+            energy = match if profile {
+                let started = Instant::now();
+                let energy = elastic_energy(&current.mesh, &patch, phase, &context);
+                profile_add(&ELASTIC_PROFILE_ENERGY_NS, started);
+                ELASTIC_PROFILE_ENERGY_EVALS.fetch_add(1, Ordering::Relaxed);
+                energy
+            } else {
+                elastic_energy(&current.mesh, &patch, phase, &context)
+            } {
                 Some(value) => {
                     energy_state = Some((phase, value));
                     value
@@ -1633,14 +1742,33 @@ fn solve_elastic_patch_certifying<G>(
                 }
             };
         } else {
-            let Some(gradient) = (if solver_mode
-                == ElasticSolverMode::MarginFiniteDifferenceLexicographic
+            let gradient = if profile {
+                let started = Instant::now();
+                let gradient = if solver_mode
+                    == ElasticSolverMode::MarginFiniteDifferenceLexicographic
+                    && matches!(phase, ElasticBlockPhase::AngleFeasibility)
+                {
+                    finite_difference_angle_margin_gradient(&mut current.mesh, &patch, initial_step)
+                } else {
+                    finite_difference_gradient(
+                        &mut current.mesh,
+                        &patch,
+                        phase,
+                        initial_step,
+                        &context,
+                    )
+                };
+                profile_add(&ELASTIC_PROFILE_GRADIENT_NS, started);
+                ELASTIC_PROFILE_GRADIENT_CALLS.fetch_add(1, Ordering::Relaxed);
+                gradient
+            } else if solver_mode == ElasticSolverMode::MarginFiniteDifferenceLexicographic
                 && matches!(phase, ElasticBlockPhase::AngleFeasibility)
             {
                 finite_difference_angle_margin_gradient(&mut current.mesh, &patch, initial_step)
             } else {
                 finite_difference_gradient(&mut current.mesh, &patch, phase, initial_step, &context)
-            }) else {
+            };
+            let Some(gradient) = gradient else {
                 return failure_plan(
                     &certificate,
                     &current.mesh,
@@ -1716,7 +1844,15 @@ fn solve_elastic_patch_certifying<G>(
                 for &(site, _, point) in &updates {
                     current.mesh.move_vertex(site, point);
                 }
-                let candidate_energy = elastic_energy(&current.mesh, &patch, phase, &context);
+                let candidate_energy = if profile {
+                    let started = Instant::now();
+                    let energy = elastic_energy(&current.mesh, &patch, phase, &context);
+                    profile_add(&ELASTIC_PROFILE_ENERGY_NS, started);
+                    ELASTIC_PROFILE_ENERGY_EVALS.fetch_add(1, Ordering::Relaxed);
+                    energy
+                } else {
+                    elastic_energy(&current.mesh, &patch, phase, &context)
+                };
                 if let Some(candidate_energy) = candidate_energy {
                     let movement_norm = updates
                         .iter()
@@ -1780,22 +1916,38 @@ fn solve_elastic_patch_certifying<G>(
             }
         }
 
-        if certificate.geometry_region_passes_with(
+        let certified_geometry = if profile {
+            let started = Instant::now();
+            let geometry = if certificate.geometry_region_passes_with(
+                &current.mesh,
+                &context.guard_faces,
+                context.degrees_pass,
+            ) {
+                certify(&certificate, &current.mesh).ok()
+            } else {
+                None
+            };
+            profile_add(&ELASTIC_PROFILE_CERTIFY_NS, started);
+            geometry
+        } else if certificate.geometry_region_passes_with(
             &current.mesh,
             &context.guard_faces,
             context.degrees_pass,
         ) {
-            if let Ok(geometry) = certify(&certificate, &current.mesh) {
-                return certified(
-                    current,
-                    patch,
-                    geometry,
-                    iteration,
-                    initial_energy,
-                    energy,
-                    &input_positions,
-                );
-            }
+            certify(&certificate, &current.mesh).ok()
+        } else {
+            None
+        };
+        if let Some(geometry) = certified_geometry {
+            return certified(
+                current,
+                patch,
+                geometry,
+                iteration,
+                initial_energy,
+                energy,
+                &input_positions,
+            );
         }
     }
 
