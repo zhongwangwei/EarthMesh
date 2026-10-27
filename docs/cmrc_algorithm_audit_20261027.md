@@ -339,3 +339,16 @@ T7920 真实 MERIT 定标（占比；绝对耗时受共享机器负载影响，�
 原因：闭式导数在每个面/边上的计算成本与 4 次局部能量差分相当，且轨迹略微变差。实现已回退，
 实验分支删除；guide 11.169 记录负结果。下一项回到 **bit-exact 的相位判断增量缓存**（定标里占 11–20%），
 或组件级窗口重建（完整 vertex5 约 208 s），二者都不改变交付结果。
+
+## 十二、相位判断增量缓存试验：负结果（2026-10-27）
+
+实现了 `PhaseCache`（按面缓存 orientation/角度窗/角度 margin 与计数、按 site 缓存 incident faces 与 fan 转角，
+每接受步只更新被移动顶点 incident 的面/fan），决策与 `energy_phase` 逐字节一致：
+A/B harness 报 `errors=[]`、`grid_diffs` 全 0；初始与每次更新后的 phase 都有单测对拍全量重扫。
+
+但墙钟更慢：`vertex5_2l` 69.4 s → 74.4 s（+7.2%），`merit90m` 221.9 s → 261.2 s（+17.7%）。
+原因：默认 `FiniteDifferenceElastic` 每个接受步移动所有可移动顶点，受影响 guard faces 就是整个 patch，
+增量更新退化成带记账的全量重算，而原扫描已并行。实现已回退（实验分支删除，补丁在
+`fix-failure-path/phase-cache-experiment.patch`）。guide 11.170 记录负结果。
+剩余优化按实测规模排序：组件级 `install_delta`/窗口重建（完整 vertex5 约 208 s，非求解器内）、
+phase 三次扫描融合（收益小、逐字节安全）。两项都值得先做小规模设计再投入。

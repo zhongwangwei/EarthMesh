@@ -7073,3 +7073,26 @@ incident-face/edge 遍历，预计梯度时间降到约 1/3，对应弹性 solve
 而且搜索轨迹略差（迭代与失败更多）。因此**不采纳、也不保留 opt-in 实现**（实验分支已删除）；
 只有把解析导数的成本真正压到差分之下（向量化/缓存 per-face 几何），或转向 bit-exact 的相位增量缓存，
 才值得重试。记录此负结果以免重复尝试。
+
+### 11.170 相位判断增量缓存：逐字节一致但更慢（2026-10-27）
+
+§11.168 定标里 phase 占弹性 solve 的 11–20%（失败 solve 24%），于是实现了 `PhaseCache`：
+按 guard face 缓存 orientation/角度窗/角度 margin 布尔与计数，按 site 缓存 incident faces 和 fan 转角；
+`solve_elastic_patch_certifying` 在每次接受步后只更新被移动顶点的 incident faces/fan。
+决策逻辑逐项复用原扫描的同一函数（orientation、`spherical_triangle_angles`、fan turn 阈值、dual 检查），
+初始化时与 `energy_phase` 对拍、每次接受步后与全量重扫对拍（单测 `phase_cache_matches_energy_phase_after_moves`）。
+产物验收：A/B harness 报 `errors=[]`、`grid_diffs` 全 0，即与 FD 版本**逐字节一致**。
+
+但两个真实案例的墙钟都变慢：
+
+| 案例 | FD 墙钟 | PhaseCache 墙钟 | 产物 |
+|---|---:|---:|---|
+| `vertex5_2l`（缩减） | 69.4 s | 74.4 s（+7.2%） | 逐字节一致 |
+| `merit90m`（真实 90 m） | 221.9 s | 261.2 s（+17.7%） | 逐字节一致 |
+
+原因：默认的 `FiniteDifferenceElastic` 每个接受步通过 `synchronous_updates` 移动**所有**可移动顶点，
+受影响 guard faces 就是整个 patch，增量更新退化成一次带 BTreeSet/BTreeMap 记账的全量重算，
+而原扫描本身已经并行（`provably_untangled`/`region_angles_pass` 都是 rayon）。
+只有 ActiveTrust/少量变量移动的 solver mode 才可能受益，但生产默认不用它。实现已回退，实验分支删除；
+补丁保存在 `.omx/artifacts/cmrc-audit-20261027/fix-failure-path/phase-cache-experiment.patch`。
+剩余可选方向：把 phase 的三次扫描融合成一次（省一半角度计算，收益小）、或组件级窗口重建成增量（`install_delta` 约 208 s，非求解器内）。
